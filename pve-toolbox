@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+#
+# pve-toolbox - interactive launcher for custom Proxmox scripts.
+#
+#   pve-toolbox                    interactive menu
+#   pve-toolbox list [tag]         list modules
+#   pve-toolbox install <mod>...   install specific modules
+#   pve-toolbox update [mod]...    update (all installed if none given)
+#   pve-toolbox check [mod]...     report available updates, change nothing
+#   pve-toolbox status [mod]       detailed status
+#   pve-toolbox uninstall <mod>...
+#   pve-toolbox link               symlink into /usr/local/bin
+#   pve-toolbox self-update        git pull this checkout
+#
+# Flags: -y/--yes non-interactive, -f/--force, -h/--help
+#
+set -euo pipefail
+
+TOOLBOX_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+MODULE_DIR="$TOOLBOX_ROOT/modules"
+
+# shellcheck source=lib/common.sh
+source "$TOOLBOX_ROOT/lib/common.sh"
+
+FORCE=0
+
+# --------------------------------------------------------------- discovery --
+
+discover() {
+    MODULES=()
+    local d
+    for d in "$MODULE_DIR"/*/; do
+        [[ -f "$d/module.sh" ]] || continue
+        local name; name=$(basename "$d")
+        [[ $name == _* ]] && continue
+        MODULES+=("$name")
+    done
+    if [[ ${#MODULES[@]} -eq 0 ]]; then
+        die "no modules found in $MODULE_DIR"
+    fi
+}
+
+# Read metadata without polluting the current shell.
+meta() { # meta <module> <VAR>
+    (
+        set +u
+        # shellcheck source=/dev/null
+        source "$MODULE_DIR/$1/module.sh"
+        printf '%s' "${!2}"
+    )
+}
+
+# Run a module function in a subshell so module globals stay isolated.
+run_module() { # run_module <module> <function> [args...]
+    local mod=$1 fn=$2; shift 2
+    [[ -f "$MODULE_DIR/$mod/module.sh" ]] || die "unknown module: $mod"
+    (
+        # shellcheck source=/dev/null
+        source "$MODULE_DIR/$mod/module.sh"
+        if ! declare -F "$fn" >/dev/null; then
+            if [[ $fn == module_status_long ]] && declare -F module_status >/dev/null; then
+                local rc=0
+                module_status || rc=$?
+                echo
+                exit "$rc"
+            fi
+            die "module $mod does not implement $fn"
+        fi
+        "$fn" "$@"
+    )
+}
+
+status_line() { # status_line <module> -> prints short status
+    run_module "$1" module_status 2>/dev/null || true
+}
+
+# ------------------------------------------------------------------- menu --
+
+print_table() {
+    local i=1 m title desc st
+    printf '\n%s  #  %-24s %-11s %s%s\n' "$c_bold" "MODULE" "STATUS" "DESCRIPTION" "$c_reset"
+    for m in "${MODULES[@]}"; do
+        title=$(meta "$m" MODULE_TITLE)
+        desc=$(meta "$m" MODULE_DESC)
+        st=$(status_line "$m")
+        local mark="   "
+        [[ " ${SELECTED[*]:-} " == *" $m "* ]] && mark=" ${c_green}*${c_reset} "
+        if [[ $st == "not installed" || -z $st ]]; then
+            printf '%s%2d) %-24s %s%-11s%s %s\n' "$mark" "$i" "$title" "$c_dim" "-" "$c_reset" "$desc"
+        else
+            printf '%s%2d) %-24s %s%-11s%s %s\n' "$mark" "$i" "$title" "$c_green" "${st%% *}" "$c_reset" "$desc"
+        fi
+        i=$((i + 1))
+    done
+    echo
+}
+
+menu() {
+    discover
+    SELECTED=()
+    while true; do
+        printf '\n%s pve-toolbox %s%s\n' "$c_bold$c_blue" "$(hostname -s)" "$c_reset"
+        print_table
+        dim "  numbers toggle selection (e.g. '1 3'), then:"
+        printf '  %si%s install/reconfigure selected   %su%s update all installed\n' \
+            "$c_bold" "$c_reset" "$c_bold" "$c_reset"
+        printf '  %sc%s check for updates              %ss%s status of selected\n' \
+            "$c_bold" "$c_reset" "$c_bold" "$c_reset"
+        printf '  %sx%s uninstall selected             %sq%s quit\n\n' \
+            "$c_bold" "$c_reset" "$c_bold" "$c_reset"
+
+        local reply
+        read -r -p "> " reply || { echo; return 0; }
+        [[ -z $reply ]] && continue
+
+        case ${reply,,} in
+            q|quit|exit) return 0 ;;
+            i|install)
+                [[ ${#SELECTED[@]} -eq 0 ]] && { warn "nothing selected"; continue; }
+                local m; for m in "${SELECTED[@]}"; do
+                    step "Installing $(meta "$m" MODULE_TITLE)"
+                    run_module "$m" module_install || warn "$m did not complete"
+                done
+                SELECTED=() ;;
+            u|update)
+                local m; for m in "${MODULES[@]}"; do
+                    status_line "$m" | grep -q 'not installed' && continue
+                    step "Updating $(meta "$m" MODULE_TITLE)"
+                    run_module "$m" module_update || warn "$m update failed"
+                done ;;
+            c|check)
+                local m; for m in "${MODULES[@]}"; do
+                    status_line "$m" | grep -q 'not installed' && continue
+                    step "$(meta "$m" MODULE_TITLE)"
+                    run_module "$m" module_update --check || true
+                done ;;
+            s|status)
+                local list=() m
+                if [[ ${#SELECTED[@]} -gt 0 ]]; then list=("${SELECTED[@]}"); else list=("${MODULES[@]}"); fi
+                for m in "${list[@]}"; do
+                    step "$(meta "$m" MODULE_TITLE)"
+                    run_module "$m" module_status_long || true
+                done ;;
+            x|uninstall)
+                [[ ${#SELECTED[@]} -eq 0 ]] && { warn "nothing selected"; continue; }
+                warn "about to uninstall: ${SELECTED[*]}"
+                if confirm "are you sure?" "n"; then
+                    local m; for m in "${SELECTED[@]}"; do
+                        step "Removing $(meta "$m" MODULE_TITLE)"
+                        run_module "$m" module_uninstall || warn "$m removal failed"
+                    done
+                    SELECTED=()
+                fi ;;
+            *)
+                local tok idx m
+                for tok in $reply; do
+                    [[ $tok =~ ^[0-9]+$ ]] || { warn "not a number: $tok"; continue; }
+                    idx=$((tok - 1))
+                    [[ $idx -lt 0 || $idx -ge ${#MODULES[@]} ]] && { warn "out of range: $tok"; continue; }
+                    m=${MODULES[$idx]}
+                    if [[ " ${SELECTED[*]:-} " == *" $m "* ]]; then
+                        local keep=() k
+                        for k in "${SELECTED[@]}"; do [[ $k != "$m" ]] && keep+=("$k"); done
+                        SELECTED=("${keep[@]:-}")
+                        [[ -z ${SELECTED[0]:-} ]] && SELECTED=()
+                    else
+                        SELECTED+=("$m")
+                    fi
+                done ;;
+        esac
+    done
+}
+
+# --------------------------------------------------------------- commands --
+
+cmd_list() {
+    discover
+    local tag=${1:-} m
+    for m in "${MODULES[@]}"; do
+        [[ -n $tag && " $(meta "$m" MODULE_TAGS) " != *" $tag "* ]] && continue
+        printf '%s%-24s%s %s\n' "$c_bold" "$m" "$c_reset" "$(meta "$m" MODULE_DESC)"
+        printf '  %sstatus: %s | tags: %s%s\n' \
+            "$c_dim" "$(status_line "$m")" "$(meta "$m" MODULE_TAGS)" "$c_reset"
+    done
+}
+
+cmd_each() { # cmd_each <function> [--check] <modules...>
+    local fn=$1; shift
+    local extra=""
+    [[ ${1:-} == --check ]] && { extra=--check; shift; }
+    discover
+    local list=("$@") m
+    if [[ ${#list[@]} -eq 0 ]]; then
+        for m in "${MODULES[@]}"; do
+            status_line "$m" | grep -q 'not installed' && continue
+            list+=("$m")
+        done
+    fi
+    [[ ${#list[@]} -eq 0 ]] && { warn "no installed modules"; return 0; }
+    for m in "${list[@]}"; do
+        step "$(meta "$m" MODULE_TITLE)"
+        if [[ -n $extra ]]; then
+            run_module "$m" "$fn" "$extra" || warn "$m failed"
+        else
+            run_module "$m" "$fn" || warn "$m failed"
+        fi
+    done
+}
+
+cmd_link() {
+    require_root
+    ln -sfn "$TOOLBOX_ROOT/pve-toolbox" "$TOOLBOX_BIN_DIR/pve-toolbox"
+    ok "linked $TOOLBOX_BIN_DIR/pve-toolbox -> $TOOLBOX_ROOT/pve-toolbox"
+}
+
+cmd_self_update() {
+    [[ -d "$TOOLBOX_ROOT/.git" ]] || die "$TOOLBOX_ROOT is not a git checkout"
+    command -v git >/dev/null 2>&1 || die "git not installed"
+    info "pulling $TOOLBOX_ROOT"
+    git -C "$TOOLBOX_ROOT" pull --ff-only
+    ok "now at $(git -C "$TOOLBOX_ROOT" describe --always --dirty)"
+}
+
+usage() { sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; }
+
+# ------------------------------------------------------------------- main --
+
+ARGS=()
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -y|--yes)   ASSUME_YES=1 ;;
+        -f|--force) FORCE=1 ;;
+        -h|--help)  usage; exit 0 ;;
+        --)         shift; ARGS+=("$@"); break ;;
+        -*)         die "unknown flag: $1" ;;
+        *)          ARGS+=("$1") ;;
+    esac
+    shift
+done
+export ASSUME_YES FORCE TOOLBOX_ROOT
+
+case "${ARGS[0]:-menu}" in
+    menu)        menu ;;
+    list)        cmd_list "${ARGS[@]:1}" ;;
+    install)     [[ ${#ARGS[@]} -lt 2 ]] && die "install needs a module name"
+                 cmd_each module_install "${ARGS[@]:1}" ;;
+    update)      cmd_each module_update "${ARGS[@]:1}" ;;
+    check)       cmd_each module_update --check "${ARGS[@]:1}" ;;
+    status)      cmd_each module_status_long "${ARGS[@]:1}" ;;
+    uninstall)   [[ ${#ARGS[@]} -lt 2 ]] && die "uninstall needs a module name"
+                 cmd_each module_uninstall "${ARGS[@]:1}" ;;
+    link)        cmd_link ;;
+    self-update) cmd_self_update ;;
+    *)           die "unknown command: ${ARGS[0]} (try --help)" ;;
+esac
