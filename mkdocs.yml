@@ -1,0 +1,72 @@
+site_name: pve-toolbox
+site_description: Custom Proxmox VE host scripts behind one interactive launcher
+site_url: https://quwisky.github.io/pve-toolbox/
+repo_url: https://github.com/quwisky/pve-toolbox
+repo_name: quwisky/pve-toolbox
+edit_uri: edit/master/docs/
+copyright: MIT licensed
+
+theme:
+  name: material
+  icon:
+    repo: fontawesome/brands/github
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tracking
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - Modules:
+      - Overview: modules/index.md
+      - zfs-scrub: modules/zfs-scrub.md
+      - zfs-replication: modules/zfs-replication.md
+      - scrutiny-collectors: modules/scrutiny-collectors.md
+  - Writing a module: writing-a-module.md
+  - Reference:
+      - lib/common.sh: reference/common.md
+      - lib/discord.sh: reference/discord.md
