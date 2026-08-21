@@ -1,0 +1,6 @@
+*.bak.*
+*.prev
+.codegraph/
+site/
+.idea/
+.DS_Store
