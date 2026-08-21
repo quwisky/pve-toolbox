@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: shellcheck + smoke test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: |
+          command -v shellcheck >/dev/null || {
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends shellcheck
+          }
+          shellcheck --version
+
+      - run: make lint
+
+      - run: make test
+
+  debian:
+    name: smoke test on debian 13 (pve target)
+    runs-on: ubuntu-latest
+    container: debian:13
+    steps:
+      - name: Install build deps
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends make git ca-certificates
+
+      - uses: actions/checkout@v4
+
+      - run: make test
