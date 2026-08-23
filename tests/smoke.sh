@@ -61,24 +61,76 @@ complete_words() { # complete_words <cword> <word>... -> prints candidates
     printf '%s' "${COMPREPLY[*]:-}"
 }
 
+has()    { [[ " $1 " == *" $2 "* ]]; }
+has_not() { [[ " $1 " != *" $2 "* ]]; }
+
+# Commands, and every verb the launcher dispatches.
 got=$(complete_words 1 ./pve-toolbox "")
-[[ " $got " == *" install "* ]] || fail "no commands offered, got: $got"
+for verb in menu ui list install update check status uninstall link self-update; do
+    has "$got" "$verb" || fail "commands missing $verb, got: $got"
+done
+pass "bash offers every command"
+
+# compgen filters by prefix; the completion only supplies the candidates.
+got=$(complete_words 1 ./pve-toolbox "in")
+[[ $got == install ]] || fail "prefix in<TAB> should give install alone, got: $got"
+got=$(complete_words 1 ./pve-toolbox "self")
+[[ $got == self-update ]] || fail "prefix self<TAB> should give self-update, got: $got"
+pass "bash filters commands by prefix"
 
 got=$(complete_words 2 ./pve-toolbox install "")
-[[ " $got " == *" zfs-scrub "* ]] || fail "no modules offered, got: $got"
+has "$got" zfs-scrub || fail "no modules offered for install, got: $got"
+got=$(complete_words 2 ./pve-toolbox install "zfs-")
+has "$got" zfs-scrub       || fail "prefix zfs-<TAB> dropped zfs-scrub, got: $got"
+has "$got" zfs-replication || fail "prefix zfs-<TAB> dropped zfs-replication, got: $got"
+has_not "$got" scrutiny-collectors || fail "prefix zfs-<TAB> kept a non-match, got: $got"
+pass "bash offers modules, filtered by prefix"
 
-# A module already on the line must not be offered again.
+# A module already on the line is not offered a second time.
 got=$(complete_words 3 ./pve-toolbox install zfs-scrub "")
-[[ " $got " != *" zfs-scrub "* ]] || fail "re-offered a module already given"
+has_not "$got" zfs-scrub       || fail "re-offered a module already given, got: $got"
+has "$got" zfs-replication     || fail "dropped the modules still available, got: $got"
+pass "bash drops what is already on the line"
+
+# update, check and status take module names too.
+for verb in update check status; do
+    got=$(complete_words 2 ./pve-toolbox "$verb" "")
+    has "$got" zfs-scrub || fail "$verb offered no modules, got: $got"
+done
+pass "bash offers modules for update, check and status"
+
+# uninstall offers only what is installed, which in a checkout is nothing.
+got=$(complete_words 2 ./pve-toolbox uninstall "")
+[[ -z $got ]] || fail "uninstall offered a module in a bare checkout, got: $got"
+pass "bash offers only installed modules for uninstall"
+
+# list takes a single tag, gathered from every module's MODULE_TAGS.
+got=$(complete_words 2 ./pve-toolbox list "")
+has "$got" storage || fail "list offered no tags, got: $got"
+has "$got" zfs     || fail "list dropped a tag, got: $got"
+got=$(complete_words 3 ./pve-toolbox list storage "")
+[[ -z $got ]] || fail "list takes one tag, got: $got"
+pass "bash offers tags for list, once"
 
 # Flags are accepted anywhere, so the command is the first non-flag word.
 got=$(complete_words 3 ./pve-toolbox -y install "")
-[[ " $got " == *" zfs-scrub "* ]] || fail "flag before command broke it, got: $got"
+has "$got" zfs-scrub || fail "a flag before the command broke it, got: $got"
+pass "bash finds the command past a flag"
 
-got=$(complete_words 2 ./pve-toolbox link "")
-[[ -z $got ]] || fail "link takes no arguments, got: $got"
+got=$(complete_words 1 ./pve-toolbox "-")
+for flag in -y --yes -f --force -h --help; do
+    has "$got" "$flag" || fail "flags missing $flag, got: $got"
+done
+got=$(complete_words 1 ./pve-toolbox "--f")
+[[ $got == --force ]] || fail "prefix --f<TAB> should give --force, got: $got"
+pass "bash offers flags"
 
-pass "bash completion"
+# menu, ui, link and self-update take nothing, and neither does a typo.
+for verb in menu ui link self-update definitely-not-a-command; do
+    got=$(complete_words 2 ./pve-toolbox "$verb" "")
+    [[ -z $got ]] || fail "$verb should offer nothing, got: $got"
+done
+pass "bash offers nothing where nothing is taken"
 
 # --- usage -------------------------------------------------------------------
 

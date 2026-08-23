@@ -5,7 +5,10 @@
 # completions/_pve-toolbox is the only shipped file nothing else covers. It is
 # zsh, so neither `bash -n` nor the linter can read it, and the bash completion
 # tests in smoke.sh say nothing about it. The two are meant to offer the same
-# candidates, so the cases here mirror those.
+# candidates, so the cases here mirror those - except prefix filtering, which
+# zsh does itself rather than the script, and flags, which go through _values
+# rather than compadd. Both are covered on the bash side, where compgen and
+# COMPREPLY make them observable.
 #
 # Needs zsh, and skips without it. CI sets ZSH_TEST_REQUIRED=1 where zsh is
 # installed, so a missing dependency there fails rather than passing quietly.
@@ -46,10 +49,13 @@ offers() {
     _pve-toolbox || print -r -- ""
 }
 
+has() { [[ " $1 " == *" $2 "* ]] }
+
 got=$(offers 2 ./pve-toolbox "")
-[[ $got == *" install "* || $got == install* ]] || fail "no commands offered: $got"
-[[ $got == *ui* ]] || fail "ui missing from the commands: $got"
-print "ok  zsh offers commands"
+for verb in menu ui list install update check status uninstall link self-update; do
+    has $got $verb || fail "commands missing $verb: $got"
+done
+print "ok  zsh offers every command"
 
 got=$(offers 3 ./pve-toolbox install "")
 [[ $got == *zfs-scrub* ]] || fail "no modules offered for install: $got"
@@ -60,8 +66,18 @@ got=$(offers 4 ./pve-toolbox install zfs-scrub "")
 [[ $got == *zfs-replication* ]] || fail "dropped the modules still available: $got"
 print "ok  zsh drops what is already on the line"
 
+for verb in update check status; do
+    got=$(offers 3 ./pve-toolbox $verb "")
+    has $got zfs-scrub || fail "$verb offered no modules: $got"
+done
+print "ok  zsh offers modules for update, check and status"
+
+got=$(offers 3 ./pve-toolbox uninstall "")
+[[ -z $got ]] || fail "uninstall offered a module in a bare checkout: $got"
+print "ok  zsh offers only installed modules for uninstall"
+
 got=$(offers 3 ./pve-toolbox list "")
-[[ $got == *storage* ]] || fail "no tags offered for list: $got"
+has $got storage || fail "no tags offered for list: $got"
 print "ok  zsh offers tags after list"
 
 got=$(offers 4 ./pve-toolbox list storage "")
@@ -73,7 +89,7 @@ got=$(offers 4 ./pve-toolbox -y install "")
 [[ $got == *zfs-scrub* ]] || fail "a flag before the command broke it: $got"
 print "ok  zsh finds the command past a flag"
 
-for verb in ui link self-update; do
+for verb in menu ui link self-update definitely-not-a-command; do
     got=$(offers 3 ./pve-toolbox $verb "")
     [[ -z $got ]] || fail "$verb takes no arguments, got: $got"
 done
