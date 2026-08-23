@@ -32,12 +32,11 @@ Either can be turned off, but not both. They share one capture: the tree is
 collected, classified, scanned and hashed once, and only then handed to
 whichever backends are enabled.
 
-!!! warning "Restore is same-node only"
+!!! warning "A cross-node restore has to be asked for explicitly"
 
-    Restoring onto a *different* node — with identity remapping, storage and
-    bridge translation, and the auto-exclusions that implies — is a later
-    release. A source whose recorded node does not match this host is blocked
-    outright rather than guessed at.
+    A source whose recorded node does not match this host is blocked until you
+    say `--target-node` and pick a mode. Nothing is inferred, because the two
+    modes have opposite consequences.
 
 ## What is captured
 
@@ -301,6 +300,73 @@ restore leaves evidence rather than looking like it never happened.
     `storage.cfg` is not reconciled against the live LVM or ZFS backends, and
     `fstab` UUIDs are not checked against `blkid` — a stale UUID surfaces at the
     next boot. Read the `diff` before you `--confirm`.
+
+## Restoring onto a different node
+
+Between extracting the source and planning the restore, a **transform layer**
+rewrites the staged tree to describe the target instead of the source, and
+prints a full report before anything is written.
+
+```bash
+# the source node is gone; keep its identities
+pve-config-backup restore latest --target-node pve2 \
+    --mode dr --source-node-gone --confirm
+
+# the source node is alive; everything must be regenerated
+pve-config-backup restore latest --target-node pve2 \
+    --mode clone --vmid-offset 1000 --regenerate-macs \
+    --map-storage local=nas --map-bridge vmbr0=vmbr9 --confirm
+```
+
+| Transform | What moves |
+| --- | --- |
+| node path | `nodes/<src>/` → `nodes/<tgt>/`, and `<src>` inside `storage.cfg`'s `nodes` list |
+| `--map-storage A=B` | anchored on the field (`^key: A:`), so mapping `local` leaves `local-lvm` and `my-local` alone |
+| `--map-bridge A=B` | `bridge=A` in a `netN:` line; the model, MAC, tag and firewall options survive byte for byte |
+| `--vmid-offset N`, `--map-vmid A=B` | the filename and the `vm-<id>-`, `subvol-<id>-` and `<id>/` tokens — never a bare number, which would rewrite `memory: 100` and `tag=100` |
+| `--regenerate-macs` | the MAC, which is the *value* of the model key (`net0: virtio=<mac>,…`), not a `macaddr=` field |
+
+Covers qemu (`scsiN`, `ideN`, `virtioN`, `sataN`, `efidiskN`, `tpmstateN`,
+`unusedN`, `vmstate`) and LXC (`rootfs`, `mpN`), and reaches inside `[snapshot]`
+and `[PENDING]` sections, which carry their own copies of every disk line.
+
+### What it refuses to do
+
+Refusing beats a transform that is right most of the time.
+
+- **`--target-node` must name this host.** A cross-node restore still writes
+  host-level files — `sshd_config`, `cron.d`, custom units — through *this*
+  machine's filesystem, and records its rollback point in *this* machine's
+  state. Naming a different node would put both on the wrong box. SSH to the
+  target and run it there.
+- **Cluster-shared files are blocked, and `--force` does not lift it.**
+  `storage.cfg`, `datacenter.cfg`, `user.cfg`, `jobs.cfg`, `firewall/`, `sdn/`
+  and `ha/` are one file for the whole cluster. A restore installs a whole
+  file, so restoring another node's copy would delete every entry this cluster
+  has that the source lacked — instantly, on every node. Doing it correctly
+  needs per-entry merge semantics this tool does not have.
+- **A VMID-remapped guest is `degraded`, never `restorable`.** The config is
+  rewritten; the volumes are not, because nothing here touches storage. A guest
+  renamed 100 → 1100 refers to `vm-1100-disk-0` while the volume is still
+  called `vm-100-disk-0`. Move the volumes first; the report names them.
+- **`--mode dr` requires `--source-node-gone`.** DR mode deliberately reuses
+  the source's VMIDs, MACs and IPs. This tool cannot tell a dead node from a
+  partitioned one, and guessing wrong puts a second guest with a duplicate
+  identity on the same network, possibly writing to the same shared storage.
+
+### Dropped automatically
+
+Whatever the flags say, because they describe hardware or identity that did not
+move: `interfaces` and `interfaces.d/` (NIC naming), `fstab` and `crypttab`
+(UUIDs), `modprobe.d/`, `modules-load.d/`, GRUB and the kernel command line
+(PCI addresses), `hostname`, `hosts`, and SSH host keys.
+
+A guest with any `hostpci*` line is **blocked** — the PCI address it names is a
+fact about the source machine.
+
+A VMID already live on *another* node is a collision and blocks that guest. One
+found under the source node's own directory is not: a dead node's tree survives
+in pmxcfs, and reusing that VMID is exactly what DR mode is for.
 
 ## Retention
 

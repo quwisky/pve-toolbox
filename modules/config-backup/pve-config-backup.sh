@@ -24,6 +24,13 @@
 #         Restore onto this host. Dry run unless --confirm. A full snapshot is
 #         taken first, and rollback replays it.
 #
+#         From another node's archive, say so and pick a mode:
+#           --target-node <this host>  --mode dr --source-node-gone
+#           --target-node <this host>  --mode clone --vmid-offset 100
+#         and optionally --map-storage A=B, --map-bridge A=B, --map-vmid A=B,
+#         --regenerate-macs. The transform report is printed before anything
+#         is written.
+#
 #   pve-config-backup rollback [--confirm]
 #         Undo the last restore. Dry run unless --confirm.
 #
@@ -914,6 +921,18 @@ CB_SELECTOR=""
 
 _cb_restore_log() { printf '%s/restore.log' "$CB_ARCHIVE_DIR"; }
 
+# Drop everything the selector does not name, so the transform and everything
+# after it only ever sees the selection.
+_cb_prune_to_selector() {
+    [[ -n $CB_SELECTOR ]] || return 0
+    local rel
+    while IFS= read -r rel; do
+        rel=${rel#./}
+        _cb_selected "$rel" || rm -f "$CB_SRC_DIR/$rel"
+    done < <(cd "$CB_SRC_DIR" && find . -type f | LC_ALL=C sort)
+    return 0
+}
+
 # Unpack a source into a directory and verify it. Accepts an absolute path, a
 # name inside CB_ARCHIVE_DIR, `latest`, or a git ref when the git backend is on.
 _cb_source_prepare() { # _cb_source_prepare <source>
@@ -1009,9 +1028,9 @@ _cb_restore_preflight() { # _cb_restore_preflight <plan>
         hard=1
     fi
 
-    if [[ -n $CB_SRC_NODE && $CB_SRC_NODE != "$HOST_SHORT" ]]; then
+    if [[ -z $CB_TARGET_NODE && -n $CB_SRC_NODE && $CB_SRC_NODE != "$HOST_SHORT" ]]; then
         log "  BLOCK  this archive is from node '$CB_SRC_NODE', this host is '$HOST_SHORT'"
-        log "         restoring onto a different node needs --target-node (not in this release)"
+        log "         say so explicitly: --target-node $HOST_SHORT [--mode dr|clone]"
         hard=1
     fi
 
@@ -1186,6 +1205,16 @@ _cb_restore() { # _cb_restore <source> [selector]
     CB_SELECTOR=${2:-}
     _cb_source_prepare "$1"
 
+    # The selector is applied to the tree as the archive holds it, before the
+    # transform renames anything, so scoping by the VMID you can see in
+    # `inspect` selects what you meant rather than nothing at all.
+    if [[ -n $CB_TARGET_NODE ]]; then
+        _cb_prune_to_selector
+        CB_SELECTOR=""
+        _cb_transform
+        _cb_show_transform
+    fi
+
     local plan; plan=$(mktemp)
     _cb_restore_plan "$plan"
     _cb_restore_preflight "$plan"
@@ -1335,6 +1364,253 @@ _cb_diff() { # _cb_diff <source> [selector]
     done < "$plan" | LC_ALL=C sort -k1,1
     printf '\n  ~ differs   + only in the source   ! not restorable\n'
     rm -f "$plan"
+    return 0
+}
+
+# ------------------------------------------------------ cross-node --
+#
+# Rewrites the staged tree so it describes the target node rather than the
+# source, between extraction and planning, so everything downstream keeps
+# reading one shape.
+#
+# The rules below were written against real qemu-server and lxc syntax rather
+# than from memory, because three plausible-looking guesses are wrong:
+#   - a net line carries no macaddr= key; the MAC is the value of the model
+#     key, `net0: virtio=AA:BB:CC:11:22:33,bridge=vmbr0`
+#   - storage.cfg's `nodes` field lists node names, not storage names
+#   - substituting a bare vmid destroys `memory: 100` and `tag=100`
+#
+# What it refuses to do matters as much as what it does. See _cb_xn_guard.
+
+CB_TARGET_NODE=""
+CB_XN_MODE="dr"
+CB_XN_SOURCE_GONE=0
+CB_XN_VMID_OFFSET=0
+CB_XN_REGEN_MACS=0
+CB_XN_REPORT=""
+declare -A CB_MAP_STORAGE=()
+declare -A CB_MAP_BRIDGE=()
+declare -A CB_MAP_VMID=()
+
+# Shared by the whole cluster the instant pmxcfs accepts the write. Restoring
+# one from another node's archive would delete every entry the target has that
+# the source lacked, because a restore installs a whole file. Doing this right
+# needs per-entry merge semantics this tool does not have, so it says no.
+CB_CLUSTER_WIDE=(
+    "pve/storage.cfg" "pve/datacenter.cfg" "pve/user.cfg" "pve/jobs.cfg"
+    "pve/firewall/*" "pve/sdn/*" "pve/ha/*"
+)
+
+_cb_is_cluster_wide() { # _cb_is_cluster_wide <relpath>
+    local g
+    for g in "${CB_CLUSTER_WIDE[@]}"; do
+        # shellcheck disable=SC2053
+        [[ $1 == $g ]] && return 0
+    done
+    return 1
+}
+
+# Hardware and identity that did not move with the configuration. Dropped on a
+# cross-node restore whatever the flags say.
+CB_XN_EXCLUDE=(
+    "host/etc/network/*:NIC naming differs between machines"
+    "host/etc/fstab:filesystem UUIDs are per-machine"
+    "host/etc/crypttab:filesystem UUIDs are per-machine"
+    "host/etc/modprobe.d/*:PCI addresses are per-machine"
+    "host/etc/modules-load.d/*:PCI addresses are per-machine"
+    "host/etc/modules:PCI addresses are per-machine"
+    "host/etc/default/grub*:the kernel command line names per-machine devices"
+    "host/etc/kernel/*:the kernel command line names per-machine devices"
+    "host/etc/hostname:node identity"
+    "host/etc/hosts:node identity"
+    "host/etc/ssh/ssh_host_*:host keys are per-machine"
+)
+
+_cb_xn_excluded() { # _cb_xn_excluded <relpath> -> prints the reason
+    local e g why
+    for e in "${CB_XN_EXCLUDE[@]}"; do
+        g=${e%%:*}; why=${e#*:}
+        # shellcheck disable=SC2053
+        [[ $1 == $g ]] && { printf '%s' "$why"; return 0; }
+    done
+    return 1
+}
+
+_cb_xn_note() { printf '%s\n' "$*" >> "$CB_XN_REPORT"; }
+
+# Refusals, stated up front rather than discovered half way through.
+_cb_xn_guard() {
+    [[ $CB_TARGET_NODE == "$HOST_SHORT" ]] \
+        || fail "--target-node must name this host ($HOST_SHORT). Writing another node's host files through a shared /etc/pve would hit the wrong machine, and the rollback point would be recorded on the wrong machine too - ssh to the target and run it there."
+
+    case $CB_XN_MODE in
+        dr)
+            [[ $CB_XN_SOURCE_GONE -eq 1 ]] \
+                || fail "--mode dr reuses the source node's VMIDs, MACs and IPs. This tool cannot tell a dead node from a partitioned one, and getting it wrong puts a second guest with a duplicate identity on the network. Pass --source-node-gone to state that it is really gone."
+            ;;
+        clone)
+            [[ $CB_XN_VMID_OFFSET -ne 0 || ${#CB_MAP_VMID[@]} -gt 0 ]] \
+                || fail "--mode clone needs --vmid-offset or --map-vmid: the source node is alive and its VMIDs are taken"
+            ;;
+        *) fail "--mode must be dr or clone" ;;
+    esac
+    return 0
+}
+
+_cb_rand_mac() {
+    # Locally administered, unicast: second nibble 2.
+    printf 'BC:24:11:%02X:%02X:%02X' \
+        $((RANDOM % 256)) $((RANDOM % 256)) $((RANDOM % 256))
+}
+
+_cb_new_vmid() { # _cb_new_vmid <old>
+    if [[ -n ${CB_MAP_VMID[$1]:-} ]]; then printf '%s' "${CB_MAP_VMID[$1]}"; return 0; fi
+    if [[ $CB_XN_VMID_OFFSET -ne 0 ]]; then printf '%s' $(( $1 + CB_XN_VMID_OFFSET )); return 0; fi
+    printf '%s' "$1"
+}
+
+# A VMID lives under some other, live node. A hit under the source node's own
+# directory is not a collision: a dead node's tree survives in pmxcfs, and
+# reusing that VMID is exactly what dr mode is for.
+_cb_vmid_taken() { # _cb_vmid_taken <vmid> <source-node>
+    local f node
+    for f in "$CB_PVE_DIR"/nodes/*/qemu-server/"$1".conf "$CB_PVE_DIR"/nodes/*/lxc/"$1".conf; do
+        [[ -f $f ]] || continue
+        node=${f#"$CB_PVE_DIR"/nodes/}; node=${node%%/*}
+        [[ $node == "$2" ]] && continue
+        printf '%s' "$node"
+        return 0
+    done
+    return 1
+}
+
+# Rewrites one guest config in place. Every substitution is anchored on the
+# field it belongs to, and reaches inside [snapshot] and [PENDING] sections,
+# which carry their own copies of every disk line.
+_cb_xn_guest() { # _cb_xn_guest <file> <old-vmid> <new-vmid>
+    local f=$1 old=$2 new=$3 key from to
+    local tmp; tmp=$(mktemp)
+
+    for key in "${!CB_MAP_STORAGE[@]}"; do
+        from=$key; to=${CB_MAP_STORAGE[$key]}
+        # ^<key>: <storage>: - never a bare or \b match, which would rewrite
+        # `my-local` when mapping `local`, since - is a word boundary.
+        sed -E -i "s|^([a-z0-9_]+: )${from}:|\1${to}:|" "$f"
+        _cb_xn_note "  storage   $from -> $to   $(basename "$f")"
+    done
+
+    for key in "${!CB_MAP_BRIDGE[@]}"; do
+        from=$key; to=${CB_MAP_BRIDGE[$key]}
+        # A # delimiter, because the alternation below contains a pipe and a
+        # | delimiter made sed reject the expression - which failed silently
+        # for every mid-line bridge= and only ever rewrote end-of-line ones.
+        # The (,|$) anchor is what stops vmbr0 matching vmbr01.
+        sed -E -i "s#^(net[0-9]+:.*)bridge=${from}(,|\$)#\1bridge=${to}\2#" "$f"
+        _cb_xn_note "  bridge    $from -> $to   $(basename "$f")"
+    done
+
+    if [[ $CB_XN_REGEN_MACS -eq 1 ]]; then
+        # The MAC is the value of the model key. Everything after it - bridge,
+        # tag, firewall, mtu - is preserved byte for byte.
+        while IFS= read -r line; do
+            printf '%s\n' "$line"
+        done < "$f" > "$tmp"
+        : > "$f"
+        while IFS= read -r line; do
+            if [[ $line =~ ^(net[0-9]+:[[:space:]]*[a-z0-9]+=)([0-9A-Fa-f:]{17})(.*)$ ]]; then
+                printf '%s%s%s\n' "${BASH_REMATCH[1]}" "$(_cb_rand_mac)" "${BASH_REMATCH[3]}"
+            else
+                printf '%s\n' "$line"
+            fi
+        done < "$tmp" >> "$f"
+        _cb_xn_note "  macs      regenerated   $(basename "$f")"
+    fi
+
+    if [[ $old != "$new" ]]; then
+        # Only the volume tokens. A bare numeric substitution would rewrite
+        # `memory: 100` and `tag=100` as well.
+        sed -E -i "s|vm-${old}-|vm-${new}-|g; s|subvol-${old}-|subvol-${new}-|g; s|(:[[:space:]]*[A-Za-z0-9_.-]+:)${old}/|\1${new}/|g" "$f"
+        _cb_xn_note "  vmid      $old -> $new   volumes must be moved separately"
+    fi
+    rm -f "$tmp"
+    return 0
+}
+
+_cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
+    CB_XN_REPORT=$(mktemp)
+    _cb_xn_guard
+
+    local src=${CB_SRC_NODE:-unknown}
+    _cb_xn_note "Transform report"
+    _cb_xn_note "  mode      $CB_XN_MODE"
+    _cb_xn_note "  node      $src -> $CB_TARGET_NODE"
+    _cb_xn_note ""
+
+    # Auto-exclusions first, so nothing below can resurrect them.
+    local rel why
+    while IFS= read -r rel; do
+        rel=${rel#./}
+        if why=$(_cb_xn_excluded "$rel"); then
+            rm -f "$CB_SRC_DIR/$rel"
+            _cb_xn_note "  excluded  $rel   ($why)"
+        elif _cb_is_cluster_wide "$rel"; then
+            rm -f "$CB_SRC_DIR/$rel"
+            _cb_xn_note "  blocked   $rel   (shared by the cluster; restoring it would delete entries this cluster has and the source did not)"
+        fi
+    done < <(cd "$CB_SRC_DIR" && find . -type f | LC_ALL=C sort)
+    _cb_xn_note ""
+
+    # nodes/<src>/ -> nodes/<tgt>/, resolving the real path rather than the
+    # qemu-server symlink, which the collector already skips.
+    if [[ -d $CB_SRC_DIR/pve/nodes/$src && $src != "$CB_TARGET_NODE" ]]; then
+        mkdir -p "$CB_SRC_DIR/pve/nodes/$CB_TARGET_NODE"
+        cp -a "$CB_SRC_DIR/pve/nodes/$src/." "$CB_SRC_DIR/pve/nodes/$CB_TARGET_NODE/"
+        rm -rf "${CB_SRC_DIR:?}/pve/nodes/$src"
+        _cb_xn_note "  moved     nodes/$src/ -> nodes/$CB_TARGET_NODE/"
+    fi
+
+    # Guests: rename, rewrite, classify.
+    local f base old new taken hostpci
+    _cb_xn_note ""
+    _cb_xn_note "Guests"
+    while IFS= read -r f; do
+        base=$(basename "$f" .conf)
+        [[ $base =~ ^[0-9]+$ ]] || continue
+        old=$base; new=$(_cb_new_vmid "$old")
+
+        hostpci=0
+        grep -qE '^hostpci[0-9]+:' "$f" && hostpci=1
+
+        if [[ $hostpci -eq 1 ]]; then
+            _cb_xn_note "  $old  BLOCKED    hostpci names a PCI address on the source machine"
+            rm -f "$f"
+            continue
+        fi
+        if taken=$(_cb_vmid_taken "$new" "$src"); then
+            _cb_xn_note "  $old  BLOCKED    VMID $new is already live on node $taken"
+            rm -f "$f"
+            continue
+        fi
+
+        _cb_xn_guest "$f" "$old" "$new"
+
+        if [[ $old != "$new" ]]; then
+            mv -f "$f" "$(dirname "$f")/$new.conf"
+            # Nothing here moves storage volumes, so the config now names
+            # volumes that do not exist under that name yet.
+            _cb_xn_note "  $old  DEGRADED   -> $new, but its volumes are still named vm-$old-*"
+        else
+            _cb_xn_note "  $old  restorable"
+        fi
+    done < <(find "$CB_SRC_DIR/pve" -path '*/qemu-server/*.conf' -o -path '*/lxc/*.conf' 2>/dev/null | LC_ALL=C sort)
+    return 0
+}
+
+_cb_show_transform() {
+    [[ -s ${CB_XN_REPORT:-} ]] || return 0
+    printf '\n'
+    cat "$CB_XN_REPORT"
+    printf '\n'
     return 0
 }
 
@@ -1551,6 +1827,12 @@ _cb_list() {
 
 # ----------------------------------------------------------------- main --
 
+_cb_add_map() { # _cb_add_map <arrayname> <A=B>
+    [[ ${2:-} == *=* ]] || { printf 'error: expected A=B, got: %s\n' "${2:-}" >&2; exit 2; }
+    local -n _m=$1
+    _m["${2%%=*}"]="${2#*=}"
+}
+
 _cb_read_conf() {
     if [[ -r $CB_CONF ]]; then
         # shellcheck source=/dev/null
@@ -1607,6 +1889,19 @@ main() {
                     run|restore) CB_FORCE=1 ;;
                     *) printf 'error: --force does not apply to %s\n' "$mode" >&2; exit 2 ;;
                 esac ;;
+            --target-node)
+                [[ $mode == restore ]] || { printf 'error: --target-node only applies to restore\n' >&2; exit 2; }
+                shift; CB_TARGET_NODE=${1:-} ;;
+            --mode)
+                shift; CB_XN_MODE=${1:-} ;;
+            --source-node-gone) CB_XN_SOURCE_GONE=1 ;;
+            --regenerate-macs)  CB_XN_REGEN_MACS=1 ;;
+            --vmid-offset)
+                shift; CB_XN_VMID_OFFSET=${1:-0}
+                [[ $CB_XN_VMID_OFFSET =~ ^-?[0-9]+$ ]] || { printf 'error: --vmid-offset takes a number\n' >&2; exit 2; } ;;
+            --map-storage) shift; _cb_add_map CB_MAP_STORAGE "${1:-}" ;;
+            --map-bridge)  shift; _cb_add_map CB_MAP_BRIDGE  "${1:-}" ;;
+            --map-vmid)    shift; _cb_add_map CB_MAP_VMID    "${1:-}" ;;
             -*) printf 'error: unknown flag: %s\n' "$1" >&2; exit 2 ;;
             *)  operands+=("$1") ;;
         esac

@@ -542,3 +542,135 @@ sleep 0.3
 kill "$holder" 2>/dev/null || true
 wait "$holder" 2>/dev/null || true
 pass "the lock is exclusive"
+
+# --- 9. cross-node transform ----------------------------------------------
+
+# A pmxcfs-shaped fixture: the real collector never produces the flat
+# pve/qemu-server layout, because those are symlinks into nodes/<local>/.
+xn_fixture() { # xn_fixture -> sets XSRC to a fresh staged tree
+    XSRC=$(mktemp -d "$WORK/xnXXXXXX")
+    mkdir -p "$XSRC/pve/nodes/pve1/qemu-server" "$XSRC/pve/nodes/pve1/lxc" \
+             "$XSRC/meta" "$XSRC/host/etc/network"
+    cat > "$XSRC/pve/nodes/pve1/qemu-server/100.conf" <<'CONF'
+cores: 4
+memory: 100
+name: web01
+net0: virtio=AA:BB:CC:11:22:33,bridge=vmbr0,firewall=1,tag=100
+scsi0: local-lvm:vm-100-disk-0,size=32G
+scsi1: local:100/vm-100-disk-1.qcow2,size=100G
+efidisk0: local-lvm:vm-100-disk-2,efitype=4m,size=1M
+unused0: local-lvm:vm-100-disk-9
+vmstate: local-lvm:vm-100-state-snap
+
+[snap]
+memory: 100
+net0: virtio=AA:BB:CC:11:22:33,bridge=vmbr0
+scsi0: local-lvm:vm-100-disk-0,size=32G
+CONF
+    cat > "$XSRC/pve/nodes/pve1/lxc/200.conf" <<'CONF'
+arch: amd64
+rootfs: local-lvm:subvol-200-disk-0,size=8G
+mp0: local:200/vm-200-disk-1.raw,mp=/data
+net0: veth=AA:BB:CC:00:11:22,bridge=vmbr0,name=eth0
+CONF
+    printf 'name: gpu\nhostpci0: 0000:01:00.0,pcie=1\n' > "$XSRC/pve/nodes/pve1/qemu-server/300.conf"
+    printf 'dir: local\n\tnodes pve1,pve2\n' > "$XSRC/pve/storage.cfg"
+    printf 'auto vmbr0\n' > "$XSRC/host/etc/network/interfaces"
+    printf 'node=pve1\n' > "$XSRC/meta/capture.txt"
+}
+
+XLIVE=$(mktemp -d "$WORK/xliveXXXXXX"); mkdir -p "$XLIVE/pve/nodes/pve2"
+# HOST_SHORT is what the guard compares --target-node against, so the fixture
+# has to pretend to be pve2 rather than whatever machine runs the tests.
+xn_run() {
+    CB_SRC_DIR=$XSRC CB_SRC_NODE=pve1 CB_PVE_DIR="$XLIVE/pve" HOST_SHORT=pve2 \
+    _cb_transform >/dev/null 2>&1
+}
+
+# --target-node has to name this host. Writing another node's sshd_config or
+# cron.d through a shared /etc/pve would land on the wrong machine, and the
+# rollback point would be recorded on the wrong machine too.
+xn_fixture
+( CB_TARGET_NODE=somewhere-else CB_XN_MODE=dr CB_XN_SOURCE_GONE=1
+  CB_SRC_DIR=$XSRC CB_SRC_NODE=pve1 CB_PVE_DIR="$XLIVE/pve" HOST_SHORT=pve2
+  _cb_transform ) >/dev/null 2>&1 && fail "--target-node accepted a node that is not this host"
+pass "cross-node writes only to this host"
+
+# dr mode reuses the source's identities, and the tool cannot tell a dead node
+# from a partitioned one.
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=0
+  CB_SRC_DIR=$XSRC CB_SRC_NODE=pve1 CB_PVE_DIR="$XLIVE/pve" HOST_SHORT=pve2
+  _cb_transform ) >/dev/null 2>&1 && fail "dr mode ran without acknowledging the source is gone"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=clone CB_XN_VMID_OFFSET=0
+  CB_SRC_DIR=$XSRC CB_SRC_NODE=pve1 CB_PVE_DIR="$XLIVE/pve" HOST_SHORT=pve2
+  _cb_transform ) >/dev/null 2>&1 && fail "clone mode ran without a VMID remap"
+pass "the modes demand what they need"
+
+# The whole transform, with every mapping on.
+xn_fixture
+( CB_TARGET_NODE=pve2 CB_XN_MODE=clone CB_XN_VMID_OFFSET=1000 CB_XN_REGEN_MACS=1
+  CB_MAP_STORAGE=([local]=nas) CB_MAP_BRIDGE=([vmbr0]=vmbr9)
+  xn_run )
+Q="$XSRC/pve/nodes/pve2/qemu-server/1100.conf"
+L="$XSRC/pve/nodes/pve2/lxc/1200.conf"
+[[ -f $Q ]] || fail "the qemu config was not moved to the target node and renamed"
+[[ -f $L ]] || fail "the lxc config was not moved to the target node and renamed"
+[[ -d $XSRC/pve/nodes/pve1 ]] && fail "the source node directory survived"
+pass "node path and VMID rename"
+
+# A bare numeric substitution would have destroyed both of these.
+grep -q '^memory: 100$' "$Q" || fail "memory: 100 was rewritten by the VMID remap"
+grep -q 'tag=100' "$Q"      || fail "the VLAN tag 100 was rewritten by the VMID remap"
+# Every volume-bearing key, including the ones that are easy to forget.
+grep -q 'vm-1100-disk-0' "$Q"      || fail "scsi0 volume not rewritten"
+grep -q 'nas:1100/vm-1100-disk-1' "$Q" || fail "the vmid in the directory prefix was not rewritten"
+grep -q 'efidisk0: local-lvm:vm-1100-disk-2' "$Q" || fail "efidisk not rewritten"
+grep -q 'unused0: local-lvm:vm-1100-disk-9'  "$Q" || fail "unused disk not rewritten"
+grep -q 'vmstate: local-lvm:vm-1100-state'   "$Q" || fail "vmstate not rewritten"
+grep -q 'subvol-1200-disk-0' "$L"  || fail "the lxc rootfs subvol was not rewritten"
+grep -q 'nas:1200/vm-1200-disk-1' "$L" || fail "the lxc mount point was not rewritten"
+# The snapshot stanza carries its own copy of every disk line.
+awk '/^\[snap\]/{s=1} s' "$Q" | grep -q 'vm-1100-disk-0' \
+    || fail "the snapshot section was not rewritten"
+pass "volume tokens only"
+
+# Anchored on the field, so a storage whose name merely contains the mapped one
+# is left alone.
+grep -q '^scsi0: local-lvm:' "$Q" || fail "local-lvm was clobbered by the 'local' mapping"
+grep -q '^scsi1: nas:'       "$Q" || fail "the 'local' storage was not mapped"
+pass "storage mapping is anchored"
+
+# The MAC is the value of the model key; everything after it survives.
+grep -qE '^net0: virtio=BC:24:11:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2},bridge=vmbr9,firewall=1,tag=100$' "$Q" \
+    || fail "the regenerated net0 line lost its model or its options: $(grep '^net0:' "$Q")"
+grep -qE '^net0: veth=BC:24:11:' "$L" || fail "the lxc MAC was not regenerated"
+pass "MAC regeneration keeps the rest of the line"
+
+# Hardware and identity that did not move with the config.
+[[ -e $XSRC/host/etc/network/interfaces ]] && fail "interfaces survived a cross-node restore"
+# Shared by the whole cluster: installing the source's copy would delete every
+# entry this cluster has that the source lacked.
+[[ -e $XSRC/pve/storage.cfg ]] && fail "storage.cfg was not blocked on a cross-node restore"
+pass "auto-exclusions and cluster-wide blocks"
+
+# hostpci names a PCI address on the source machine.
+[[ -e $XSRC/pve/nodes/pve2/qemu-server/1300.conf ]] && fail "a hostpci guest was not blocked"
+pass "hostpci guests are blocked"
+
+# A VMID already live on another node is a collision; one under the source
+# node's own tree is not, because a dead node's tree survives and dr mode
+# exists to reuse exactly that VMID.
+xn_fixture
+mkdir -p "$XLIVE/pve/nodes/pve3/qemu-server"
+printf 'name: existing\n' > "$XLIVE/pve/nodes/pve3/qemu-server/100.conf"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run )
+[[ -e $XSRC/pve/nodes/pve2/qemu-server/100.conf ]] \
+    && fail "a VMID live on another node was not treated as a collision"
+mkdir -p "$XLIVE/pve/nodes/pve1/qemu-server"
+printf 'name: stale\n' > "$XLIVE/pve/nodes/pve1/qemu-server/200.conf"
+xn_fixture
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run )
+[[ -e $XSRC/pve/nodes/pve2/lxc/200.conf ]] \
+    || fail "a stale entry under the dead source node was treated as a collision"
+rm -rf "$XLIVE/pve/nodes/pve3" "$XLIVE/pve/nodes/pve1"
+pass "VMID collisions distinguish live from stale"
