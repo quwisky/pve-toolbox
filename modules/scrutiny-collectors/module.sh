@@ -63,6 +63,15 @@ _sc_installed() {
     return 0
 }
 
+# _sc_compare <installed> <tag> -> same | upgrade | downgrade
+#
+# Pure, so the decision `update` and `check` share can be tested without a
+# release API or an installed collector.
+_sc_compare() {
+    [[ $(version_bare "$1") == "$(version_bare "$2")" ]] && { printf 'same'; return 0; }
+    if is_newer "$2" "$1"; then printf 'upgrade'; else printf 'downgrade'; fi
+}
+
 _sc_version() {
     local v
     v=$(state_get "$MODULE_NAME" VERSION)
@@ -220,17 +229,25 @@ module_update() {
     printf '  installed  %s (%s)\n' "$current" "${SC_PRESENT[*]}"
     printf '  available  %s\n' "$GH_TAG"
 
-    if [[ $(version_bare "$current") == "$(version_bare "$GH_TAG")" \
-          && ${FORCE:-0} -eq 0 ]]; then
-        ok "up to date"
-        return 0
-    fi
+    local rel; rel=$(_sc_compare "$current" "$GH_TAG")
+
+    # -f means "reinstall anyway", not "report differently", so check answers
+    # before FORCE is consulted - otherwise `-f check` claims an update to the
+    # release already installed.
     if [[ $check_only -eq 1 ]]; then
-        info "update available: $current -> $GH_TAG"
+        case $rel in
+            same)      ok "up to date"; return 0 ;;
+            upgrade)   info "update available: $current -> $GH_TAG" ;;
+            downgrade) warn "$GH_TAG is older than the installed $current" ;;
+        esac
         dim "  https://github.com/$REPO/releases/tag/$GH_TAG"
         return 0
     fi
-    if ! is_newer "$GH_TAG" "$current" && [[ ${FORCE:-0} -eq 0 ]]; then
+    if [[ $rel == same && ${FORCE:-0} -eq 0 ]]; then
+        ok "up to date"
+        return 0
+    fi
+    if [[ $rel == downgrade && ${FORCE:-0} -eq 0 ]]; then
         warn "$GH_TAG is not newer than $current - this would be a downgrade"
         confirm "proceed anyway?" "n" || return 0
     fi

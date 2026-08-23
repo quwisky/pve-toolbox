@@ -219,15 +219,21 @@ rollback_binary() { # rollback_binary <target-name>
 
 # A release tag usually carries a leading v; `--version` output usually does
 # not. Compare the two bare, or v1.69.1 reads as an update over 1.69.1.
-version_bare() { printf '%s' "${1#v}"; }
+version_bare() { printf '%s' "${1#[vV]}"; }
 
 # is_newer <candidate> <current> -> 0 if candidate sorts strictly above current
 is_newer() {
-    local a=${1#v} b=${2#v}
-    [[ -z $b || $b == unknown ]] && return 0
+    local a b
+    a=$(version_bare "$1"); b=$(version_bare "$2")
+    [[ -z $a || $a == unknown ]] && return 1   # nothing to offer
+    [[ -z $b || $b == unknown ]] && return 0   # nothing known to beat
     # sort -V puts equal versions at the tail too, so a tie has to be caught
     # here rather than left to the comparison below.
     [[ $a == "$b" ]] && return 1
+    # sort -V has no notion of a prerelease: it puts 1.70.0-rc1 *above* 1.70.0,
+    # so a stable release would read as a downgrade from its own candidate. It
+    # does sort ~ below everything, which is the ordering wanted, so borrow it.
+    a=${a//-/\~}; b=${b//-/\~}
     [[ $(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1) == "$a" ]]
 }
 
