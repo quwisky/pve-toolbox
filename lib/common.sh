@@ -242,14 +242,22 @@ is_newer() {
 _state_file() { printf '%s/%s.state' "$TOOLBOX_STATE_DIR" "$1"; }
 
 state_set() { # state_set <module> <key> <value>
-    local f; f=$(_state_file "$1")
+    local f tmp; f=$(_state_file "$1")
     mkdir -p "$TOOLBOX_STATE_DIR"
-    touch "$f"; chmod 0644 "$f"
-    if grep -q "^$2=" "$f" 2>/dev/null; then
-        sed -i "s|^$2=.*|$2=$3|" "$f"
-    else
-        printf '%s=%s\n' "$2" "$3" >> "$f"
-    fi
+    [[ -f $f ]] || : > "$f"
+    tmp=$(mktemp)
+    # Same shape as conf_set, and for the same reason. The value went through
+    # `sed s|^K=.*|K=$3|` before, which read & as "the whole match", ate
+    # backslashes, and died outright on a |, leaving the old value in place
+    # and the error on stderr where nothing looked at it.
+    _STATE_V=$3 awk -v k="$2" '
+        $0 ~ "^" k "=" { print k "=" ENVIRON["_STATE_V"]; found = 1; next }
+        { print }
+        END { if (!found) print k "=" ENVIRON["_STATE_V"] }
+    ' "$f" > "$tmp"
+    cat "$tmp" > "$f"
+    rm -f "$tmp"
+    chmod 0644 "$f"
 }
 
 state_get() { # state_get <module> <key>
