@@ -310,6 +310,9 @@ module_update() {
 
     local missing=() stale=() p
     if have_zfs; then
+        # `done <` redirects stdin for the whole body, so nothing in here may
+        # prompt - ask and confirm would read pool names instead of the
+        # operator, and bash hides a read prompt when stdin is not a terminal.
         while read -r p; do
             [[ -n $p ]] || continue
             [[ " ${ZS_SCHEDULED[*]} " == *" $p "* ]] || missing+=("$p")
