@@ -14,7 +14,10 @@ syntax:
 	@for f in $(FILES); do bash -n $$f && echo "ok  $$f"; done
 
 test: syntax
+	@./tests/lib.sh
+	@./tests/discord.sh
 	@./tests/smoke.sh
+	@./tests/completion-zsh.sh
 	@./tests/tui.sh
 
 # Split out so it can be demanded explicitly; `test` skips it when expect
