@@ -3,6 +3,7 @@
 # pve-toolbox - interactive launcher for custom Proxmox scripts.
 #
 #   pve-toolbox                    interactive menu
+#   pve-toolbox ui                 full-screen menu (needs whiptail)
 #   pve-toolbox list [tag]         list modules
 #   pve-toolbox install <mod>...   install specific modules
 #   pve-toolbox update [mod]...    update (all installed if none given)
@@ -216,6 +217,104 @@ cmd_each() { # cmd_each <function> [--check] <modules...>
     done
 }
 
+# ------------------------------------------------------------------- ui --
+
+# Modules prompt and print while they work, which cannot happen inside a
+# whiptail box, so the widgets only ever choose. Once something is chosen the
+# screen is handed back and the module runs exactly as it does from the
+# command line.
+
+# Answers through UI_PICKED instead of stdout, so only the checklist is ever
+# inside a $( ). A widget called in a capture draws into the pipe rather than
+# onto the screen, and the box is then invisible but still waiting.
+UI_PICKED=""
+
+ui_pick() { # ui_pick <title> <all|installed> <on|off> -> sets UI_PICKED
+    local title=$1 pool=$2 default=$3
+    local -a items=()
+    local m st
+    UI_PICKED=""
+
+    # One module_status per module, and some of them shell out to zpool.
+    tui_info "Reading module status..."
+    for m in "${MODULES[@]}"; do
+        st=$(status_line "$m")
+        [[ -z $st ]] && st="not installed"
+        [[ $pool == installed && $st == "not installed" ]] && continue
+        items+=("$m" "$(meta "$m" MODULE_TITLE) - $st" "$default")
+    done
+
+    if [[ ${#items[@]} -eq 0 ]]; then
+        tui_msg "$title" "No modules are installed."
+        return 1
+    fi
+    UI_PICKED=$(tui_checklist "$title" \
+        "Space toggles, Enter confirms, Esc goes back." "${items[@]}")
+}
+
+ui_run() { # ui_run <fn> <modules> [extra-arg]
+    local fn=$1 picked=$2 extra=${3:-} m
+    tui_clear
+    while IFS= read -r m; do
+        [[ -z $m ]] && continue
+        step "$(meta "$m" MODULE_TITLE)"
+        if [[ -n $extra ]]; then
+            run_module "$m" "$fn" "$extra" || warn "$m failed"
+        else
+            run_module "$m" "$fn" || warn "$m failed"
+        fi
+    done <<<"$picked"
+    echo
+    read -rsn1 -p "press any key to go back to the menu " _ || true
+    echo
+}
+
+ui_action() { # ui_action <title> <fn> <pool> <default> [extra-arg]
+    local title=$1 fn=$2 pool=$3 default=$4 extra=${5:-}
+    ui_pick "$title" "$pool" "$default" || return 0
+    [[ -z $UI_PICKED ]] && return 0
+    if [[ $fn == module_uninstall ]]; then
+        tui_yesno "Uninstall" \
+            "About to remove:"$'\n\n'"$UI_PICKED"$'\n\n'"Continue?" || return 0
+    fi
+    ui_run "$fn" "$UI_PICKED" "$extra"
+}
+
+cmd_ui() {
+    [[ -t 0 && -t 1 ]] || die "ui needs a terminal, try 'pve-toolbox list'"
+    # whiptail exits 1 on a terminal it cannot draw on, which is also its exit
+    # code for Cancel. There is no telling the two apart once a widget has run,
+    # and the ui would look like it quit the instant it started, so rule the
+    # case out up front.
+    case ${TERM:-} in
+        ""|dumb|unknown) die "ui needs a capable terminal, TERM is '${TERM:-unset}'" ;;
+    esac
+    # shellcheck source=lib/tui.sh
+    source "$TOOLBOX_ROOT/lib/tui.sh"
+    tui_detect || die "ui needs whiptail or dialog (apt install whiptail)"
+    discover
+    TUI_BACKTITLE="pve-toolbox @ $(hostname -s)"
+
+    local choice
+    while true; do
+        choice=$(tui_menu "pve-toolbox" "Arrows move, Enter chooses, Esc quits." \
+            install   "Install or reconfigure modules" \
+            update    "Update installed modules" \
+            check     "Check for updates, change nothing" \
+            status    "Show detailed status" \
+            uninstall "Remove installed modules" \
+            quit      "Exit") || { tui_clear; return 0; }
+        case $choice in
+            install)   ui_action "Install / reconfigure" module_install     all       off ;;
+            update)    ui_action "Update"                module_update      installed on  ;;
+            check)     ui_action "Check for updates"     module_update      installed on --check ;;
+            status)    ui_action "Status"                module_status_long all       on  ;;
+            uninstall) ui_action "Uninstall"             module_uninstall   installed off ;;
+            quit)      tui_clear; return 0 ;;
+        esac
+    done
+}
+
 cmd_link() {
     require_root
     ln -sfn "$TOOLBOX_ROOT/pve-toolbox" "$TOOLBOX_BIN_DIR/pve-toolbox"
@@ -250,7 +349,7 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags>
     local -a tags
     case ${1:-} in
         commands)
-            printf '%s\n' menu list install update check status uninstall \
+            printf '%s\n' menu ui list install update check status uninstall \
                 link self-update ;;
         modules)
             discover; printf '%s\n' "${MODULES[@]}" ;;
@@ -310,6 +409,7 @@ case "${ARGS[0]:-menu}" in
     status)      cmd_each module_status_long "${ARGS[@]:1}" ;;
     uninstall)   [[ ${#ARGS[@]} -lt 2 ]] && die "uninstall needs a module name"
                  cmd_each module_uninstall "${ARGS[@]:1}" ;;
+    ui)          cmd_ui ;;
     link)        cmd_link ;;
     _complete)   cmd_complete "${ARGS[@]:1}" ;;
     self-update) cmd_self_update ;;

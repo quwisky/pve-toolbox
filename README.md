@@ -16,14 +16,15 @@ pve-toolbox/
 ├── pve-toolbox              # launcher
 ├── lib/
 │   ├── common.sh            # output, prompts, releases, systemd, state, conf
-│   └── discord.sh           # webhook reporting, also installed for helper scripts
+│   ├── discord.sh           # webhook reporting, also installed for helper scripts
+│   └── tui.sh               # whiptail/dialog widgets for `pve-toolbox ui`
 ├── modules/
 │   ├── _template/           # copy this to start a new module (underscore = hidden)
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
 │   ├── zfs-scrub/           # scheduled scrub per pool, reported to Discord
 │   └── zfs-replication/     # syncoid jobs on a timer, reported to Discord
 ├── completions/             # bash + zsh completion, installed by `link`
-├── tests/smoke.sh           # what `make test` runs
+├── tests/                   # what `make test` runs, incl. a driven ui test
 ├── docs/                    # mkdocs-material sources
 └── Makefile                 # make syntax / lint / test
 ```
@@ -44,6 +45,7 @@ declare `MODULE_HOST_ONLY=1` and warn if they detect an LXC.
 
 ```
 pve-toolbox                    interactive menu
+pve-toolbox ui                 full-screen menu (needs whiptail)
 pve-toolbox list [tag]         list modules and their status
 pve-toolbox install <mod>...   install specific modules
 pve-toolbox update [mod]...    update (all installed if none given)
@@ -94,13 +96,15 @@ Full contract, helper reference and the Discord reporting API:
 ## Development
 
 ```bash
-make syntax  # bash -n everything
-make lint    # shellcheck everything
-make test    # syntax + tests/smoke.sh against throwaway dirs
+make syntax    # bash -n everything
+make lint      # shellcheck everything
+make test      # syntax + tests/ against throwaway dirs
+make test-tui  # drive `ui` through a pty, needs whiptail + expect
 ```
 
-CI runs all three on every push and pull request, plus the smoke test again
-inside a `debian:13` container to match the PVE 9 host. The docs build with
+CI runs these on every push and pull request, plus the tests again inside a
+`debian:13` container to match the PVE 9 host. The ui test only runs there,
+since that container is the one with whiptail. The docs build with
 `mkdocs build --strict`, so a broken internal link fails the build.
 
 ```bash

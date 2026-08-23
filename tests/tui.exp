@@ -1,0 +1,78 @@
+# Keystroke-level drive of `pve-toolbox ui`. Run through tests/tui.sh, which
+# handles the dependency check and TERM.
+#
+# Menu entries are chosen by counting Down presses, so reordering the menu in
+# cmd_ui means reordering the sends here.
+#
+set timeout 25
+log_user 0
+spawn ./pve-toolbox ui
+
+proc need {pat what} {
+    expect {
+        -re $pat { puts "ok  $what" }
+        timeout  { puts "FAIL timeout: $what"; exit 1 }
+        eof      { puts "FAIL eof: $what"; exit 1 }
+    }
+}
+
+need {Install or reconfigure modules} "menu renders"
+need {Remove installed modules}       "menu lists uninstall"
+
+# 'update' with nothing installed -> the empty-pool message, not a checklist
+send -- "\033\[B"
+send -- "\r"
+need {No modules are installed} "empty pool message"
+send -- "\r"
+need {Install or reconfigure modules} "back at the menu"
+
+# 'install' -> checklist of every module, Esc backs out without running
+send -- "\r"
+need {Space toggles}  "checklist prompt"
+need {zfs-scrub}      "checklist lists a module"
+send -- "\033"
+need {Install or reconfigure modules} "Esc returns to the menu"
+
+# 'status' -> all pre-checked -> runs on the real terminal, then pauses
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\r"
+need {Space toggles} "status checklist"
+send -- "\r"
+need {not installed}                  "module output on the terminal"
+need {press any key to go back}       "pause after running"
+send -- " "
+need {Install or reconfigure modules} "keypress returns to the menu"
+
+# unchecking everything is not an action
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\r"
+need {Space toggles} "status checklist again"
+send -- " \033\[B \033\[B \r"
+need {Install or reconfigure modules} "empty selection returns to the menu"
+
+# quit entry
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\r"
+expect eof
+catch wait result
+set code [lindex $result 3]
+if {$code == 0} { puts "ok  quit exits 0" } else { puts "FAIL exit $code"; exit 1 }
+
+# A terminal whiptail cannot draw on has to say so. It exits 1 there, the same
+# code it uses for Cancel, so without the guard the ui would look like it quit
+# the moment it started.
+set env(TERM) dumb
+spawn ./pve-toolbox ui
+need {ui needs a capable terminal} "refuses TERM=dumb"
+expect eof
+catch wait result
+set code [lindex $result 3]
+if {$code == 1} { puts "ok  TERM=dumb exits 1" } else { puts "FAIL exit $code"; exit 1 }

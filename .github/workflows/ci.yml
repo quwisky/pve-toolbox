@@ -40,8 +40,12 @@ jobs:
       - name: Install build deps
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends make git ca-certificates
+          apt-get install -y --no-install-recommends \
+            make git ca-certificates whiptail expect
 
       - uses: actions/checkout@v4
 
       - run: make test
+
+      # Only here: this job has the whiptail the ui actually runs on.
+      - run: make test-tui
