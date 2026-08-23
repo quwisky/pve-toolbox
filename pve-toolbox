@@ -218,7 +218,12 @@ cmd_each() { # cmd_each <function> [--check] <modules...>
     [[ ${#list[@]} -eq 0 ]] && { warn "no installed modules"; return 0; }
     for m in "${list[@]}"; do
         step "$(meta "$m" MODULE_TITLE)"
-        if [[ -n $extra ]]; then
+        if [[ $fn == module_status_long ]]; then
+            # module_status exits 1 to mean "not installed", which is the
+            # answer status was asked for. Naming a module that is not
+            # installed is a legitimate thing to do; it is not a failure.
+            run_module "$m" "$fn" || true
+        elif [[ -n $extra ]]; then
             run_module "$m" "$fn" "$extra" || warn "$m failed"
         else
             run_module "$m" "$fn" || warn "$m failed"

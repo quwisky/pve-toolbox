@@ -158,3 +158,42 @@ done < <(launch ./pve-toolbox _complete modules)
 [[ -z $(launch ./pve-toolbox _complete installed) ]] \
     || fail "_complete installed named a module in a bare checkout"
 pass "nothing reads as installed in a checkout"
+
+# --- the command line's per-module dispatch ----------------------------------
+
+# cmd_each is what install/update/check/status/uninstall all go through, and
+# nothing exercised it. With no module names it filters to what is installed,
+# which in a checkout is nothing.
+for verb in update check status; do
+    res=$(launch ./pve-toolbox "$verb" 2>&1) || fail "$verb with no args exited non-zero"
+    [[ $res == *"no installed modules"* ]] || fail "$verb said: $res"
+done
+pass "update, check and status do nothing when nothing is installed"
+
+# install and uninstall refuse to guess, because both are destructive in a way
+# update and status are not.
+for verb in install uninstall; do
+    launch ./pve-toolbox "$verb" >/dev/null 2>&1 \
+        && fail "$verb with no module name should have failed"
+    res=$(launch ./pve-toolbox "$verb" 2>&1 || true)
+    [[ $res == *"needs a module name"* ]] || fail "$verb said: $res"
+done
+pass "install and uninstall demand a module name"
+
+# A named module is acted on whether or not it is installed - that is how you
+# ask about one. module_status exits 1 to mean "not installed", so status has
+# to read that as the answer rather than announcing a failure.
+res=$(launch ./pve-toolbox status zfs-scrub 2>&1) || fail "status <module> exited non-zero"
+[[ $res == *"not installed"* ]] || fail "status did not report the state: $res"
+[[ $res != *"failed"* ]] || fail "status called a not-installed module failed: $res"
+pass "status names an uninstalled module without calling it a failure"
+
+launch ./pve-toolbox status definitely-not-a-module >/dev/null 2>&1 \
+    && fail "an unknown module should have failed"
+res=$(launch ./pve-toolbox status definitely-not-a-module 2>&1 || true)
+[[ $res == *"unknown module"* ]] || fail "unknown module said: $res"
+pass "an unknown module is rejected"
+
+launch ./pve-toolbox definitely-not-a-command >/dev/null 2>&1 \
+    && fail "an unknown command should have failed"
+pass "an unknown command is rejected"
