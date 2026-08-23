@@ -12,12 +12,15 @@ pve-toolbox/
 ├── pve-toolbox              # launcher
 ├── lib/
 │   ├── common.sh            # output, prompts, releases, systemd, state, conf
-│   └── discord.sh           # webhook reporting
+│   ├── discord.sh           # webhook reporting
+│   └── tui.sh               # whiptail widgets behind `pve-toolbox ui`
 ├── modules/
 │   ├── _template/           # copy this to start a new module
 │   ├── scrutiny-collectors/
 │   ├── zfs-scrub/
 │   └── zfs-replication/
+├── completions/             # bash + zsh, installed by `link`
+├── tests/                   # smoke tests, and a pty-driven test for the ui
 └── Makefile                 # make syntax / lint / test
 ```
 
@@ -57,7 +60,15 @@ See [Writing a module](writing-a-module.md#state-versus-config).
     | `/var/lib/pve-toolbox/` | per-module state | `0644` |
     | `/var/log/pve-toolbox/` | per-job logs | `0640` |
     | `/etc/systemd/system/` | units and timers | `0644` |
+    | `/usr/share/bash-completion/completions/` | bash completion symlink | `0644` |
+    | `/usr/share/zsh/vendor-completions/` | zsh completion symlink | `0644` |
 
     Every one of these is overridable — `TOOLBOX_BIN_DIR`, `TOOLBOX_LIB_DIR`,
-    `TOOLBOX_CONF_DIR`, `TOOLBOX_STATE_DIR`, `TOOLBOX_SYSTEMD_DIR` — which is
-    what makes the modules testable off a real host.
+    `TOOLBOX_CONF_DIR`, `TOOLBOX_STATE_DIR`, `TOOLBOX_SYSTEMD_DIR`,
+    `TOOLBOX_BASH_COMPLETION_DIR`, `TOOLBOX_ZSH_COMPLETION_DIR` — which is what
+    makes the modules testable off a real host.
+
+    The two completion paths are the exception to the table: `link` symlinks
+    into them rather than copying, so `self-update` refreshes them, and it
+    skips either directory that is not already there rather than creating a
+    tree for a shell that is not installed.
