@@ -27,4 +27,10 @@ case ${TERM:-} in
     ""|dumb|unknown) export TERM=xterm ;;
 esac
 
+# The interactive-install case needs require_root to pass before a module gets
+# as far as prompting. CI runs as root in the container; someone running
+# `make test-tui` on their laptop usually does not, so that one case is gated
+# rather than made to fail.
+if [[ $EUID -eq 0 ]]; then export TUI_TEST_ROOT=1; else export TUI_TEST_ROOT=0; fi
+
 exec expect tests/tui.exp
