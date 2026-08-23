@@ -79,3 +79,37 @@ got=$(complete_words 2 ./pve-toolbox link "")
 [[ -z $got ]] || fail "link takes no arguments, got: $got"
 
 pass "bash completion"
+
+# --- version comparison -----------------------------------------------------
+
+# shellcheck source=lib/common.sh
+source "$ROOT/lib/common.sh"
+
+# is_newer <candidate> <current> <expected yes|no>
+newer_is() {
+    local got=no
+    is_newer "$1" "$2" && got=yes
+    [[ $got == "$3" ]] || fail "is_newer '$1' '$2' returned $got, wanted $3"
+}
+
+# A release tag carries a leading v and `--version` output does not, so the
+# two arrive spelled differently for the same release. Comparing them raw made
+# every check report the installed version as an available update.
+newer_is v1.69.1 1.69.1  no
+newer_is 1.69.1  v1.69.1 no
+newer_is 1.69.1  1.69.1  no
+newer_is v1.69.1 v1.69.1 no
+
+newer_is v1.70.0 1.69.1  yes
+newer_is 1.70.0  v1.69.1 yes
+newer_is 1.69.1  1.70.0  no
+
+# Version order, not string order.
+newer_is 1.10.0 1.9.0  yes
+newer_is 1.9.0  1.10.0 no
+
+# Nothing known about the current version means anything is an upgrade.
+newer_is 1.0.0 ""        yes
+newer_is 1.0.0 "unknown" yes
+
+pass "version comparison"

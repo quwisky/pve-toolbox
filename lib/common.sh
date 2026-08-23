@@ -217,13 +217,18 @@ rollback_binary() { # rollback_binary <target-name>
     warn "rolled back $1"
 }
 
+# A release tag usually carries a leading v; `--version` output usually does
+# not. Compare the two bare, or v1.69.1 reads as an update over 1.69.1.
+version_bare() { printf '%s' "${1#v}"; }
+
 # is_newer <candidate> <current> -> 0 if candidate sorts strictly above current
 is_newer() {
-    [[ $1 == "$2" ]] && return 1
-    [[ -z $2 || $2 == unknown ]] && return 0
-    local top
-    top=$(printf '%s\n%s\n' "${1#v}" "${2#v}" | sort -V | tail -n1)
-    [[ $top == "${1#v}" ]]
+    local a=${1#v} b=${2#v}
+    [[ -z $b || $b == unknown ]] && return 0
+    # sort -V puts equal versions at the tail too, so a tie has to be caught
+    # here rather than left to the comparison below.
+    [[ $a == "$b" ]] && return 1
+    [[ $(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1) == "$a" ]]
 }
 
 # ------------------------------------------------------------------ state --

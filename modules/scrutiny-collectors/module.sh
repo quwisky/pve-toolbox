@@ -220,7 +220,8 @@ module_update() {
     printf '  installed  %s (%s)\n' "$current" "${SC_PRESENT[*]}"
     printf '  available  %s\n' "$GH_TAG"
 
-    if [[ $current == "$GH_TAG" && ${FORCE:-0} -eq 0 ]]; then
+    if [[ $(version_bare "$current") == "$(version_bare "$GH_TAG")" \
+          && ${FORCE:-0} -eq 0 ]]; then
         ok "up to date"
         return 0
     fi
