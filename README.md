@@ -22,6 +22,8 @@ pve-toolbox/
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
 │   ├── zfs-scrub/           # scheduled scrub per pool, reported to Discord
 │   └── zfs-replication/     # syncoid jobs on a timer, reported to Discord
+├── completions/             # bash + zsh completion, installed by `link`
+├── tests/smoke.sh           # what `make test` runs
 ├── docs/                    # mkdocs-material sources
 └── Makefile                 # make syntax / lint / test
 ```
@@ -31,7 +33,7 @@ pve-toolbox/
 ```bash
 git clone https://github.com/quwisky/pve-toolbox.git /opt/pve-toolbox
 cd /opt/pve-toolbox
-./pve-toolbox link     # symlink into /usr/local/bin
+./pve-toolbox link     # symlink into /usr/local/bin, plus completions
 pve-toolbox            # interactive menu
 ```
 
@@ -53,6 +55,11 @@ pve-toolbox self-update        git pull this checkout
 
 Flags: `-y` non-interactive (modules read their env vars instead of prompting),
 `-f` force, `-h` help.
+
+`link` also installs bash and zsh completion for commands, module names and
+tags. Candidates are queried from the launcher, so a new module completes
+without regenerating anything. See
+[Getting started](https://quwisky.github.io/pve-toolbox/getting-started/#shell-completion).
 
 ## Modules
 
@@ -89,7 +96,7 @@ Full contract, helper reference and the Discord reporting API:
 ```bash
 make syntax  # bash -n everything
 make lint    # shellcheck everything
-make test    # syntax + launcher smoke test against throwaway dirs
+make test    # syntax + tests/smoke.sh against throwaway dirs
 ```
 
 CI runs all three on every push and pull request, plus the smoke test again

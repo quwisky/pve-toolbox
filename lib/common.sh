@@ -14,6 +14,8 @@ TOOLBOX_STATE_DIR="${TOOLBOX_STATE_DIR:-/var/lib/pve-toolbox}"
 TOOLBOX_SYSTEMD_DIR="${TOOLBOX_SYSTEMD_DIR:-/etc/systemd/system}"
 TOOLBOX_CONF_DIR="${TOOLBOX_CONF_DIR:-/etc/pve-toolbox}"
 TOOLBOX_LIB_DIR="${TOOLBOX_LIB_DIR:-/usr/local/lib/pve-toolbox}"
+TOOLBOX_BASH_COMPLETION_DIR="${TOOLBOX_BASH_COMPLETION_DIR:-/usr/share/bash-completion/completions}"
+TOOLBOX_ZSH_COMPLETION_DIR="${TOOLBOX_ZSH_COMPLETION_DIR:-/usr/share/zsh/vendor-completions}"
 ASSUME_YES="${ASSUME_YES:-0}"
 
 # Reporting helpers, also installed into TOOLBOX_LIB_DIR for the standalone

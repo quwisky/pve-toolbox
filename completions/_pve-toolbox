@@ -1,0 +1,53 @@
+#compdef pve-toolbox
+#
+# zsh completion for pve-toolbox.
+#
+# Candidates come from `pve-toolbox _complete`, so a module dropped into
+# modules/ is completable immediately - no names are listed here. The
+# launcher is invoked as $words[1], so completing ./pve-toolbox in a
+# checkout asks that checkout rather than whatever is on PATH.
+
+_pve-toolbox_candidates() { # _pve-toolbox_candidates <target>
+    ${words[1]} _complete $1 2>/dev/null
+}
+
+_pve-toolbox() {
+    local cmd="" i
+    integer nargs=0
+    local -a cands
+
+    # The first non-flag word after the program name is the command; the rest
+    # are its arguments. Flags are accepted anywhere, so they cannot simply be
+    # counted by position.
+    for (( i = 2; i < CURRENT; i++ )); do
+        [[ $words[i] == -* ]] && continue
+        if [[ -z $cmd ]]; then cmd=$words[i]; else (( nargs++ )); fi
+    done
+
+    if [[ $words[CURRENT] == -* ]]; then
+        _values 'flag' \
+            '(-y --yes)'{-y,--yes}'[non-interactive, take defaults]' \
+            '(-f --force)'{-f,--force}'[reinstall or redownload even if current]' \
+            '(-h --help)'{-h,--help}'[show usage]'
+        return
+    fi
+
+    case $cmd in
+        "")        cands=( ${(f)"$(_pve-toolbox_candidates commands)"} ) ;;
+        list)      # takes a single optional tag
+                   (( nargs )) && return 1
+                   cands=( ${(f)"$(_pve-toolbox_candidates tags)"} ) ;;
+        install|update|check|status)
+                   cands=( ${(f)"$(_pve-toolbox_candidates modules)"} ) ;;
+        uninstall) cands=( ${(f)"$(_pve-toolbox_candidates installed)"} ) ;;
+        *)         return 1 ;;   # menu, link, self-update take nothing
+    esac
+
+    # Drop what is already on the line, so completing a second module does
+    # not re-offer the first.
+    cands=( ${cands:|words} )
+    (( $#cands )) || return 1
+    compadd -a cands
+}
+
+_pve-toolbox "$@"

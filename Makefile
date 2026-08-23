@@ -1,5 +1,8 @@
 SHELL := /bin/bash
-FILES := pve-toolbox $(sort $(wildcard lib/*.sh)) $(sort $(wildcard modules/*/*.sh))
+# Bash only. completions/_pve-toolbox is zsh, which neither bash -n nor
+# shellcheck can read.
+FILES := pve-toolbox $(sort $(wildcard lib/*.sh)) $(sort $(wildcard modules/*/*.sh)) \
+         completions/pve-toolbox.bash tests/smoke.sh
 
 .PHONY: lint syntax test
 
@@ -11,13 +14,4 @@ syntax:
 	@for f in $(FILES); do bash -n $$f && echo "ok  $$f"; done
 
 test: syntax
-	@set -e; \
-	smoke() { \
-	    TOOLBOX_BIN_DIR=$$(mktemp -d) TOOLBOX_STATE_DIR=$$(mktemp -d) \
-	    TOOLBOX_SYSTEMD_DIR=$$(mktemp -d) TOOLBOX_CONF_DIR=$$(mktemp -d) \
-	    "$$1" list >/dev/null; \
-	}; \
-	smoke ./pve-toolbox; echo "ok  launcher smoke test"; \
-	d=$$(mktemp -d); ln -s "$$PWD/pve-toolbox" "$$d/pve-toolbox"; \
-	trap 'rm -rf "$$d"' EXIT; \
-	smoke "$$d/pve-toolbox"; echo "ok  launcher via symlink"
+	@./tests/smoke.sh

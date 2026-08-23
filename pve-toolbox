@@ -9,7 +9,7 @@
 #   pve-toolbox check [mod]...     report available updates, change nothing
 #   pve-toolbox status [mod]       detailed status
 #   pve-toolbox uninstall <mod>...
-#   pve-toolbox link               symlink into /usr/local/bin
+#   pve-toolbox link               symlink into /usr/local/bin + completions
 #   pve-toolbox self-update        git pull this checkout
 #
 # Flags: -y/--yes non-interactive, -f/--force, -h/--help
@@ -220,6 +220,56 @@ cmd_link() {
     require_root
     ln -sfn "$TOOLBOX_ROOT/pve-toolbox" "$TOOLBOX_BIN_DIR/pve-toolbox"
     ok "linked $TOOLBOX_BIN_DIR/pve-toolbox -> $TOOLBOX_ROOT/pve-toolbox"
+    link_completions
+}
+
+# Symlinked, not copied, so self-update refreshes them with the rest of the
+# checkout. Only into directories the shell already scans: creating one would
+# mean guessing at a shell that is not installed.
+link_completions() {
+    local pair dest src
+    for pair in \
+        "$TOOLBOX_BASH_COMPLETION_DIR/pve-toolbox:completions/pve-toolbox.bash" \
+        "$TOOLBOX_ZSH_COMPLETION_DIR/_pve-toolbox:completions/_pve-toolbox"
+    do
+        dest=${pair%%:*}; src="$TOOLBOX_ROOT/${pair#*:}"
+        if [[ ! -d ${dest%/*} ]]; then
+            dim "  skipped ${dest%/*}, not present"
+            continue
+        fi
+        ln -sfn "$src" "$dest"
+        ok "linked $dest"
+    done
+    dim "  completions load in new shells"
+}
+
+# Candidates for the completion scripts. Separate from `list` because that
+# prints a status per module, and a TAB press should not shell out to zpool.
+cmd_complete() { # cmd_complete <commands|modules|installed|tags>
+    local m st
+    local -a tags
+    case ${1:-} in
+        commands)
+            printf '%s\n' menu list install update check status uninstall \
+                link self-update ;;
+        modules)
+            discover; printf '%s\n' "${MODULES[@]}" ;;
+        installed)
+            discover
+            for m in "${MODULES[@]}"; do
+                st=$(status_line "$m")
+                [[ -n $st && $st != "not installed" ]] && printf '%s\n' "$m"
+            done ;;
+        tags)
+            discover
+            for m in "${MODULES[@]}"; do
+                read -r -a tags <<<"$(meta "$m" MODULE_TAGS)"
+                if [[ ${#tags[@]} -gt 0 ]]; then
+                    printf '%s\n' "${tags[@]}"
+                fi
+            done | sort -u ;;
+        *)  die "unknown completion target: ${1:-}" ;;
+    esac
 }
 
 cmd_self_update() {
@@ -230,7 +280,9 @@ cmd_self_update() {
     ok "now at $(git -C "$TOOLBOX_ROOT" describe --always --dirty)"
 }
 
-usage() { sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//'; }
+# Print the header block, stopping at the first non-comment line, so the
+# range never has to be kept in sync with the code underneath it.
+usage() { awk 'NR < 3 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; }
 
 # ------------------------------------------------------------------- main --
 
@@ -259,6 +311,7 @@ case "${ARGS[0]:-menu}" in
     uninstall)   [[ ${#ARGS[@]} -lt 2 ]] && die "uninstall needs a module name"
                  cmd_each module_uninstall "${ARGS[@]:1}" ;;
     link)        cmd_link ;;
+    _complete)   cmd_complete "${ARGS[@]:1}" ;;
     self-update) cmd_self_update ;;
     *)           die "unknown command: ${ARGS[0]} (try --help)" ;;
 esac

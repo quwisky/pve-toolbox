@@ -28,6 +28,33 @@ pve-toolbox self-update        git pull this checkout
 Flags: `-y` non-interactive (modules read their env vars instead of
 prompting), `-f` force, `-h` help.
 
+## Shell completion
+
+`pve-toolbox link` also symlinks completions for bash and zsh into
+`/usr/share/bash-completion/completions/` and
+`/usr/share/zsh/vendor-completions/`. A directory that is not there is skipped
+rather than created, so if you install zsh later, run `link` again. They are
+symlinks into the checkout, so `self-update` refreshes them with everything
+else.
+
+Open a new shell, then:
+
+```
+pve-toolbox <TAB>              commands
+pve-toolbox list <TAB>         tags, gathered from every module
+pve-toolbox install <TAB>      module names
+pve-toolbox uninstall <TAB>    only the modules actually installed
+pve-toolbox -<TAB>             flags
+```
+
+Candidates come from `pve-toolbox _complete`, not from a list baked into the
+completion scripts, so a module dropped into `modules/` is completable straight
+away with nothing to regenerate. Names already on the line are not offered a
+second time.
+
+`uninstall` is the one target that has to ask every module whether it is
+installed, so that TAB can pause for a moment; the others only read metadata.
+
 ## The menu
 
 Type numbers to toggle selection, then a letter for the action:
@@ -73,7 +100,7 @@ The per-module pages list the variables each one accepts.
 ```bash
 make syntax  # bash -n everything
 make lint    # shellcheck everything
-make test    # syntax + launcher smoke test against throwaway dirs
+make test    # syntax + tests/smoke.sh against throwaway dirs
 ```
 
 CI runs all three on every push and pull request, plus the smoke test again
