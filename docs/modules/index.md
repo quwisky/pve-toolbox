@@ -5,6 +5,7 @@ launcher discovers them at runtime; directories starting with `_` are skipped.
 
 | Module | Tags | Host only | Helper installed |
 | --- | --- | --- | --- |
+| [config-backup](config-backup.md) | `backup config notify` | yes | `pve-config-backup` |
 | [zfs-scrub](zfs-scrub.md) | `storage zfs monitoring notify` | yes | `pve-toolbox-zfs-scrub` |
 | [zfs-replication](zfs-replication.md) | `storage zfs backup replication notify` | yes | `pve-toolbox-zfs-sync` |
 | [scrutiny-collectors](scrutiny-collectors.md) | `storage monitoring smart zfs` | yes | four collector binaries |
