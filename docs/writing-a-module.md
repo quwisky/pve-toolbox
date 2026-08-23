@@ -142,7 +142,7 @@ Everything in `lib/common.sh` is already sourced:
 `info` `ok` `warn` `die` `step` `dim` · `ask` `ask_yn` `ask_secret` `confirm` ·
 `require_root` `require_pve` `in_lxc` · `detect_arch` `pkg_ensure` `have_zfs`
 `have_mdadm` · `gh_release` `install_release_binary` `rollback_binary`
-`is_newer` · `state_*` `conf_*` · `systemd_oneshot` `systemd_remove`
+`version_bare` `is_newer` · `state_*` `conf_*` · `systemd_oneshot` `systemd_remove`
 `wait_for_idle` `run_unit` · `backup_file` `install_toolbox_lib` ·
 [`discord_notify`](reference/discord.md)
 

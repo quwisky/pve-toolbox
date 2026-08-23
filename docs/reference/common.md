@@ -90,8 +90,21 @@ See [State versus config](../writing-a-module.md#state-versus-config).
 `rollback_binary <target>`
 : Restores `<target>.prev`.
 
+`version_bare <version>`
+: Strips a leading `v` or `V`. A release tag carries one and `--version` output
+  usually does not, so the same release arrives spelled two ways.
+
 `is_newer <candidate> <current>`
-: Version sort, so a downgrade can be caught and confirmed.
+: Version sort with both sides stripped, so a downgrade can be caught and
+  confirmed. An exact tie is not newer. An empty or `unknown` *current* means
+  anything is an upgrade; an empty or `unknown` *candidate* is never one.
+
+    !!! note "Prereleases"
+
+        `sort -V` on its own puts `1.70.0-rc1` *above* `1.70.0`, which would
+        make a stable release read as a downgrade from its own candidate. It
+        does sort `~` below everything, so `is_newer` maps `-` across before
+        comparing and a prerelease sorts under the release it belongs to.
 
 ## systemd
 
