@@ -16,7 +16,11 @@
 #   Functions:
 #     module_install      interactive install / reconfigure
 #     module_update       [--check] update in place; honours $FORCE
-#     module_status       one line for the menu; exit 1 if not installed
+#     module_status       one line for the menu; print exactly 'not installed'
+#                         and exit 1 if it is not. That string is compared
+#                         exactly to decide what update/uninstall/ui act on,
+#                         so a longer line merely containing the words counts
+#                         as installed.
 #     module_status_long  detailed status (optional, falls back to status)
 #     module_uninstall    remove what install created
 #

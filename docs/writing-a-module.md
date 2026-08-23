@@ -27,13 +27,33 @@ each module carries a `# shellcheck disable=SC2034` above the block.
 | --- | --- |
 | `module_install` | Interactive install or reconfigure |
 | `module_update` | `[--check]` update in place; honours `$FORCE` |
-| `module_status` | Print one short line; exit 1 when not installed |
+| `module_status` | Print one short line; print exactly `not installed` and exit 1 when it is not |
 | `module_status_long` | Detailed status. Optional, falls back to `module_status` |
 | `module_uninstall` | Remove what install created |
 
-`module_status` is called for every module on every menu draw, so keep it
-cheap and make its first word meaningful — the menu shows only that word in
-the `STATUS` column.
+`module_status` is called for every module on every menu draw, on every
+`ui` action, and by `uninstall` completion, so keep it cheap and make its first
+word meaningful — the menu shows only that word in the `STATUS` column.
+
+!!! warning "`not installed` is compared exactly"
+
+    `update` and `check` given no module names, every list the `ui` builds,
+    and `uninstall` completion all decide what to operate on by asking whether
+    the status is the string `not installed`. Printing nothing and exiting
+    non-zero means the same thing, and is the safe default if there is nothing
+    useful to say.
+
+    Anything else counts as installed, including a longer line that happens to
+    contain the words — `1 of 3 pools not installed` reads as *installed*.
+    Report a partial state through the wording of an installed status instead:
+
+    ```bash
+    module_status() {
+        _my_scheduled
+        [[ ${#MY_SCHEDULED[@]} -eq 0 ]] && { printf 'not installed'; return 1; }
+        printf 'pools:%d' "${#MY_SCHEDULED[@]}"
+    }
+    ```
 
 ## Two rules
 
@@ -136,5 +156,14 @@ make lint
 make test
 ```
 
-`make lint` runs `shellcheck -x -S warning` over the launcher, `lib/*.sh` and
-every `modules/*/*.sh`, so a helper script is linted too.
+`make lint` runs `shellcheck -x -S warning` over the launcher, `lib/*.sh`,
+every `modules/*/*.sh`, the bash completion and `tests/*.sh`, so a helper
+script you add is linted too. The zsh completion and `tests/tui.exp` are left
+out — neither is bash.
+
+`make test` runs `tests/smoke.sh`, which drives the launcher in place and
+through a symlink against throwaway directories, then `tests/tui.sh`, which
+drives `ui` through a pty. The ui test skips where `expect` or `whiptail` is
+missing; `make test-tui` demands them instead. CI gets the same effect by
+setting `TUI_TEST_REQUIRED=1` on `make test` in the Debian job, which is the
+one that has them.

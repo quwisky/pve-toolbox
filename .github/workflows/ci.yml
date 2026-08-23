@@ -40,8 +40,14 @@ jobs:
       - name: Install build deps
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends make git ca-certificates
+          apt-get install -y --no-install-recommends \
+            make git ca-certificates whiptail expect
 
       - uses: actions/checkout@v4
 
+      # TUI_TEST_REQUIRED turns a missing whiptail or expect into a failure
+      # rather than a skip. This is the job that has them, so the ui test has
+      # to run here; make test picks it up without a second pass.
       - run: make test
+        env:
+          TUI_TEST_REQUIRED: "1"

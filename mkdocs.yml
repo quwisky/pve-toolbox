@@ -70,3 +70,4 @@ nav:
   - Reference:
       - lib/common.sh: reference/common.md
       - lib/discord.sh: reference/discord.md
+      - lib/tui.sh: reference/tui.md

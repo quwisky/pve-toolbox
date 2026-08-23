@@ -1,0 +1,102 @@
+# Keystroke-level drive of `pve-toolbox ui`. Run through tests/tui.sh, which
+# handles the dependency check and TERM.
+#
+# Menu entries are chosen by counting Down presses, so reordering the menu in
+# cmd_ui means reordering the sends here.
+#
+set timeout 25
+log_user 0
+spawn ./pve-toolbox ui
+
+# expect_out is set in the calling scope, so a match made inside a proc is not
+# visible outside it. Hand the matched span out through a global for the
+# assertions that need to look at what was on the screen.
+set seen ""
+
+proc need {pat what} {
+    global seen
+    expect {
+        -re $pat { puts "ok  $what"; set seen $expect_out(buffer) }
+        timeout  { puts "FAIL timeout: $what"; exit 1 }
+        eof      { puts "FAIL eof: $what"; exit 1 }
+    }
+}
+
+need {Install or reconfigure modules} "menu renders"
+need {Remove installed modules}       "menu lists uninstall"
+
+# 'update' with nothing installed -> the empty-pool message, not a checklist
+send -- "\033\[B"
+send -- "\r"
+need {No modules are installed} "empty pool message"
+send -- "\r"
+need {Install or reconfigure modules} "back at the menu"
+
+# 'install' -> checklist of every module, Esc backs out without running
+send -- "\r"
+need {Space toggles}  "checklist prompt"
+need {zfs-scrub}      "checklist lists a module"
+send -- "\033"
+need {Install or reconfigure modules} "Esc returns to the menu"
+
+# 'status' -> all pre-checked -> runs on the real terminal, then pauses
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\r"
+need {Space toggles} "status checklist"
+send -- "\r"
+need {not installed}                  "module output on the terminal"
+need {press any key to go back}       "pause after running"
+
+# module_status exits 1 for "not installed", which is the answer the status
+# action exists to give. Announcing it as a failure is the bug this guards.
+if {[string match {*failed*} $seen]} {
+    puts "FAIL status announced a not-installed module as failed"; exit 1
+}
+puts "ok  status does not call not-installed a failure"
+send -- " "
+need {Install or reconfigure modules} "keypress returns to the menu"
+
+# Confirming an empty selection is not an action. Driven through 'install',
+# where every box starts off, so this does not depend on how many modules the
+# repo happens to ship.
+send -- "\r"
+need {Space toggles} "install checklist"
+send -- "\r"
+need {Install or reconfigure modules} "empty selection returns to the menu"
+
+# quit entry, five rows down from install
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\033\[B"
+send -- "\r"
+expect eof
+catch wait result
+set code [lindex $result 3]
+if {$code == 0} { puts "ok  quit exits 0" } else { puts "FAIL exit $code"; exit 1 }
+
+# An override that is not installed exits 127, which after a widget has run
+# is as indistinguishable from Cancel as anything else. It has to be caught
+# before the first widget, or the ui just clears the screen and exits 0.
+set env(TUI_BIN) definitely-not-installed
+spawn ./pve-toolbox ui
+need {whiptail or dialog} "rejects a TUI_BIN that is not installed"
+expect eof
+catch wait result
+set code [lindex $result 3]
+if {$code == 1} { puts "ok  bad TUI_BIN exits 1" } else { puts "FAIL exit $code"; exit 1 }
+unset env(TUI_BIN)
+
+# A terminal whiptail cannot draw on has to say so. It exits 1 there, the same
+# code it uses for Cancel, so without the guard the ui would look like it quit
+# the moment it started.
+set env(TERM) dumb
+spawn ./pve-toolbox ui
+need {ui needs a capable terminal} "refuses TERM=dumb"
+expect eof
+catch wait result
+set code [lindex $result 3]
+if {$code == 1} { puts "ok  TERM=dumb exits 1" } else { puts "FAIL exit $code"; exit 1 }
