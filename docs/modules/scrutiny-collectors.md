@@ -38,6 +38,26 @@ rolled back, state stays at the old version and the run says which ones.
 
 Release assets are checksum-verified when the release ships a checksum file.
 
+### What `check` reports
+
+`check` writes nothing, and answers before `-f` is considered — forcing a
+reinstall is an `update` decision, not a reporting one.
+
+| Installed vs release | Reported |
+| --- | --- |
+| Same release | `up to date` |
+| Release is newer | `update available: <installed> -> <tag>` |
+| Release is older | `<tag> is older than the installed <version>` |
+
+The last row is reachable rather than theoretical: `SCRUTINY_VERSION` pins a
+tag, so a `check` against a pinned older release says so instead of calling it
+an update. Run `update` on the same pair and it warns and asks before going
+ahead.
+
+Versions are compared with the leading `v` stripped, because the release tag
+carries one and `<collector> --version` does not — `1.69.1` and `v1.69.1` are
+one release, not an available update.
+
 ## Env vars for `-y`
 
 | Variable | Meaning |
