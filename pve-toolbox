@@ -267,9 +267,19 @@ ui_pick() { # ui_pick <title> <all|installed> <on|off> -> sets UI_PICKED
 
 ui_run() { # ui_run <fn> <modules> [extra-arg]
     local fn=$1 picked=$2 extra=${3:-} m
-    tui_clear
+    local -a mods=()
+
+    # Collect the whole list before running anything. `done <<<` redirects
+    # stdin for the entire loop body, so a module's ask/ask_secret/confirm
+    # would read the remains of this list rather than the terminal - and since
+    # ask swallows a failed read and keeps its default, every prompt in an
+    # install would flash past unanswered.
     while IFS= read -r m; do
-        [[ -z $m ]] && continue
+        [[ -n $m ]] && mods+=("$m")
+    done <<<"$picked"
+
+    tui_clear
+    for m in "${mods[@]}"; do
         step "$(meta "$m" MODULE_TITLE)"
         if [[ $fn == module_status_long ]]; then
             # module_status exits 1 to mean "not installed". That is what the
@@ -280,7 +290,7 @@ ui_run() { # ui_run <fn> <modules> [extra-arg]
         else
             run_module "$m" "$fn" || warn "$m failed"
         fi
-    done <<<"$picked"
+    done
     echo
     read -rsn1 -p "press any key to go back to the menu " _ || true
     echo

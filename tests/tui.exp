@@ -2,7 +2,12 @@
 # handles the dependency check and TERM.
 #
 # Menu entries are chosen by counting Down presses, so reordering the menu in
-# cmd_ui means reordering the sends here.
+# cmd_ui means reordering the sends here. The module checklist is navigated the
+# same way; tests/tui.sh asserts the module ordering before this runs, so a
+# module added to the repo fails there rather than being installed here by
+# mistake. Do not try to assert it from the screen instead - the checklist
+# renders every module's title, so matching one proves nothing about which row
+# is selected.
 #
 set timeout 25
 log_user 0
@@ -77,6 +82,39 @@ expect eof
 catch wait result
 set code [lindex $result 3]
 if {$code == 0} { puts "ok  quit exits 0" } else { puts "FAIL exit $code"; exit 1 }
+
+# A module's own prompts have to reach the terminal. ui_run iterated the picked
+# list with `while read ... done <<<`, which redirects stdin for the whole loop
+# body - so ask/ask_secret/confirm inside a module read the remains of that
+# list, hit EOF, and silently kept their defaults. An install could not be
+# configured at all through the ui.
+#
+# zfs-scrub is driven because it prompts early, through require_pve, and then
+# stops at have_zfs. Both of those depend on what the host does *not* have -
+# no pveversion, so there is a prompt; no zpool, so the run stops before it
+# installs anything. That holds on debian:13 and in a PVE-less container; it
+# would not hold on a real PVE host, which is why tests/tui.sh points every
+# TOOLBOX_*_DIR at a throwaway before this runs.
+if {[info exists env(TUI_TEST_ROOT)] && $env(TUI_TEST_ROOT) == 1} {
+    spawn ./pve-toolbox ui
+    need {Install or reconfigure modules} "menu, for the prompt case"
+    send -- "\r"
+    need {Space toggles} "install checklist"
+    send -- "\033\[B\033\[B"
+    send -- " "
+    send -- "\r"
+    need {continue anyway} "a module prompt reaches the terminal"
+    send -- "y\r"
+    need {no zpool binary} "the answer was read rather than defaulted"
+    need {press any key to go back} "back to the pause"
+    send -- " "
+    need {Install or reconfigure modules} "back at the menu"
+    send -- "\033"
+    expect eof
+    puts "ok  install prompts are answerable"
+} else {
+    puts "skip install prompt case, not root"
+}
 
 # An override that is not installed exits 127, which after a widget has run
 # is as indistinguishable from Cancel as anything else. It has to be caught
