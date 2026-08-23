@@ -135,6 +135,16 @@ _cb_defaults() {
     : "${CB_VOLATILE_SECTIONS:=firewall-live/}"
     : "${CB_SECRET_ALLOW:=}"
     : "${CB_RUN_NOW:=n}"
+    : "${CB_LOCAL_ENABLED:=y}"
+    : "${CB_GIT_ENABLED:=n}"
+    : "${CB_GIT_DIR:=/var/lib/pve-toolbox/config-backup.git}"
+    : "${CB_GIT_REMOTE:=}"
+    : "${CB_GIT_BRANCH:=master}"
+    : "${CB_GIT_PUSH:=n}"
+    : "${CB_GIT_SSH_KEY:=}"
+    : "${CB_GIT_TOKEN_FILE:=}"
+    : "${CB_GIT_AUTHOR_NAME:=pve-toolbox}"
+    : "${CB_GIT_AUTHOR_EMAIL:=}"
 }
 
 # A re-run is a reconfigure, so an unset prompt starts from what is already
@@ -143,7 +153,9 @@ _cb_seed_from_conf() {
     conf_exists "$MODULE_NAME" || return 0
     local k v
     for k in CB_ARCHIVE_DIR CB_RETENTION_COUNT CB_RETENTION_DAYS \
-             CB_AGE_RECIPIENT CB_VOLATILE_SECTIONS CB_SECRET_ALLOW; do
+             CB_AGE_RECIPIENT CB_VOLATILE_SECTIONS CB_SECRET_ALLOW \
+             CB_GIT_DIR CB_GIT_REMOTE CB_GIT_BRANCH CB_GIT_SSH_KEY \
+             CB_GIT_TOKEN_FILE CB_GIT_AUTHOR_NAME CB_GIT_AUTHOR_EMAIL; do
         v=$(conf_get "$MODULE_NAME" "$k")
         [[ -n $v ]] && printf -v "$k" '%s' "$v"
     done
@@ -152,6 +164,9 @@ _cb_seed_from_conf() {
     [[ $v == 1 ]] && CB_NOTIFY_ON_CHANGE=y
     v=$(conf_get "$MODULE_NAME" CB_INCLUDE_SECRETS)
     [[ $v == 1 ]] && CB_INCLUDE_SECRETS=y
+    v=$(conf_get "$MODULE_NAME" CB_LOCAL_ENABLED); [[ $v == 0 ]] && CB_LOCAL_ENABLED=n
+    v=$(conf_get "$MODULE_NAME" CB_GIT_ENABLED);   [[ $v == 1 ]] && CB_GIT_ENABLED=y
+    v=$(conf_get "$MODULE_NAME" CB_GIT_PUSH);      [[ $v == 1 ]] && CB_GIT_PUSH=y
     return 0
 }
 
@@ -161,7 +176,22 @@ CB_CONF_KEYS=(
     CB_ARCHIVE_DIR CB_RETENTION_COUNT CB_RETENTION_DAYS
     CB_NOTIFY_ON_CHANGE CB_INCLUDE_SECRETS CB_AGE_RECIPIENT
     CB_VOLATILE_SECTIONS CB_SECRET_ALLOW
+    CB_LOCAL_ENABLED CB_GIT_ENABLED CB_GIT_DIR CB_GIT_REMOTE
+    CB_GIT_BRANCH CB_GIT_PUSH CB_GIT_SSH_KEY CB_GIT_TOKEN_FILE
+    CB_GIT_AUTHOR_NAME CB_GIT_AUTHOR_EMAIL
 )
+
+# A remote that already carries a credential lands verbatim in .git/config and
+# in every argv, which is exactly what CB_GIT_TOKEN_FILE exists to avoid.
+_cb_remote_has_credential() { [[ $1 =~ ^[a-zA-Z+]+://[^/@]*:[^/@]*@ ]]; }
+
+# Nesting either directory inside the other would sweep .git/objects into every
+# archive - unbounded, and non-deterministic, which loses the reproducible
+# archive property - and would let the pruner rm -f git internals.
+_cb_dirs_nested() { # _cb_dirs_nested <a> <b>
+    local a=${1%/} b=${2%/}
+    [[ $a == "$b" || $a == "$b"/* || $b == "$a"/* ]]
+}
 
 _cb_write_conf() {
     local notify=0 secrets=0
@@ -176,6 +206,20 @@ _cb_write_conf() {
     conf_set "$MODULE_NAME" CB_AGE_RECIPIENT      "$CB_AGE_RECIPIENT"
     conf_set "$MODULE_NAME" CB_VOLATILE_SECTIONS  "$CB_VOLATILE_SECTIONS"
     conf_set "$MODULE_NAME" CB_SECRET_ALLOW       "$CB_SECRET_ALLOW"
+    local local_on=0 git_on=0 git_push=0
+    [[ $CB_LOCAL_ENABLED == y ]] && local_on=1
+    [[ $CB_GIT_ENABLED   == y ]] && git_on=1
+    [[ $CB_GIT_PUSH      == y ]] && git_push=1
+    conf_set "$MODULE_NAME" CB_LOCAL_ENABLED   "$local_on"
+    conf_set "$MODULE_NAME" CB_GIT_ENABLED     "$git_on"
+    conf_set "$MODULE_NAME" CB_GIT_DIR         "$CB_GIT_DIR"
+    conf_set "$MODULE_NAME" CB_GIT_REMOTE      "$CB_GIT_REMOTE"
+    conf_set "$MODULE_NAME" CB_GIT_BRANCH      "$CB_GIT_BRANCH"
+    conf_set "$MODULE_NAME" CB_GIT_PUSH        "$git_push"
+    conf_set "$MODULE_NAME" CB_GIT_SSH_KEY     "$CB_GIT_SSH_KEY"
+    conf_set "$MODULE_NAME" CB_GIT_TOKEN_FILE  "$CB_GIT_TOKEN_FILE"
+    conf_set "$MODULE_NAME" CB_GIT_AUTHOR_NAME "$CB_GIT_AUTHOR_NAME"
+    conf_set "$MODULE_NAME" CB_GIT_AUTHOR_EMAIL "$CB_GIT_AUTHOR_EMAIL"
     ok "wrote $(conf_file "$MODULE_NAME") (0600)"
 }
 
@@ -232,6 +276,15 @@ module_install() {
         *) warn "not a discord.com/api/webhooks URL - continuing, it just has to accept the same JSON" ;;
     esac
 
+    step "Backends"
+    dim "  archives are self-contained snapshots; git is a history of the changes"
+    ask_yn CB_LOCAL_ENABLED "keep timestamped tar.gz archives" "$CB_LOCAL_ENABLED"
+    ask_yn CB_GIT_ENABLED   "also keep a git history"          "$CB_GIT_ENABLED"
+    [[ $CB_LOCAL_ENABLED == y || $CB_GIT_ENABLED == y ]] \
+        || die "at least one backend has to be enabled"
+    local git_was=0
+    [[ $(conf_get "$MODULE_NAME" CB_GIT_ENABLED) == 1 ]] && git_was=1
+
     step "Archives"
     ask CB_ARCHIVE_DIR "directory for the archives" "$CB_ARCHIVE_DIR"
     [[ $CB_ARCHIVE_DIR == /* ]] || die "the archive directory has to be an absolute path"
@@ -262,6 +315,41 @@ module_install() {
         warn "secrets will be archived encrypted - keep the age identity somewhere else"
     fi
 
+    if [[ $CB_GIT_ENABLED == y ]]; then
+        step "Git history"
+        pkg_ensure git:git rsync:rsync
+        ask CB_GIT_DIR    "working clone directory" "$CB_GIT_DIR"
+        ask CB_GIT_BRANCH "branch"                  "$CB_GIT_BRANCH"
+        [[ $CB_GIT_DIR == /* ]] || die "the git directory has to be an absolute path"
+        _cb_dirs_nested "$CB_GIT_DIR" "$CB_ARCHIVE_DIR" \
+            && die "the git directory and the archive directory must not nest"
+
+        ask CB_GIT_REMOTE "remote to push to (blank for local history only)" "$CB_GIT_REMOTE"
+        if [[ -n $CB_GIT_REMOTE ]]; then
+            _cb_remote_has_credential "$CB_GIT_REMOTE" \
+                && die "the remote URL carries a credential - use CB_GIT_TOKEN_FILE instead, so it does not land in .git/config"
+            ask_yn CB_GIT_PUSH "push after each commit" "y"
+            case $CB_GIT_REMOTE in
+                http*)
+                    ask CB_GIT_TOKEN_FILE "file holding an access token" "$CB_GIT_TOKEN_FILE"
+                    [[ -n $CB_GIT_TOKEN_FILE && ! -r $CB_GIT_TOKEN_FILE ]] \
+                        && die "cannot read $CB_GIT_TOKEN_FILE"
+                    ;;
+                *)
+                    ask CB_GIT_SSH_KEY "deploy key path (blank for the root default)" "$CB_GIT_SSH_KEY"
+                    if [[ -n $CB_GIT_SSH_KEY ]]; then
+                        [[ -r $CB_GIT_SSH_KEY ]] || die "cannot read $CB_GIT_SSH_KEY"
+                        local mode; mode=$(stat -c '%a' "$CB_GIT_SSH_KEY" 2>/dev/null || printf '')
+                        [[ -n $mode && $mode != 600 && $mode != 400 ]] \
+                            && warn "$CB_GIT_SSH_KEY is mode $mode - ssh may refuse it"
+                    fi
+                    ;;
+            esac
+        else
+            CB_GIT_PUSH=n
+        fi
+    fi
+
     step "Install"
     install_toolbox_lib discord.sh
     install -m 0755 "$(_cb_src)" "$TOOLBOX_BIN_DIR/$CB_BIN"
@@ -282,6 +370,20 @@ module_install() {
         else
             warn "failed - fix DISCORD_WEBHOOK in $(conf_file "$MODULE_NAME") and retry"
         fi
+    fi
+
+    # Turning git on when nothing has changed since the last capture would
+    # otherwise leave the repo empty until the configuration next moves - which
+    # on a stable host is never - while the status line reports git:0 as though
+    # that were healthy. Seed it once, now.
+    if [[ $CB_GIT_ENABLED == y && $git_was -eq 0 ]]; then
+        info "seeding the git history with the current configuration"
+        if _cb_run_helper run --force; then
+            ok "git history seeded"
+        else
+            warn "the seed run failed - check journalctl -u $CB_UNIT"
+        fi
+        CB_RUN_NOW=n
     fi
 
     ask_yn CB_RUN_NOW "take the first snapshot right now" "$CB_RUN_NOW"
@@ -377,14 +479,41 @@ module_status() {
         return 0
     fi
 
-    age=$(_cb_age_days "$last")
-    if [[ $age -lt 0 ]]; then
-        printf 'unknown  [archives:%s]' "${count:-0}"
-    elif [[ $age -gt ${stale:-2} ]]; then
-        printf 'stale:%dd  [archives:%s]' "$age" "${count:-0}"
-    else
-        printf 'archives:%s  [%s]' "${count:-0}" "$last"
+    # Git facts come from state, written at the end of each run. Nothing here
+    # touches CB_GIT_DIR: this runs for every module on every menu draw, so a
+    # hung mount under the repo would freeze the whole launcher, and a git call
+    # that failed quietly would print nothing - which status_line turns into
+    # "not installed", hiding a working module from update and uninstall.
+    local git_on push_state git_detail=""
+    git_on=$(conf_get "$MODULE_NAME" CB_GIT_ENABLED)
+    if [[ $git_on == 1 ]]; then
+        push_state=$(state_get "$MODULE_NAME" GIT_PUSH_STATE)
+        if [[ $push_state == diverged ]]; then
+            git_detail="git:diverged"
+        else
+            git_detail="git:$(state_get "$MODULE_NAME" GIT_COMMITS)"
+        fi
     fi
+
+    age=$(_cb_age_days "$last")
+    local head
+    if [[ $age -lt 0 ]]; then
+        head="unknown"
+    elif [[ $age -gt ${stale:-2} ]]; then
+        head=$(printf 'stale:%dd' "$age")
+    elif [[ $(conf_get "$MODULE_NAME" CB_LOCAL_ENABLED) == 0 ]]; then
+        head=${git_detail:-git:0}
+        git_detail=""
+    else
+        head=$(printf 'archives:%s' "${count:-0}")
+    fi
+    # A diverged remote is the one git state worth surfacing as the first word:
+    # it means a push is being refused every run until somebody reconciles it.
+    [[ $git_detail == git:diverged ]] && { head="git:diverged"; git_detail=""; }
+    printf '%s' "$head"
+    [[ -n $git_detail ]] && printf '  [%s]' "$git_detail"
+    [[ $head == archives:* ]] && printf '  [%s]' "$last"
+    return 0
 }
 
 module_status_long() {
@@ -427,6 +556,25 @@ module_status_long() {
         warn "archive directory is missing: $dir"
     fi
 
+    # The long form is the one place allowed to talk to git.
+    if [[ $(conf_get "$MODULE_NAME" CB_GIT_ENABLED) == 1 ]]; then
+        local gdir; gdir=$(conf_get "$MODULE_NAME" CB_GIT_DIR)
+        echo
+        printf '  git repo   %s\n' "$gdir"
+        printf '  branch     %s\n' "$(conf_get "$MODULE_NAME" CB_GIT_BRANCH)"
+        local rem; rem=$(conf_get "$MODULE_NAME" CB_GIT_REMOTE)
+        printf '  remote     %s\n' "${rem:-none}"
+        printf '  commits    %s\n' "$(state_get "$MODULE_NAME" GIT_COMMITS)"
+        printf '  head       %s\n' "$(state_get "$MODULE_NAME" GIT_COMMIT)"
+        printf '  push       %s\n' "$(state_get "$MODULE_NAME" GIT_PUSH_STATE)"
+        if [[ -d $gdir/.git ]]; then
+            printf '  repo size  %s\n' "$(du -sh "$gdir" 2>/dev/null | awk '{print $1}')"
+            git -C "$gdir" --no-pager log --oneline -n 3 2>/dev/null | sed 's/^/    /' || true
+        else
+            warn "the git repository is missing: $gdir"
+        fi
+    fi
+
     echo
     systemctl list-timers "$CB_UNIT.timer" --no-pager 2>/dev/null || true
 }
@@ -465,6 +613,18 @@ module_uninstall() {
             warn "deleted $dir"
         else
             ok "archives left in place: $dir"
+        fi
+    fi
+    # The git history is as much the point of the module as the archives are.
+    local gdir; gdir=$(conf_get "$MODULE_NAME" CB_GIT_DIR)
+    if [[ -n $gdir && -d $gdir ]]; then
+        local drop_git=n
+        ask_yn drop_git "also delete the git history in $gdir" "n"
+        if [[ $drop_git == y ]]; then
+            rm -rf "${gdir:?}"
+            warn "deleted $gdir"
+        else
+            ok "git history left in place: $gdir"
         fi
     fi
     dim "  $TOOLBOX_LIB_DIR/discord.sh is shared with other modules and stays"

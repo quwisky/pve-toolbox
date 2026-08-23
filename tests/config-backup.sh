@@ -17,6 +17,8 @@ WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
 
 pass() { printf 'ok  %s\n' "$1"; }
+# GNU stat on the target, BSD stat on the machine this is often written on.
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 
 # Nothing may reach the host: these are every path the runner writes to.
@@ -256,3 +258,155 @@ out=$(PVE_TOOLBOX_LIB=/nonexistent "$ROOT/modules/config-backup/pve-config-backu
 [[ $out == *"pve-config-backup run"* ]] || fail "--help printed no usage: $out"
 [[ $out != *"#"* ]] || fail "--help leaked the comment markers"
 pass "--help without the lib"
+
+# --- 7. the git backend --------------------------------------------------
+
+# The one assertion that does not need git installed: no force-push, ever.
+# A behavioural test proves nothing here - stock `git push` already refuses a
+# non-fast-forward, so an outcome test passes with zero divergence logic in the
+# runner, and keeps passing if someone later reaches for --force-with-lease to
+# silence a complaint. Grepping the source fails on the code change itself.
+RUNNER="$ROOT/modules/config-backup/pve-config-backup.sh"
+if grep -nE 'git[^|]*push' "$RUNNER" | grep -qE '\-\-force|--force-with-lease|[[:space:]]-f[[:space:]]'; then
+    fail "the runner force-pushes: a rejected push is the correct outcome when someone else wrote to the branch"
+fi
+pass "no force-push in the source"
+
+if ! command -v git >/dev/null 2>&1 || ! command -v rsync >/dev/null 2>&1; then
+    printf 'skip git backend tests, no git or rsync\n'
+    exit 0
+fi
+
+export CB_GIT_ENABLED=1
+export CB_GIT_BRANCH=master
+export CB_GIT_AUTHOR_NAME=test
+export CB_GIT_AUTHOR_EMAIL=test@example.invalid
+
+# An embedded credential defeats the whole point of CB_GIT_TOKEN_FILE: git
+# writes it into .git/config and puts it in every argv.
+cred_is() { # cred_is <url> <yes|no>
+    local got=no
+    _cb_git_remote_has_credential "$1" && got=yes
+    [[ $got == "$2" ]] || fail "_cb_git_remote_has_credential '$1' returned $got, wanted $2"
+}
+cred_is 'https://tok:x@github.com/a/b.git'  yes
+cred_is 'https://user:pass@example.com/r'   yes
+cred_is 'https://github.com/a/b.git'        no
+cred_is 'git@github.com:a/b.git'            no
+cred_is 'ssh://git@host/repo.git'           no
+pass "remote credential detection"
+
+# The helper has to speak the git-credential protocol. One that merely cats the
+# file is not a helper: git wants username= and password= lines back, and
+# without them either fails auth or falls through to prompting - which on a
+# timer with no stdin is a hang, not an error.
+TOKFILE="$WORK/token"; printf 'ghp_TESTTOKENVALUE\n' > "$TOKFILE"; chmod 600 "$TOKFILE"
+CB_GIT_TOKEN_FILE="$TOKFILE"
+helper=$(_cb_git_credential_helper)
+[[ $helper != *ghp_TESTTOKENVALUE* ]] \
+    || fail "the token value is in the helper string, so it would show up in ps"
+[[ $helper == *"$TOKFILE"* ]] || fail "the helper does not reference the token file"
+out=$(eval "${helper#!}" <<<'protocol=https
+host=github.com
+' 2>/dev/null || true)
+[[ $out == *"username="* ]] || fail "the helper emits no username= line: $out"
+[[ $out == *"password=ghp_TESTTOKENVALUE"* ]] || fail "the helper emits no password= line: $out"
+CB_GIT_TOKEN_FILE=""
+pass "credential helper speaks the git protocol"
+
+# What reaches git: not the regenerated dumps, not the secrets, not whatever
+# the operator declared volatile.
+stage_fixture; gstage=$CB_STAGE; _cb_drop_secrets
+mkdir -p "$gstage/derived" "$gstage/firewall-live" "$gstage/secrets"
+printf 'pve 9.2\n'  > "$gstage/derived/pveversion.txt"
+printf 'live\n'     > "$gstage/firewall-live/iptables.rules"
+printf 'enc\n'      > "$gstage/secrets/leaked.age"
+gman="$WORK/gman"; _cb_manifest "$gstage" "$gman"
+inc=$(_cb_git_include "$gman")
+grep -q '^pve/storage.cfg$'  <<<"$inc" || fail "git include dropped a real config path"
+grep -q 'derived/'           <<<"$inc" && fail "a reference dump reached the git tree"
+grep -q 'firewall-live/'     <<<"$inc" && fail "live firewall state reached the git tree"
+grep -q 'secrets/'           <<<"$inc" && fail "an encrypted secret reached the git tree"
+grep -q 'resolved/'          <<<"$inc" && fail "a resolved guest view reached the git tree"
+pass "git include set"
+
+# Commit only on change, and a change confined to a reference path is not one.
+export CB_GIT_DIR="$WORK/repo"
+export CB_GIT_REMOTE="" CB_GIT_PUSH=0
+_cb_git_sync "$gstage" "$gman" deadbeefcafe
+[[ -d $CB_GIT_DIR/.git ]] || fail "no repository was created"
+count_commits() { git -C "$CB_GIT_DIR" rev-list --count HEAD 2>/dev/null || printf '0'; }
+[[ $(count_commits) == 1 ]] || fail "the first sync did not commit"
+
+_cb_git_sync "$gstage" "$gman" deadbeefcafe
+[[ $(count_commits) == 1 ]] || fail "an unchanged tree committed a second time"
+
+# A reference path moving must not produce a commit - this is the case that
+# distinguishes "excluded because reference" from "excluded because volatile",
+# which the firewall-live case alone cannot.
+printf 'pve 9.3\n' > "$gstage/derived/pveversion.txt"
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" deadbeefcafe
+[[ $(count_commits) == 1 ]] || fail "a reference-only change produced a commit"
+
+printf 'balloon: 0\n' >> "$gstage/pve/qemu-server/100.conf"
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" feedfacefeed
+[[ $(count_commits) == 2 ]] || fail "a real config change did not commit"
+pass "commit only on change"
+
+# rsync --delete runs against a directory that holds the repository, and the
+# attributes file is not in the staged tree - so if it were tracked rather than
+# under .git/, the first sync would delete it and the -diff rule would quietly
+# stop applying.
+[[ -d $CB_GIT_DIR/.git ]] || fail ".git did not survive the syncs"
+[[ -f $CB_GIT_DIR/.git/info/attributes ]] || fail ".git/info/attributes did not survive the syncs"
+pass "repository survives --delete"
+
+# The work tree holds the same configuration as the 0600 archives. rsync -a
+# would otherwise carry the source's own modes straight through.
+[[ $(mode_of "$CB_GIT_DIR") == 700 ]] || fail "the git dir is $(mode_of "$CB_GIT_DIR"), wanted 700"
+while IFS= read -r f; do
+    m=$(mode_of "$f")
+    [[ $m == 600 ]] || fail "$f is mode $m, wanted 600"
+done < <(find "$CB_GIT_DIR" -path "$CB_GIT_DIR/.git" -prune -o -type f -print)
+pass "git work tree permissions"
+
+# A repository with no commits is a real state, and every git call that reports
+# it exits non-zero - which the ERR trap would turn into a spurious failure
+# alert if any of them were called bare.
+export CB_GIT_DIR="$WORK/empty"
+install -d -m 0700 "$CB_GIT_DIR"
+git init -q -b master "$CB_GIT_DIR"
+( set -Eeuo pipefail; _cb_git_state ) || fail "_cb_git_state tripped on a zero-commit repo"
+[[ $(_cb_state_get GIT_COMMITS) == 0 ]] || fail "a zero-commit repo did not report 0 commits"
+pass "zero-commit repository"
+
+# Divergence: commit locally, leave the remote exactly as it was.
+export CB_GIT_DIR="$WORK/pushrepo"
+REMOTE="$WORK/remote.git"; git init -q --bare "$REMOTE"
+export CB_GIT_REMOTE="$REMOTE" CB_GIT_PUSH=1
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" aaaabbbbcccc
+[[ $(git -C "$REMOTE" rev-list --count master) == 1 ]] || fail "the first push did not land"
+
+git clone -q -b master "$REMOTE" "$WORK/other"
+git -C "$WORK/other" -c user.name=o -c user.email=o@e commit -q --allow-empty -m "another writer"
+git -C "$WORK/other" push -q origin master
+before=$(git -C "$REMOTE" rev-parse master)
+
+printf 'onboot: 1\n' >> "$gstage/pve/qemu-server/100.conf"
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" ddddeeeeffff
+after=$(git -C "$REMOTE" rev-parse master)
+[[ $before == "$after" ]] || fail "a diverged remote was overwritten"
+[[ $(_cb_state_get GIT_PUSH_STATE) == diverged ]] \
+    || fail "divergence was not recorded: $(_cb_state_get GIT_PUSH_STATE)"
+[[ $(git -C "$CB_GIT_DIR" rev-list --count HEAD) == 2 ]] \
+    || fail "the local commit was lost when the push was refused"
+pass "diverged remote is left alone"
+
+# The token must not end up persisted anywhere in the repository.
+grep -rq 'ghp_TESTTOKENVALUE' "$CB_GIT_DIR/.git/config" 2>/dev/null \
+    && fail "a token was written into .git/config"
+pass "no credential in .git/config"

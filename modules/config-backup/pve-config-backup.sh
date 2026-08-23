@@ -11,6 +11,9 @@
 #   pve-config-backup list
 #         Archives newest first, with size, date and content hash.
 #
+#   pve-config-backup log
+#         Commit history, when the git backend is enabled.
+#
 #   pve-config-backup --test
 #         Send a test notification to the configured webhook, capture nothing.
 #
@@ -58,6 +61,16 @@ CB_NOTIFY_ON_CHANGE="${CB_NOTIFY_ON_CHANGE:-0}"
 CB_INCLUDE_SECRETS="${CB_INCLUDE_SECRETS:-0}"
 CB_AGE_RECIPIENT="${CB_AGE_RECIPIENT:-}"
 CB_VOLATILE_SECTIONS="${CB_VOLATILE_SECTIONS:-firewall-live/}"
+CB_LOCAL_ENABLED="${CB_LOCAL_ENABLED:-1}"
+CB_GIT_ENABLED="${CB_GIT_ENABLED:-0}"
+CB_GIT_DIR="${CB_GIT_DIR:-/var/lib/pve-toolbox/config-backup.git}"
+CB_GIT_REMOTE="${CB_GIT_REMOTE:-}"
+CB_GIT_BRANCH="${CB_GIT_BRANCH:-master}"
+CB_GIT_PUSH="${CB_GIT_PUSH:-0}"
+CB_GIT_SSH_KEY="${CB_GIT_SSH_KEY:-}"
+CB_GIT_TOKEN_FILE="${CB_GIT_TOKEN_FILE:-}"
+CB_GIT_AUTHOR_NAME="${CB_GIT_AUTHOR_NAME:-pve-toolbox}"
+CB_GIT_AUTHOR_EMAIL="${CB_GIT_AUTHOR_EMAIL:-}"
 CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-}"
 DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"
 
@@ -95,6 +108,18 @@ _cb_unexpected() { # _cb_unexpected <status> <line>
     printf 'error: unexpected failure (exit %s at line %s)\n' "$1" "$2" >&2
     _cb_notify_failure "unexpected failure (exit $1 at line $2)"
     exit "$1"
+}
+
+# discord.sh is loaded from main, so anything that notifies has to cope with
+# not having it - the colour constants are unset until then, and under set -u
+# naming one is fatal. Reporting is best effort; capturing is not.
+_cb_notify() { # _cb_notify <colour-name> <title> <desc> [name value ...]
+    declare -F discord_notify >/dev/null || return 0
+    [[ -n $DISCORD_WEBHOOK ]] || return 0
+    local colour=${!1:-0}
+    shift
+    discord_notify "$DISCORD_WEBHOOK" "$colour" "$@" || true
+    return 0
 }
 
 _cb_notify_failure() {
@@ -646,6 +671,218 @@ _cb_archive_bytes() {
     printf '%s' "$total"
 }
 
+# --------------------------------------------------------- git backend --
+#
+# A working clone whose history is the configuration's history. Commits only
+# when the content hash moved, so `git log` is a list of real changes rather
+# than a list of times the timer fired.
+#
+# Every call goes through _cb_git, which fixes an environment that cannot
+# block. BatchMode is the actual guarantee that a passphrase-protected deploy
+# key fails instead of hanging - "there is probably no tty" is not, because an
+# operator debugging this by hand over SSH has one. The timeout is a backstop
+# for stalls no ssh or http option bounds, well inside TimeoutStartSec=900.
+#
+# Nothing here forwards raw git stderr into fail() or a Discord embed: git
+# prints remote URLs on error, and a URL can carry an embedded credential.
+
+_cb_git() { # _cb_git <args...>
+    local -a ssh=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
+                  -o ConnectTimeout=10)
+    [[ -n $CB_GIT_SSH_KEY ]] && ssh+=(-i "$CB_GIT_SSH_KEY" -o IdentitiesOnly=yes)
+    local -a pre=(env "GIT_TERMINAL_PROMPT=0" "GIT_SSH_COMMAND=${ssh[*]}")
+    local -a cred=()
+    if [[ -n $CB_GIT_TOKEN_FILE ]]; then
+        cred=(-c "credential.helper=$(_cb_git_credential_helper)")
+    fi
+    timeout 300 "${pre[@]}" git -C "$CB_GIT_DIR" "${cred[@]}" "$@"
+}
+
+# The git-credential protocol, not a bare cat: git needs username= and
+# password= lines back, and a helper that prints raw bytes either fails auth
+# or falls through to prompting for a username. The token's *path* is what
+# ends up in the process table; the value is read when the helper runs.
+_cb_git_credential_helper() {
+    printf '!f() { echo username=x-access-token; echo "password=$(cat %s)"; }; f' \
+        "$CB_GIT_TOKEN_FILE"
+}
+
+# A remote that already carries a credential defeats CB_GIT_TOKEN_FILE: git
+# writes it verbatim into .git/config and puts it in every argv.
+_cb_git_remote_has_credential() { # _cb_git_remote_has_credential <url>
+    [[ $1 =~ ^[a-zA-Z+]+://[^/@]*:[^/@]*@ ]]
+}
+
+_cb_git_init() {
+    if [[ ! -d $CB_GIT_DIR/.git ]]; then
+        # install -d before git init, and umask around it, so there is no
+        # window where objects are created under the inherited umask.
+        install -d -m 0700 "$CB_GIT_DIR"
+        ( umask 077
+          git init -q -b "$CB_GIT_BRANCH" "$CB_GIT_DIR" ) \
+            || fail "could not create the git repository at $CB_GIT_DIR"
+        log "initialised $CB_GIT_DIR on $CB_GIT_BRANCH"
+    fi
+    chmod 0700 "$CB_GIT_DIR"
+    git -C "$CB_GIT_DIR" config user.name  "$CB_GIT_AUTHOR_NAME"
+    git -C "$CB_GIT_DIR" config user.email "$CB_GIT_AUTHOR_EMAIL"
+
+    # .git/info/attributes rather than a tracked .gitattributes: the latter is
+    # not in the staged tree, so the --delete sync would remove it on the very
+    # first run and the rule would silently stop applying.
+    install -d -m 0700 "$CB_GIT_DIR/.git/info"
+    printf 'secrets/** -diff\n*.age -diff\n' > "$CB_GIT_DIR/.git/info/attributes"
+
+    if [[ -n $CB_GIT_REMOTE ]]; then
+        if git -C "$CB_GIT_DIR" remote get-url origin >/dev/null 2>&1; then
+            git -C "$CB_GIT_DIR" remote set-url origin "$CB_GIT_REMOTE"
+        else
+            git -C "$CB_GIT_DIR" remote add origin "$CB_GIT_REMOTE"
+        fi
+    fi
+    return 0
+}
+
+# What goes into git: everything the manifest lists that is not reference-only,
+# not a secret and not operator-declared volatile. Reference paths are the
+# regenerated dumps - a recomputed `qm config --current` moves on a PVE upgrade
+# with no operator edit behind it, and committing that makes the history a
+# worse answer to "what changed" than it should be. Taking the set off the
+# manifest means one filter, not a second glob list to keep in sync.
+_cb_git_include() { # _cb_git_include <manifest>
+    local vol; vol=$(_cb_volatile_regex)
+    awk -F'\t' -v vol="$vol" '
+        $2 == "reference" { next }
+        $1 ~ /^secrets\// { next }
+        vol != "" && $1 ~ vol { next }
+        { print $1 }
+    ' "$1"
+}
+
+_cb_git_sync() { # _cb_git_sync <stage> <manifest> <hash>
+    local stage=$1 manifest=$2 hash=$3 include subject
+    _cb_git_init
+
+    include=$(mktemp)
+    _cb_git_include "$manifest" > "$include"
+
+    # --delete against a live work tree has none of the staging the tar path
+    # gets, so a transfer that dies half way through would be committed as a
+    # permanent, corrupt point in history. rsync's exit status is the only
+    # thing standing between that and `git add -A`.
+    if ! rsync -a --delete --chmod=D700,F600 \
+              --exclude='.git/' \
+              --files-from="$include" "$stage/" "$CB_GIT_DIR/"; then
+        rm -f "$include"
+        fail "rsync into the git work tree failed - nothing was committed"
+    fi
+    rm -f "$include"
+
+    # --files-from does not delete what is no longer listed, so prune anything
+    # tracked that the include list no longer covers.
+    _cb_git_prune_removed "$manifest"
+
+    if ! _cb_git add -A; then
+        fail "git add failed"
+    fi
+    # Exits 1 exactly when there is something to commit, which is the common
+    # case here - a bare call would take the ERR trap every real change.
+    if _cb_git diff --cached --quiet; then
+        log "git: nothing to commit"
+        _cb_git_state
+        return 0
+    fi
+    subject="config ${hash:0:12}"
+    if ! _cb_git commit -q -m "$subject" -m "content hash: $hash"; then
+        fail "git commit failed"
+    fi
+    log "git: committed $subject"
+
+    [[ $CB_GIT_PUSH -eq 1 && -n $CB_GIT_REMOTE ]] && _cb_git_push
+    _cb_git_state
+    return 0
+}
+
+# Files that were tracked and are no longer collected.
+_cb_git_prune_removed() { # _cb_git_prune_removed <manifest>
+    local tracked keep f
+    _cb_git rev-parse --verify HEAD >/dev/null 2>&1 || return 0
+    keep=$(mktemp); tracked=$(mktemp)
+    _cb_git_include "$1" | LC_ALL=C sort > "$keep"
+    _cb_git ls-files | LC_ALL=C sort > "$tracked"
+    while IFS= read -r f; do
+        [[ -n $f ]] || continue
+        rm -f "$CB_GIT_DIR/$f"
+    done < <(comm -23 "$tracked" "$keep")
+    rm -f "$keep" "$tracked"
+    return 0
+}
+
+# Never force. A rejected push is the correct outcome when someone else wrote
+# to the branch: the remote is left exactly as it was and the local history is
+# still intact for an operator to reconcile by hand.
+_cb_git_push() {
+    local remote_refs
+    # ls-remote first, and separately from fetch, because the two failures mean
+    # opposite things: an empty remote has no branch to fetch and fetch says so
+    # with the same "fatal" it uses for an unreachable host. Treating both as
+    # "do not push" means the very first push can never happen.
+    if ! remote_refs=$(_cb_git ls-remote --heads origin "$CB_GIT_BRANCH" 2>/dev/null); then
+        log "warning: the git remote is unreachable - not pushing"
+        _cb_state_set GIT_PUSH_STATE unreachable
+        return 0
+    fi
+    if [[ -z $remote_refs ]]; then
+        log "git: origin has no $CB_GIT_BRANCH yet - first push"
+    elif ! _cb_git fetch -q origin "$CB_GIT_BRANCH"; then
+        log "warning: git fetch failed - not pushing"
+        _cb_state_set GIT_PUSH_STATE unreachable
+        return 0
+    fi
+    if _cb_git rev-parse --verify "origin/$CB_GIT_BRANCH" >/dev/null 2>&1; then
+        if ! _cb_git merge-base --is-ancestor "origin/$CB_GIT_BRANCH" HEAD; then
+            log "warning: $CB_GIT_BRANCH has diverged from origin - refusing to push"
+            _cb_notify DISCORD_WARN \
+                "PVE config backup: git remote diverged - $HOST_SHORT" \
+                "The remote branch has commits this host does not. The snapshot was committed locally and the remote was left untouched; reconcile by hand." \
+                Host   "$HOST_SHORT" \
+                Branch "$CB_GIT_BRANCH"
+            _cb_state_set GIT_PUSH_STATE diverged
+            return 0
+        fi
+    fi
+    if _cb_git push -q origin "$CB_GIT_BRANCH"; then
+        log "git: pushed to origin/$CB_GIT_BRANCH"
+        _cb_state_set GIT_PUSH_STATE ok
+        _cb_state_set GIT_LAST_PUSH "$(date -Is)"
+    else
+        log "warning: git push was rejected - the remote is unchanged"
+        _cb_state_set GIT_PUSH_STATE rejected
+    fi
+    return 0
+}
+
+# module_status reads these and never touches CB_GIT_DIR itself: it runs for
+# every module on every menu draw, so one hung mount under the repo would
+# freeze the whole launcher, and a git call that fails quietly would make the
+# module read as "not installed" and vanish from update and uninstall.
+_cb_git_state() {
+    local commits="0" head="" dirty=0 ahead=0
+    if _cb_git rev-parse --verify HEAD >/dev/null 2>&1; then
+        commits=$(_cb_git rev-list --count HEAD 2>/dev/null || printf '0')
+        head=$(_cb_git rev-parse --short HEAD 2>/dev/null || printf '')
+        if ! _cb_git diff --quiet 2>/dev/null; then dirty=1; fi
+        if _cb_git rev-parse --verify "origin/$CB_GIT_BRANCH" >/dev/null 2>&1; then
+            ahead=$(_cb_git rev-list --count "origin/$CB_GIT_BRANCH..HEAD" 2>/dev/null || printf '0')
+        fi
+    fi
+    _cb_state_set GIT_COMMITS "$commits"
+    _cb_state_set GIT_COMMIT  "$head"
+    _cb_state_set GIT_DIRTY   "$dirty"
+    _cb_state_set GIT_AHEAD   "$ahead"
+    return 0
+}
+
 # ------------------------------------------------------------------ run --
 
 _cb_lock() {
@@ -709,6 +946,41 @@ _cb_run() {
         return 0
     fi
 
+    if [[ $CB_LOCAL_ENABLED -eq 1 ]]; then
+        _cb_write_archive "$manifest" "$hash" "$files"
+    else
+        log "local backend disabled - no archive written"
+        _cb_state_set LAST_RUN "$(date -Is)"
+        _cb_state_set LAST_RESULT ok
+        _cb_state_set LAST_HASH "$hash"
+        _cb_state_set LAST_DURATION "$(_hms $((SECONDS - CB_STARTED)))"
+    fi
+
+    if [[ $CB_GIT_ENABLED -eq 1 ]]; then
+        _cb_git_sync "$CB_STAGE" "$manifest" "$hash"
+    fi
+
+    # Out here rather than inside the archive step, so a git-only install
+    # still reports a change.
+    if [[ $CB_NOTIFY_ON_CHANGE -eq 1 ]]; then
+        local backends=""
+        [[ $CB_LOCAL_ENABLED -eq 1 ]] && backends="archive"
+        [[ $CB_GIT_ENABLED   -eq 1 ]] && backends="${backends:+$backends + }git"
+        _cb_notify DISCORD_OK \
+            "PVE config changed - $HOST_SHORT" \
+            "The configuration changed since the last run and a new snapshot was taken." \
+            Host     "$HOST_SHORT" \
+            Backends "$backends" \
+            Archive  "$(_cb_state_get LAST_ARCHIVE)" \
+            Files    "$files" \
+            Hash     "${hash:0:12}" \
+            Took     "$(_hms $((SECONDS - CB_STARTED)))"
+    fi
+    return 0
+}
+
+_cb_write_archive() { # _cb_write_archive <manifest> <hash> <filecount>
+    local manifest=$1 hash=$2 files=$3
     mkdir -p "$CB_ARCHIVE_DIR"
     chmod 0700 "$CB_ARCHIVE_DIR"
     local name path tmp stamp n=1
@@ -762,17 +1034,6 @@ _cb_run() {
 
     log "wrote $path ($bytes bytes, $files files, $took)"
 
-    if [[ $CB_NOTIFY_ON_CHANGE -eq 1 ]]; then
-        discord_notify "$DISCORD_WEBHOOK" "$DISCORD_OK" \
-            "PVE config changed - $HOST_SHORT" \
-            "The configuration changed since the last run and a new snapshot was written." \
-            Host     "$HOST_SHORT" \
-            Archive  "$name" \
-            Files    "$files" \
-            Size     "$bytes bytes" \
-            Hash     "${hash:0:12}" \
-            Took     "$took" || true
-    fi
     return 0
 }
 
@@ -784,6 +1045,19 @@ _cb_relink_latest() {
     else
         rm -f "$CB_ARCHIVE_DIR/latest"
     fi
+    return 0
+}
+
+# Guarded on the repo existing, not merely on CB_GIT_ENABLED: the two diverge
+# when the first init never got as far as creating it.
+_cb_git_log() {
+    [[ $CB_GIT_ENABLED -eq 1 ]] || fail "the git backend is not enabled"
+    [[ -d $CB_GIT_DIR/.git ]]  || fail "no git repository at $CB_GIT_DIR"
+    if ! _cb_git rev-parse --verify HEAD >/dev/null 2>&1; then
+        log "no commits yet"
+        return 0
+    fi
+    _cb_git --no-pager log --oneline --decorate -n "${CB_LOG_LINES:-20}" || true
     return 0
 }
 
@@ -816,6 +1090,14 @@ _cb_read_conf() {
     [[ $CB_NOTIFY_ON_CHANGE =~ ^[01]$  ]] || CB_NOTIFY_ON_CHANGE=0
     [[ $CB_INCLUDE_SECRETS  =~ ^[01]$  ]] || CB_INCLUDE_SECRETS=0
     [[ -n $CB_ARCHIVE_DIR ]] || CB_ARCHIVE_DIR=/var/lib/pve-toolbox/config-backup
+    [[ $CB_LOCAL_ENABLED =~ ^[01]$ ]] || CB_LOCAL_ENABLED=1
+    [[ $CB_GIT_ENABLED   =~ ^[01]$ ]] || CB_GIT_ENABLED=0
+    [[ $CB_GIT_PUSH      =~ ^[01]$ ]] || CB_GIT_PUSH=0
+    [[ -n $CB_GIT_BRANCH ]] || CB_GIT_BRANCH=master
+    [[ -n $CB_GIT_AUTHOR_EMAIL ]] || CB_GIT_AUTHOR_EMAIL="pve-toolbox@$HOST_SHORT"
+    # Refusing both leaves a timer that captures and then throws it away.
+    [[ $CB_LOCAL_ENABLED -eq 1 || $CB_GIT_ENABLED -eq 1 ]] \
+        || fail "both backends are disabled - set CB_LOCAL_ENABLED or CB_GIT_ENABLED"
 }
 
 main() {
@@ -824,6 +1106,7 @@ main() {
         -h|--help)    usage; exit 0 ;;
         --test)       mode='test'; shift ;;
         run)          mode='run';  shift ;;
+        log)          mode='log'; shift ;;
         list)         mode='list'; shift ;;
         "")           usage >&2; exit 2 ;;
         *)            printf 'error: unknown command: %s\n' "$1" >&2; usage >&2; exit 2 ;;
@@ -846,6 +1129,10 @@ main() {
     command -v curl >/dev/null 2>&1 || fail "curl not found"
     command -v jq   >/dev/null 2>&1 || fail "jq not found"
     command -v tar  >/dev/null 2>&1 || fail "tar not found"
+    if [[ $CB_GIT_ENABLED -eq 1 ]]; then
+        command -v git   >/dev/null 2>&1 || fail "git not found but the git backend is enabled"
+        command -v rsync >/dev/null 2>&1 || fail "rsync not found but the git backend is enabled"
+    fi
 
     _cb_read_conf
 
@@ -859,6 +1146,7 @@ main() {
                 || fail "could not deliver the test notification - check DISCORD_WEBHOOK in $CB_CONF"
             exit 0 ;;
         list) _cb_list ;;
+        log)  _cb_git_log ;;
         run)  _cb_run ;;
     esac
 }

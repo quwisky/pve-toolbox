@@ -14,9 +14,23 @@ Module      config-backup
 Helper      /usr/local/bin/pve-config-backup
 Config      /etc/pve-toolbox/config-backup.conf      (0600)
 Archives    /var/lib/pve-toolbox/config-backup/      (0700 dir, 0600 per file)
+Git repo    /var/lib/pve-toolbox/config-backup.git/  (0700, optional)
 State       /var/lib/pve-toolbox/config-backup.state (0644)
 Unit        pve-toolbox-config-backup.{service,timer}
 ```
+
+## Two backends
+
+| | `local` | `git` |
+| --- | --- | --- |
+| Produces | one `tar.gz` per change, with `.sha256` and `.manifest` | one commit per change |
+| Answers | "give me the whole host as it was on the 4th" | "what changed, and when" |
+| Retention | `CB_RETENTION_COUNT` / `CB_RETENTION_DAYS` | none — history is the point |
+| Holds | everything captured | configuration only |
+
+Either can be turned off, but not both. They share one capture: the tree is
+collected, classified, scanned and hashed once, and only then handed to
+whichever backends are enabled.
 
 !!! warning "This release captures; it does not restore"
 
@@ -150,6 +164,60 @@ ran into a comment on every dump, JSON is re-serialised through `jq -S`, and
     the hash, on top of everything already classified reference-only. Reach for
     it when something under `pve/` or `host/` turns out to churn on its own.
 
+## Git history
+
+`CB_GIT_ENABLED=1` maintains a working clone whose history *is* the
+configuration's history. A commit happens only when the content hash moved, so
+`git log` is a list of real changes rather than a list of times the timer
+fired.
+
+**The git tree holds configuration only.** Everything classified reference-only
+— `derived/`, `resolved/`, `firewall-live/`, `meta/` — is excluded. Those are
+regenerated dumps, and `resolved/` in particular is a *recomputed* view: a PVE
+upgrade can change a resolved default with no operator edit behind it, and
+committing that makes the history a worse answer to "what changed" than no
+history at all. They stay in the archives, which is where the diagnostic value
+was always meant to live.
+
+`CB_VOLATILE_SECTIONS` widens that exclusion for anything under `pve/` or
+`host/` that turns out to churn on a particular host.
+
+!!! danger "`secrets/*` never reaches git"
+
+    The local backend prunes; git has no retention, and a pushed blob is
+    permanent — scrubbing one means rewriting remote history. Encrypted or not,
+    that is not a decision to make on an operator's behalf. Secrets stay in the
+    archives, under `CB_RETENTION_*`.
+
+### Pushing
+
+Set `CB_GIT_REMOTE` and `CB_GIT_PUSH=1`. Two rules:
+
+- **Never a force push.** If the remote branch has commits this host does not,
+  the snapshot is still committed locally, the remote is left exactly as it
+  was, and a warning goes to Discord. Reconcile by hand — an automated
+  reconciliation of two divergent configuration histories is a way to lose one
+  of them.
+- **Nothing can block.** Every git call runs with `GIT_TERMINAL_PROMPT=0` and
+  ssh `BatchMode=yes`, under a `timeout`. A passphrase-protected deploy key
+  fails fast instead of hanging a timer forever.
+
+For SSH, point `CB_GIT_SSH_KEY` at a deploy key. For HTTPS, put the token in a
+file and set `CB_GIT_TOKEN_FILE` — it is read through a credential helper when
+git asks, so the value never reaches `.git/config`, the process table or the
+journal.
+
+!!! warning "Do not put a credential in the remote URL"
+
+    `https://<token>@host/repo.git` is the habitual way to configure a remote,
+    and install refuses it. Git would write it verbatim into `.git/config` and
+    put it in the argv of every fetch and push.
+
+```bash
+pve-config-backup log          # commit history
+git -C /var/lib/pve-toolbox/config-backup.git log -p --follow pve/storage.cfg
+```
+
 ## Retention
 
 ```
@@ -206,6 +274,14 @@ routine and a channel that pings on every edit stops being read.
 | `CB_AGE_RECIPIENT` | — | age recipient (`age1...`) for encrypted secrets |
 | `CB_SECRET_ALLOW` | — | Space-separated path globs the secret scan may ignore |
 | `CB_RUN_NOW` | `n` | Take the first snapshot at the end of the install |
+| `CB_LOCAL_ENABLED` | `y` | Keep `tar.gz` archives |
+| `CB_GIT_ENABLED` | `n` | Keep a git history |
+| `CB_GIT_DIR` | `/var/lib/pve-toolbox/config-backup.git` | Working clone |
+| `CB_GIT_REMOTE` | — | Push target; must not embed a credential |
+| `CB_GIT_BRANCH` | `master` | Branch to commit on |
+| `CB_GIT_PUSH` | `n` | Push after each commit |
+| `CB_GIT_SSH_KEY` | — | Deploy key for an ssh remote |
+| `CB_GIT_TOKEN_FILE` | — | File holding a token, for an https remote |
 
 ```bash
 CB_WEBHOOK='https://discord.com/api/webhooks/123/abc' \
@@ -227,6 +303,7 @@ pve-config-backup run              # capture now
 pve-config-backup run --dry-run    # classify and hash, write nothing
 pve-config-backup run --force      # archive even if nothing changed
 pve-config-backup list             # archives newest first
+pve-config-backup log              # commit history, when git is enabled
 pve-config-backup --test           # send a test notification
 ```
 
