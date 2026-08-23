@@ -103,8 +103,9 @@ make test-tui  # drive `ui` through a pty, needs whiptail + expect
 ```
 
 CI runs these on every push and pull request, plus the tests again inside a
-`debian:13` container to match the PVE 9 host. The ui test only runs there,
-since that container is the one with whiptail. The docs build with
+`debian:13` container to match the PVE 9 host. The ui test skips wherever
+whiptail is missing, so in practice it runs in that container, where CI marks
+it required rather than skippable. The docs build with
 `mkdocs build --strict`, so a broken internal link fails the build.
 
 ```bash

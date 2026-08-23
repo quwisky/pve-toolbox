@@ -16,7 +16,13 @@ TUI_BACKTITLE="${TUI_BACKTITLE:-pve-toolbox}"
 # dialog is accepted too: for the four widgets used here the command lines are
 # the same, and some people have it instead.
 tui_detect() {
-    [[ -n $TUI_BIN ]] && return 0
+    # An override that is not installed exits 127, and once a widget has run
+    # that is as indistinguishable from Cancel as anything else, so check it
+    # here rather than finding out silently later.
+    if [[ -n $TUI_BIN ]]; then
+        command -v "$TUI_BIN" >/dev/null 2>&1
+        return
+    fi
     local c
     for c in whiptail dialog; do
         if command -v "$c" >/dev/null 2>&1; then
@@ -48,6 +54,7 @@ tui_size() { # tui_size <rows> -> sets TUI_H TUI_W TUI_LIST
 
     TUI_H=$(( TUI_LIST + 9 ))
     (( TUI_H > lines - 2 )) && TUI_H=$(( lines - 2 ))
+    (( TUI_H < 7 )) && TUI_H=7
 }
 
 # ---------------------------------------------------------------- widgets --

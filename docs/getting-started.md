@@ -58,9 +58,11 @@ installed, so that TAB can pause for a moment; the others only read metadata.
 
 ## The full-screen ui
 
-`pve-toolbox ui` is the same set of actions behind whiptail, which ships with
-Debian through debconf and so is already on a PVE host. Arrow keys move,
-space toggles a module, Enter confirms, Esc goes back a level.
+`pve-toolbox ui` is the same set of actions behind whiptail, which a PVE host
+already has - it is what debconf draws its prompts with. On a stripped-down
+Debian it may not be there, and `ui` says so rather than guessing; `apt install
+whiptail` is the fix. Arrow keys move, space toggles a module, Enter confirms,
+Esc goes back a level.
 
 ```
                  pve-toolbox
@@ -86,9 +88,11 @@ cannot happen inside a whiptail box, so once something is picked the screen is
 handed back and the module runs exactly as it does from the command line. It
 pauses for a keypress afterwards so the output stays readable.
 
-Set `TUI_BIN=dialog` to use dialog instead. On a terminal neither can draw on
-(`TERM=dumb`, which is what most CI containers set) `ui` refuses with a message
-rather than appearing to quit the moment it starts.
+Set `TUI_BIN=dialog` to use dialog instead; an override that is not installed
+is reported rather than ignored. On a terminal neither can draw on (`TERM=dumb`,
+which is what most CI containers set) `ui` refuses with a message rather than
+appearing to quit the moment it starts - whiptail exits 1 in that case, the same
+code it uses for Cancel, so it has to be caught before the first box.
 
 The numeric menu at `pve-toolbox` with no arguments is unchanged.
 
@@ -142,5 +146,6 @@ make test-tui  # drive `ui` through a pty, needs whiptail + expect
 ```
 
 CI runs these on every push and pull request, plus the tests again inside a
-`debian:13` container to match the PVE 9 host. The ui test only runs there,
-since that container is the one with whiptail.
+`debian:13` container to match the PVE 9 host. The ui test skips wherever
+whiptail is missing, so in practice it runs in that container, where CI marks
+it required rather than skippable.

@@ -45,7 +45,9 @@ jobs:
 
       - uses: actions/checkout@v4
 
+      # TUI_TEST_REQUIRED turns a missing whiptail or expect into a failure
+      # rather than a skip. This is the job that has them, so the ui test has
+      # to run here; make test picks it up without a second pass.
       - run: make test
-
-      # Only here: this job has the whiptail the ui actually runs on.
-      - run: make test-tui
+        env:
+          TUI_TEST_REQUIRED: "1"
