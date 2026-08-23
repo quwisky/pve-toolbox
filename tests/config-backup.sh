@@ -410,3 +410,135 @@ pass "diverged remote is left alone"
 grep -rq 'ghp_TESTTOKENVALUE' "$CB_GIT_DIR/.git/config" 2>/dev/null \
     && fail "a token was written into .git/config"
 pass "no credential in .git/config"
+
+# --- 8. restore ------------------------------------------------------------
+
+# A live tree to restore onto, separate from the capture fixture so a mistake
+# here cannot quietly pass by restoring a file onto itself.
+LIVE=$(mktemp -d "$WORK/liveXXXXXX")
+cp -a "$FIX/." "$LIVE/"
+export CB_PVE_DIR="$LIVE/pve" CB_ROOT_DIR="$LIVE/root"
+export CB_ARCHIVE_DIR="$WORK/rar" CB_STATE_FILE="$WORK/rstate"
+export CB_GIT_ENABLED=0
+CB_CONFIRM=0; CB_SELECTOR=""
+
+tree_hash() { # tree_hash <dir> -> everything, including modes and absences
+    ( cd "$1" && find . \( -type f -o -type l \) ! -name '*.bak.*' -printf '%m %p\n' \
+        | LC_ALL=C sort
+      cd "$1" && find . -type f ! -name '*.bak.*' -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
+    ) | sha256sum | awk '{print $1}'
+}
+
+_cb_capture_once >/dev/null
+BASE=$(_cb_state_get LAST_ARCHIVE)
+[[ -n $BASE ]] || fail "no baseline archive was produced"
+
+# Mutate the live host so a restore has something to do.
+printf 'MUTATED\n' >> "$LIVE/pve/qemu-server/100.conf"
+rm -f "$LIVE/pve/datacenter.cfg"
+MUTATED=$(tree_hash "$LIVE")
+
+# A dry run is the default, and it has to write nothing at all.
+CB_CONFIRM=0
+_cb_restore "$BASE" >/dev/null
+[[ $(tree_hash "$LIVE") == "$MUTATED" ]] || fail "a dry run modified the host"
+pass "restore is dry-run by default"
+
+# Apply, then check both directions of the change landed.
+CB_CONFIRM=1
+_cb_restore "$BASE" >/dev/null
+grep -q MUTATED "$LIVE/pve/qemu-server/100.conf" && fail "a differing file was not restored"
+[[ -f $LIVE/pve/datacenter.cfg ]] || fail "a missing file was not created"
+[[ -n $(_cb_state_get ROLLBACK_ARCHIVE) ]] || fail "no rollback point was recorded"
+[[ -z $(_cb_state_get RESTORE_IN_PROGRESS) ]] || fail "the in-progress marker was left set"
+pass "restore applies"
+
+# Non-pmxcfs writes leave a backup beside them; pmxcfs ones must not, because
+# those replicate to every node and count against the cluster's own quota.
+find "$LIVE/pve" -name '*.bak.*' | grep -q . && fail "a .bak file was written inside pmxcfs"
+pass "no backup sidecars inside pmxcfs"
+
+# Rollback is a sync: it has to undo the write AND delete what restore created.
+CB_CONFIRM=0
+_cb_rollback >/dev/null
+[[ -f $LIVE/pve/datacenter.cfg ]] || fail "a rollback dry run deleted a file"
+CB_CONFIRM=1
+_cb_rollback >/dev/null
+grep -q MUTATED "$LIVE/pve/qemu-server/100.conf" || fail "rollback did not restore the pre-restore content"
+[[ -e $LIVE/pve/datacenter.cfg ]] && fail "rollback left behind a file the restore created"
+[[ $(tree_hash "$LIVE") == "$MUTATED" ]] || fail "rollback did not reproduce the pre-restore tree exactly"
+pass "rollback is a faithful inverse"
+
+[[ $(grep -c . "$CB_ARCHIVE_DIR/restore.log") -ge 3 ]] || fail "the restore log has no record"
+grep -q 'rollback' "$CB_ARCHIVE_DIR/restore.log" || fail "the rollback was not logged"
+pass "restore log"
+
+# An unverifiable source is refused rather than warned about: restoring from a
+# corrupt archive is how a bad day becomes a worse one.
+CB_CONFIRM=1
+BAD="$CB_ARCHIVE_DIR/pve-config_${HOST_SHORT}_19700101T000000.tar.gz"
+cp "$CB_ARCHIVE_DIR/$BASE" "$BAD"
+printf 'corrupt' >> "$BAD"
+cp "$CB_ARCHIVE_DIR/$BASE.sha256" "$BAD.sha256"
+sed -i "s|$BASE|$(basename "$BAD")|" "$BAD.sha256"
+before=$(tree_hash "$LIVE")
+( _cb_restore "$(basename "$BAD")" ) >/dev/null 2>&1 && fail "a corrupt archive was accepted"
+[[ $(tree_hash "$LIVE") == "$before" ]] || fail "a refused restore still wrote something"
+rm -f "$BAD" "$BAD.sha256"
+
+NOSUM="$CB_ARCHIVE_DIR/pve-config_${HOST_SHORT}_19700102T000000.tar.gz"
+cp "$CB_ARCHIVE_DIR/$BASE" "$NOSUM"
+( _cb_restore "$(basename "$NOSUM")" ) >/dev/null 2>&1 && fail "an archive with no .sha256 was accepted"
+rm -f "$NOSUM"
+pass "unverifiable sources are refused"
+
+# No partial application: a hard pre-flight failure leaves the tree untouched.
+before=$(tree_hash "$LIVE")
+_cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
+( _cb_restore "$BASE" ) >/dev/null 2>&1 && fail "a restore started with one already in progress"
+[[ $(tree_hash "$LIVE") == "$before" ]] || fail "a refused restore wrote to the host"
+_cb_state_set RESTORE_IN_PROGRESS ""
+pass "a stale in-progress marker blocks a restore"
+
+# The node check is the stated safety gate for same-node restore.
+before=$(tree_hash "$LIVE")
+OTHER=$(mktemp -d "$WORK/otherXXXXXX")
+tar -C "$OTHER" -xzf "$CB_ARCHIVE_DIR/$BASE"
+printf 'node=some-other-host\n' > "$OTHER/meta/capture.txt"
+( CB_SRC_DIR=$OTHER CB_SRC_NODE=some-other-host
+  plan=$(mktemp); _cb_restore_plan "$plan"
+  _cb_restore_preflight "$plan" ) >/dev/null 2>&1 \
+    && fail "a restore from another node was allowed without --target-node"
+[[ $(tree_hash "$LIVE") == "$before" ]] || fail "a refused cross-node restore wrote something"
+pass "cross-node restore is blocked"
+
+# never-class paths are hard-blocked, and --force does not lift it.
+CB_FORCE=1
+( CB_SRC_DIR=$(mktemp -d "$WORK/nevXXXXXX")
+  mkdir -p "$CB_SRC_DIR/pve"
+  printf 'tampered\n' > "$CB_SRC_DIR/pve/corosync.conf"
+  plan=$(mktemp); _cb_restore_plan "$plan"
+  grep -q '^skip	pve/corosync.conf' "$plan" || exit 1 ) \
+    || fail "corosync.conf was not skipped, even with --force"
+CB_FORCE=0
+pass "never-class survives --force"
+
+# The class comes from the current table, not from the archive's manifest, so
+# a path reclassified since cannot be resurrected by an old archive.
+( CB_SRC_DIR=$(mktemp -d "$WORK/oldXXXXXX")
+  mkdir -p "$CB_SRC_DIR/pve/priv"
+  printf 'key\n' > "$CB_SRC_DIR/pve/priv/authkey.key"
+  plan=$(mktemp); _cb_restore_plan "$plan"
+  grep -q '^skip	pve/priv/authkey.key	never' "$plan" || exit 1 ) \
+    || fail "class was taken from the archive rather than re-derived"
+pass "class is re-derived, not trusted"
+
+# A held lock must stop a restore loudly. Exiting 0 there would tell an
+# operator who ran --confirm that it worked when nothing happened.
+flock -n "$CB_LOCK_DIR/pve-config-backup.lock" sleep 5 &
+holder=$!
+sleep 0.3
+( _cb_take_lock ) && fail "the lock was handed out twice"
+kill "$holder" 2>/dev/null || true
+wait "$holder" 2>/dev/null || true
+pass "the lock is exclusive"

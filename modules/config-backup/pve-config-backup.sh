@@ -14,6 +14,19 @@
 #   pve-config-backup log
 #         Commit history, when the git backend is enabled.
 #
+#   pve-config-backup inspect <source>
+#         What a source holds: node, file count, restore classes.
+#
+#   pve-config-backup diff <source> [selector]
+#         What restoring it would change, per path.
+#
+#   pve-config-backup restore <source> [selector] [--confirm] [--force]
+#         Restore onto this host. Dry run unless --confirm. A full snapshot is
+#         taken first, and rollback replays it.
+#
+#   pve-config-backup rollback [--confirm]
+#         Undo the last restore. Dry run unless --confirm.
+#
 #   pve-config-backup --test
 #         Send a test notification to the configured webhook, capture nothing.
 #
@@ -883,13 +896,468 @@ _cb_git_state() {
     return 0
 }
 
+# -------------------------------------------------------------- restore --
+#
+# Four stages: inspect, diff, dry-run, apply. --dry-run is what you get unless
+# you say --confirm, and every check runs before the first byte is written -
+# a restore that fails half way through is worse than one that never started.
+#
+# The class of a path is re-derived here with the current table, never read out
+# of the archive's manifest column. An archive written before a path was
+# reclassified must not be able to resurrect it.
+
+CB_CONFIRM=0
+CB_SRC_DIR=""
+CB_SRC_HASH=""
+CB_SRC_NODE=""
+CB_SELECTOR=""
+
+_cb_restore_log() { printf '%s/restore.log' "$CB_ARCHIVE_DIR"; }
+
+# Unpack a source into a directory and verify it. Accepts an absolute path, a
+# name inside CB_ARCHIVE_DIR, `latest`, or a git ref when the git backend is on.
+_cb_source_prepare() { # _cb_source_prepare <source>
+    local src=$1 path=""
+    CB_SRC_DIR=$(mktemp -d)
+
+    if [[ $CB_GIT_ENABLED -eq 1 && -d $CB_GIT_DIR/.git ]] \
+       && _cb_git rev-parse --verify "$src^{commit}" >/dev/null 2>&1; then
+        _cb_git archive --format=tar "$src" | tar -C "$CB_SRC_DIR" -xf - \
+            || fail "could not extract the git ref $src"
+        CB_SRC_HASH=$(_cb_git log -1 --format=%H "$src" 2>/dev/null || printf 'unknown')
+        CB_SRC_NODE=$HOST_SHORT
+        log "source: git $src"
+        return 0
+    fi
+
+    if [[ -f $src ]]; then path=$src
+    elif [[ -f $CB_ARCHIVE_DIR/$src ]]; then path="$CB_ARCHIVE_DIR/$src"
+    else fail "no such source: $src"
+    fi
+    path=$(readlink -f "$path")
+
+    # A source that does not verify is refused, not warned about. Restoring
+    # from a corrupt archive is how a bad day becomes a worse one.
+    if [[ -f $path.sha256 ]]; then
+        ( cd "$(dirname "$path")" && sha256sum -c --quiet "$(basename "$path").sha256" ) \
+            || fail "$path does not match its .sha256 - refusing to restore from it"
+    else
+        fail "$path has no .sha256 sidecar - refusing to restore from an unverified source"
+    fi
+
+    tar -C "$CB_SRC_DIR" -xzf "$path" || fail "could not extract $path"
+    CB_SRC_NODE=$(sed -n 's/^node=//p' "$CB_SRC_DIR/meta/capture.txt" 2>/dev/null | head -n1)
+    CB_SRC_HASH=$(awk -F'\t' '{print $4}' "$path.manifest" 2>/dev/null | sha256sum | awk '{print $1}')
+    log "source: $path"
+    return 0
+}
+
+_cb_selected() { # _cb_selected <relpath>
+    [[ -z $CB_SELECTOR ]] && return 0
+    # shellcheck disable=SC2053
+    [[ $1 == $CB_SELECTOR || $1 == $CB_SELECTOR/* || $1 == $CB_SELECTOR* ]]
+}
+
+# The live path a staged path maps back onto.
+_cb_live_path() { # _cb_live_path <relpath>
+    case $1 in
+        pve/*)  printf '%s/%s' "${CB_PVE_DIR%/}" "${1#pve/}" ;;
+        host/*) printf '%s/%s' "${CB_ROOT_DIR%/}" "${1#host/}" ;;
+        *)      return 1 ;;
+    esac
+}
+
+# action <TAB> relpath <TAB> class <TAB> reason, one line per considered path.
+# Both the dry run and the apply read this same plan, so what you are shown is
+# exactly what would be done.
+_cb_restore_plan() { # _cb_restore_plan <out>
+    local rel class live action reason
+    : > "$1"
+    while IFS= read -r rel; do
+        rel=${rel#./}
+        _cb_selected "$rel" || continue
+        class=$(_cb_classify "$rel") || class=unclassified
+        action=""; reason=""
+        case $class in
+            never)       action='skip'; reason="never restored: cluster identity or key material" ;;
+            reference)   action='skip'; reason="reference only: regenerated, never written back" ;;
+            unclassified) action='skip'; reason="no restore class" ;;
+        esac
+        if [[ -z $action ]]; then
+            live=$(_cb_live_path "$rel") || { printf 'skip\t%s\t%s\tnot a restorable prefix\n' "$rel" "$class" >> "$1"; continue; }
+            if [[ ! -e $live ]]; then
+                action='create'; reason="absent on this host"
+            elif cmp -s "$CB_SRC_DIR/$rel" "$live"; then
+                action='same'; reason="identical"
+            else
+                action='write'; reason='differs'
+            fi
+        fi
+        printf '%s\t%s\t%s\t%s\n' "$action" "$rel" "$class" "$reason" >> "$1"
+    done < <(cd "$CB_SRC_DIR" && find . -type f | LC_ALL=C sort)
+    return 0
+}
+
+# Every check runs before anything is written. Hard failures abort.
+_cb_restore_preflight() { # _cb_restore_preflight <plan>
+    local plan=$1 hard=0 rel class live parent
+    step_log "Pre-flight"
+
+    if [[ -n $(_cb_state_get RESTORE_IN_PROGRESS) ]]; then
+        log "  BLOCK  a previous restore did not finish (started $(_cb_state_get RESTORE_IN_PROGRESS))"
+        log "         inspect it, then clear it with: pve-config-backup rollback --confirm"
+        hard=1
+    fi
+
+    if [[ -n $CB_SRC_NODE && $CB_SRC_NODE != "$HOST_SHORT" ]]; then
+        log "  BLOCK  this archive is from node '$CB_SRC_NODE', this host is '$HOST_SHORT'"
+        log "         restoring onto a different node needs --target-node (not in this release)"
+        hard=1
+    fi
+
+    # pmxcfs has to be there before anything addressed to it is attempted.
+    if awk -F'\t' '$1 != "skip" && ($3 == "pmxcfs" || $3 == "guest")' "$plan" | grep -q .; then
+        if [[ ! -d $CB_PVE_DIR ]]; then
+            log "  BLOCK  $CB_PVE_DIR does not exist - pmxcfs is not mounted"
+            hard=1
+        elif [[ ! -w $CB_PVE_DIR ]]; then
+            log "  BLOCK  $CB_PVE_DIR is not writable - no quorum, or not root"
+            hard=1
+        fi
+    fi
+
+    while IFS=$'\t' read -r _ rel class _; do
+        live=$(_cb_live_path "$rel") || continue
+        parent=$(dirname "$live")
+        # Hard, not --force-able: a missing parent usually means the subsystem
+        # is no longer installed, and creating a path nothing reads gives false
+        # confidence that something was restored.
+        if [[ $class == dropin && ! -d $parent ]]; then
+            log "  BLOCK  $rel: $parent does not exist on this host"
+            hard=1
+        fi
+        if [[ -L $live ]]; then
+            log "  WARN   $rel is a symlink to $(readlink "$live") - it would be replaced by a regular file"
+        fi
+    done < <(awk -F'\t' '$1 == "write" || $1 == "create"' "$plan")
+
+    # A running guest keeps its live device set in the QEMU process, not the
+    # file; rewriting the file can reintroduce a stale lock stanza or desync
+    # the two until the next start.
+    local vmid
+    while IFS= read -r vmid; do
+        [[ -n $vmid ]] || continue
+        if _cb_guest_running "$vmid"; then
+            log "  WARN   guest $vmid is running - its config will not match the live process until it stops"
+        fi
+    done < <(awk -F'\t' '$3 == "guest" && ($1 == "write" || $1 == "create") {print $2}' "$plan" \
+             | sed 's|.*/||; s|\.conf$||' | LC_ALL=C sort -u)
+
+    [[ $hard -eq 0 ]] || fail "pre-flight refused the restore - nothing was written"
+    log "  ok     all checks passed"
+    return 0
+}
+
+_cb_guest_running() { # _cb_guest_running <vmid>
+    command -v qm  >/dev/null 2>&1 && qm  status "$1" 2>/dev/null | grep -q running && return 0
+    command -v pct >/dev/null 2>&1 && pct status "$1" 2>/dev/null | grep -q running && return 0
+    return 1
+}
+
+step_log() { printf '\n%s\n' "$*"; }
+
+# Records whether the path existed, which is the one fact rollback needs and
+# backup_file's `[[ -f $1 ]] || return 0` throws away. pmxcfs paths get no
+# sidecar at all: those files replicate to every node and count against the
+# cluster's own database quota, so a per-file backup there is a cluster-wide
+# leak with no benefit - the pre-restore snapshot is their rollback.
+_cb_backup_file() { # _cb_backup_file <live-path> <class>
+    [[ -e $1 ]] || { printf 'absent'; return 0; }
+    if [[ $2 == pmxcfs || $2 == guest ]]; then
+        printf 'existed'
+        return 0
+    fi
+    local bak
+    bak="$1.bak.$(date +%Y%m%d%H%M%S)"
+    cp -a "$1" "$bak" 2>/dev/null || { printf 'existed'; return 0; }
+    printf 'existed'
+    return 0
+}
+
+_cb_apply() { # _cb_apply <plan> -> writes, prints a summary
+    local action rel class reason live wrote=0 created=0 skipped=0 failed=0
+    local -a reload=() reboot=()
+    while IFS=$'\t' read -r action rel class reason; do
+        case $action in
+            write|create) ;;
+            *) skipped=$((skipped + 1)); continue ;;
+        esac
+        live=$(_cb_live_path "$rel") || continue
+        _cb_backup_file "$live" "$class" >/dev/null
+        # Mode first, then content, so a restored sshd_config never sits
+        # world-readable even briefly.
+        if install -m "$(_cb_src_mode "$rel")" "$CB_SRC_DIR/$rel" "$live" 2>/dev/null \
+           || cp -f "$CB_SRC_DIR/$rel" "$live" 2>/dev/null; then
+            [[ $action == create ]] && created=$((created + 1)) || wrote=$((wrote + 1))
+            log "  wrote   $rel"
+            _cb_needs_reload "$rel" && reload+=("$(_cb_needs_reload "$rel")")
+            _cb_needs_reboot "$rel" && reboot+=("$rel")
+        else
+            failed=$((failed + 1))
+            log "  FAILED  $rel"
+        fi
+    done < "$plan"
+
+    # pmxcfs is the only place PVE parses on our behalf, so it is the only
+    # place a write can be confirmed rather than assumed.
+    _cb_verify_pmxcfs "$plan"
+
+    step_log "Summary"
+    printf '  written   %s\n  created   %s\n  skipped   %s\n  failed    %s\n' \
+        "$wrote" "$created" "$skipped" "$failed"
+    if [[ ${#reload[@]} -gt 0 ]]; then
+        step_log "Nothing was reloaded. Run these yourself when you are ready:"
+        printf '%s\n' "${reload[@]}" | LC_ALL=C sort -u | sed 's/^/  /'
+    fi
+    if [[ ${#reboot[@]} -gt 0 ]]; then
+        step_log "A reboot is warranted - these only take effect at boot:"
+        printf '%s\n' "${reboot[@]}" | LC_ALL=C sort -u | sed 's/^/  /'
+    fi
+    [[ $failed -eq 0 ]]
+}
+
+_cb_src_mode() { # _cb_src_mode <relpath>
+    stat -c '%a' "$CB_SRC_DIR/$1" 2>/dev/null || printf '0644'
+}
+
+# Deliberately never reloads anything: writing a file is reversible, applying
+# a bad network config to a host you reach over that network is not.
+_cb_needs_reload() { # _cb_needs_reload <relpath> -> prints a command, or 1
+    case $1 in
+        host/etc/network/*)      printf 'ifreload -a   # or: systemctl restart networking' ;;
+        host/etc/ssh/sshd_config*) printf 'systemctl reload ssh' ;;
+        host/etc/iptables/*)     printf 'iptables-restore < %s' "$(_cb_live_path "$1")" ;;
+        host/etc/nftables*)      printf 'systemctl reload nftables' ;;
+        host/etc/apt/*)          printf 'apt-get update' ;;
+        host/etc/cron.d/*)       printf 'systemctl restart cron' ;;
+        pve/firewall/*)          printf 'pve-firewall compile   # then: pve-firewall restart' ;;
+        host/etc/systemd/system/*) printf 'systemctl daemon-reload' ;;
+        *) return 1 ;;
+    esac
+}
+
+_cb_needs_reboot() { # _cb_needs_reboot <relpath>
+    case $1 in
+        host/etc/modprobe.d/*|host/etc/modules-load.d/*|host/etc/modules) return 0 ;;
+        host/etc/default/grub*|host/etc/kernel/*) return 0 ;;
+        host/etc/fstab|host/etc/crypttab) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_cb_verify_pmxcfs() { # _cb_verify_pmxcfs <plan>
+    local rel live
+    while IFS=$'\t' read -r rel; do
+        [[ -n $rel ]] || continue
+        live=$(_cb_live_path "$rel") || continue
+        if ! cmp -s "$CB_SRC_DIR/$rel" "$live"; then
+            log "  WARN    $rel did not read back as written - PVE may have rejected or rewritten it"
+        fi
+    done < <(awk -F'\t' '($3 == "pmxcfs" || $3 == "guest") && ($1 == "write" || $1 == "create") {print $2}' "$1")
+    return 0
+}
+
+_cb_show_plan() { # _cb_show_plan <plan>
+    local action rel class reason
+    step_log "Plan"
+    while IFS=$'\t' read -r action rel class reason; do
+        case $action in
+            same) continue ;;
+        esac
+        printf '  %-7s %-10s %-46s %s\n' "$action" "$class" "$rel" "$reason"
+    done < "$1"
+    printf '\n'
+    awk -F'\t' '{ c[$1]++ } END { for (k in c) printf "  %-8s %d\n", k, c[k] }' "$1" | LC_ALL=C sort
+}
+
+_cb_restore() { # _cb_restore <source> [selector]
+    _cb_take_lock || fail "a capture or restore is already running - refusing to start another"
+    [[ -n ${1:-} ]] || fail "restore needs a source (an archive name, 'latest', or a git ref)"
+    CB_SELECTOR=${2:-}
+    _cb_source_prepare "$1"
+
+    local plan; plan=$(mktemp)
+    _cb_restore_plan "$plan"
+    _cb_restore_preflight "$plan"
+    _cb_show_plan "$plan"
+
+    if [[ $CB_CONFIRM -eq 0 ]]; then
+        step_log "Dry run - nothing was written. Add --confirm to apply."
+        rm -f "$plan"
+        return 0
+    fi
+
+    step_log "Snapshot before restoring"
+    _cb_capture_once || fail "the pre-restore snapshot failed - refusing to restore without a rollback"
+    local rollback; rollback=$(_cb_state_get LAST_ARCHIVE)
+    [[ -n $rollback ]] || fail "no rollback archive was produced - refusing to restore"
+    _cb_state_set ROLLBACK_ARCHIVE "$rollback"
+    _cb_state_set ROLLBACK_SELECTOR "$CB_SELECTOR"
+    ok_log "rollback point: $rollback"
+
+    # Written before the first byte, so an interrupted restore leaves evidence
+    # rather than looking like it never happened.
+    _cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
+    _cb_restore_record started "$1" "$rollback" "$plan"
+
+    step_log "Applying"
+    if _cb_apply "$plan"; then
+        _cb_state_set RESTORE_IN_PROGRESS ""
+        _cb_restore_record ok "$1" "$rollback" "$plan"
+        _cb_notify DISCORD_WARN "PVE config restored - $HOST_SHORT" \
+            "Configuration was restored from a snapshot. Nothing was reloaded; check the summary." \
+            Host "$HOST_SHORT" Source "$1" Rollback "$rollback"
+    else
+        _cb_state_set RESTORE_IN_PROGRESS ""
+        _cb_restore_record partial "$1" "$rollback" "$plan"
+        rm -f "$plan"
+        fail "some files could not be written - the host is part-restored, roll back with: pve-config-backup rollback --confirm"
+    fi
+    rm -f "$plan"
+    return 0
+}
+
+ok_log() { printf '  %s\n' "$*"; }
+
+_cb_restore_record() { # _cb_restore_record <outcome> <source> <rollback> <plan>
+    local f; f=$(_cb_restore_log)
+    mkdir -p "$CB_ARCHIVE_DIR"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$(date -Is)" "$1" "$2" "${CB_SELECTOR:-ALL}" "${CB_SRC_HASH:0:12}" "$3" >> "$f"
+    chmod 0600 "$f" 2>/dev/null || true
+    return 0
+}
+
+# Rollback is a sync, not a replay. A path the restore created is by
+# definition absent from the pre-restore archive, so restoring everything the
+# archive holds would never visit it and never remove it. Live-only paths
+# inside the same scope are deleted.
+_cb_rollback() {
+    _cb_take_lock || fail "a capture or restore is already running - refusing to start another"
+    local rollback; rollback=$(_cb_state_get ROLLBACK_ARCHIVE)
+    [[ -n $rollback ]] || fail "there is no rollback point recorded"
+    # The same scope the restore used, or a scoped restore would be undone by
+    # reverting unrelated edits made since.
+    CB_SELECTOR=$(_cb_state_get ROLLBACK_SELECTOR)
+    _cb_source_prepare "$rollback"
+
+    local plan; plan=$(mktemp)
+    _cb_restore_plan "$plan"
+    local extra; extra=$(mktemp)
+    _cb_rollback_extras "$plan" > "$extra"
+
+    _cb_show_plan "$plan"
+    if [[ -s $extra ]]; then
+        step_log "These exist now and did not before - rollback deletes them:"
+        sed 's/^/  /' "$extra"
+    fi
+
+    if [[ $CB_CONFIRM -eq 0 ]]; then
+        step_log "Dry run - nothing was written. Add --confirm to roll back."
+        rm -f "$plan" "$extra"
+        return 0
+    fi
+
+    _cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
+    step_log "Rolling back"
+    _cb_apply "$plan" || log "  some files could not be written"
+    local rel live
+    while IFS= read -r rel; do
+        [[ -n $rel ]] || continue
+        live=$(_cb_live_path "$rel") || continue
+        rm -f "$live" && log "  deleted $rel"
+    done < "$extra"
+    _cb_state_set RESTORE_IN_PROGRESS ""
+    _cb_restore_record rollback "$rollback" "$rollback" "$plan"
+    rm -f "$plan" "$extra"
+    return 0
+}
+
+# Restorable paths that are live now and absent from the rollback source.
+_cb_rollback_extras() { # _cb_rollback_extras <plan>
+    local prefix rel live class
+    for prefix in pve host; do
+        local root
+        root=$(_cb_live_path "$prefix/") || continue
+        [[ -d $root ]] || continue
+        while IFS= read -r live; do
+            rel="$prefix/${live#"${root%/}"/}"
+            _cb_selected "$rel" || continue
+            [[ -e $CB_SRC_DIR/$rel ]] && continue
+            class=$(_cb_classify "$rel") || continue
+            case $class in never|reference|unclassified) continue ;; esac
+            printf '%s\n' "$rel"
+        done < <(find "$root" -type f ! -name '*.bak.*' 2>/dev/null | LC_ALL=C sort)
+    done
+    return 0
+}
+
+_cb_inspect() { # _cb_inspect <source>
+    [[ -n ${1:-} ]] || fail "inspect needs a source"
+    _cb_source_prepare "$1"
+    local man; man=$(mktemp)
+    _cb_manifest "$CB_SRC_DIR" "$man" || true
+    step_log "Source"
+    printf '  node      %s%s\n' "${CB_SRC_NODE:-unknown}" \
+        "$([[ -n $CB_SRC_NODE && $CB_SRC_NODE != "$HOST_SHORT" ]] && printf '  (this host is %s)' "$HOST_SHORT")"
+    printf '  files     %s\n' "$(wc -l < "$man" | tr -d ' ')"
+    step_log "By restore class"
+    awk -F'\t' '{ c[$2]++ } END { for (k in c) printf "  %-12s %d\n", k, c[k] }' "$man" | LC_ALL=C sort
+    rm -f "$man"
+    return 0
+}
+
+_cb_diff() { # _cb_diff <source> [selector]
+    [[ -n ${1:-} ]] || fail "diff needs a source"
+    CB_SELECTOR=${2:-}
+    _cb_source_prepare "$1"
+    local plan; plan=$(mktemp)
+    _cb_restore_plan "$plan"
+    local action rel class reason mark
+    while IFS=$'\t' read -r action rel class reason; do
+        case $action in
+            write)  mark='~' ;;
+            create) mark='+' ;;
+            same)   mark=' ' ;;
+            *)      mark='!' ;;
+        esac
+        printf '%s %-10s %-46s %s\n' "$mark" "$class" "$rel" "$reason"
+    done < "$plan" | LC_ALL=C sort -k1,1
+    printf '\n  ~ differs   + only in the source   ! not restorable\n'
+    rm -f "$plan"
+    return 0
+}
+
 # ------------------------------------------------------------------ run --
 
-_cb_lock() {
+# Returns 1 rather than exiting, so the caller decides what a held lock means.
+# It means opposite things either side: a scheduled capture that finds one
+# running should step aside quietly, while a restore that finds one must stop
+# loudly - exiting 0 there would tell an operator who ran `restore --confirm`
+# that it worked when nothing happened at all.
+#
+# Taken once per process. Re-running `exec 9>` on the same path opens a second
+# file description, and flock locks descriptions rather than processes, so a
+# second call would drop the first lock and silently re-take it.
+_cb_take_lock() {
     local dir=$CB_LOCK_DIR
     mkdir -p "$dir" 2>/dev/null || dir=/tmp
     exec 9>"$dir/pve-config-backup.lock"
-    if ! flock -n 9; then
+    flock -n 9
+}
+
+_cb_lock() {
+    if ! _cb_take_lock; then
         log "a capture is already running - leaving it alone"
         exit 0
     fi
@@ -897,7 +1365,12 @@ _cb_lock() {
 
 _cb_run() {
     _cb_lock
+    _cb_capture_once
+}
 
+# Everything a capture does, minus the lock, so a restore can take its own
+# pre-restore snapshot while already holding it.
+_cb_capture_once() {
     CB_STAGE=$(mktemp -d)
     CB_MANIFEST=$(mktemp)
     # shellcheck disable=SC2064
@@ -1107,18 +1580,35 @@ main() {
         --test)       mode='test'; shift ;;
         run)          mode='run';  shift ;;
         log)          mode='log'; shift ;;
+        inspect)      mode='inspect'; shift ;;
+        diff)         mode='diff'; shift ;;
+        restore)      mode='restore'; shift ;;
+        rollback)     mode='rollback'; shift ;;
         list)         mode='list'; shift ;;
         "")           usage >&2; exit 2 ;;
         *)            printf 'error: unknown command: %s\n' "$1" >&2; usage >&2; exit 2 ;;
     esac
 
+    local -a operands=()
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --dry-run|--force)
-                [[ $mode == run ]] \
-                    || { printf 'error: %s only applies to run\n' "$1" >&2; exit 2; }
-                [[ $1 == --dry-run ]] && CB_DRY_RUN=1 || CB_FORCE=1 ;;
-            *) printf 'error: unknown flag: %s\n' "$1" >&2; exit 2 ;;
+            --dry-run)
+                case $mode in
+                    run|restore|rollback) CB_DRY_RUN=1; CB_CONFIRM=0 ;;
+                    *) printf 'error: --dry-run does not apply to %s\n' "$mode" >&2; exit 2 ;;
+                esac ;;
+            --confirm)
+                case $mode in
+                    restore|rollback) CB_CONFIRM=1 ;;
+                    *) printf 'error: --confirm does not apply to %s\n' "$mode" >&2; exit 2 ;;
+                esac ;;
+            --force)
+                case $mode in
+                    run|restore) CB_FORCE=1 ;;
+                    *) printf 'error: --force does not apply to %s\n' "$mode" >&2; exit 2 ;;
+                esac ;;
+            -*) printf 'error: unknown flag: %s\n' "$1" >&2; exit 2 ;;
+            *)  operands+=("$1") ;;
         esac
         shift
     done
@@ -1148,6 +1638,10 @@ main() {
         list) _cb_list ;;
         log)  _cb_git_log ;;
         run)  _cb_run ;;
+        inspect)  _cb_inspect  "${operands[0]:-}" ;;
+        diff)     _cb_diff     "${operands[0]:-}" "${operands[1]:-}" ;;
+        restore)  _cb_restore  "${operands[0]:-}" "${operands[1]:-}" ;;
+        rollback) _cb_rollback ;;
     esac
 }
 

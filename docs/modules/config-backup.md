@@ -32,12 +32,12 @@ Either can be turned off, but not both. They share one capture: the tree is
 collected, classified, scanned and hashed once, and only then handed to
 whichever backends are enabled.
 
-!!! warning "This release captures; it does not restore"
+!!! warning "Restore is same-node only"
 
-    Every archived path already carries a restore class, written from the same
-    table the restore side will read back. The writer that acts on those
-    classes lands in a later release. Until then the archives are read with
-    `tar -xzf`, by hand, deliberately.
+    Restoring onto a *different* node — with identity remapping, storage and
+    bridge translation, and the auto-exclusions that implies — is a later
+    release. A source whose recorded node does not match this host is blocked
+    outright rather than guessed at.
 
 ## What is captured
 
@@ -218,6 +218,90 @@ pve-config-backup log          # commit history
 git -C /var/lib/pve-toolbox/config-backup.git log -p --follow pve/storage.cfg
 ```
 
+## Restoring
+
+Four stages, and you have to pass through them in order:
+
+```bash
+pve-config-backup inspect latest              # what does this source hold
+pve-config-backup diff    latest              # what would change
+pve-config-backup restore latest              # dry run - shows the plan
+pve-config-backup restore latest --confirm    # actually write
+pve-config-backup rollback --confirm          # undo it
+```
+
+`restore` and `rollback` are **dry runs unless you say `--confirm`**. A second
+argument narrows the operation to a path prefix:
+
+```bash
+pve-config-backup restore latest pve/firewall --confirm
+```
+
+### Nothing is written until everything checks out
+
+Every pre-flight check runs before the first byte. A restore that fails half
+way through is worse than one that never started, so a hard failure aborts with
+the host untouched:
+
+| Check | |
+| --- | --- |
+| The source verifies against its `.sha256` | hard — no sidecar is also a refusal |
+| The source's node matches this host | hard |
+| Nothing selected is class `never` | hard, and `--force` does not lift it |
+| pmxcfs is mounted and writable | hard, when any `pmxcfs`/`guest` path is selected |
+| The target's parent directory exists | hard — a missing parent usually means the subsystem is gone, and creating a path nothing reads gives false confidence |
+| No earlier restore left an in-progress marker | hard |
+| A selected guest is running | warning — the live process keeps its own device set |
+| The target is a symlink | warning — it would be replaced by a regular file |
+
+The restore class is re-derived from the current table, never read out of the
+archive's manifest. An archive written before a path was reclassified must not
+be able to resurrect it.
+
+### The rollback point
+
+A **full snapshot is taken first, unconditionally**, before anything is
+written, and its name is recorded. If that snapshot fails, the restore does
+not happen — a restore with no way back is not one worth having.
+
+`rollback` is a *sync*, not a replay. It restores what changed **and deletes
+what the restore created**: a file that did not exist beforehand is by
+definition absent from the snapshot, so replaying the snapshot alone would
+leave it behind forever. It also reuses the selector the restore ran with, so
+rolling back a scoped restore does not revert unrelated edits made since.
+
+### Nothing is reloaded
+
+Writing a file is reversible. Applying a bad network configuration to a host
+you reach over that network is not. So the summary prints the commands and
+leaves them to you:
+
+```
+Nothing was reloaded. Run these yourself when you are ready:
+  ifreload -a   # or: systemctl restart networking
+  systemctl reload ssh
+```
+
+It also says when a reboot is warranted — `modprobe.d/`, the kernel command
+line, GRUB, `fstab` and `crypttab` only take effect at boot.
+
+`pmxcfs` writes are re-read afterwards, because that is the one place PVE
+parses on our behalf and so the one place a write can be confirmed rather than
+assumed.
+
+Every restore appends to `/var/lib/pve-toolbox/config-backup/restore.log`
+(0600) — when, from which source, at which hash, with which rollback point, and
+how it ended. The marker is written *before* the first write, so an interrupted
+restore leaves evidence rather than looking like it never happened.
+
+!!! warning "Known limits of the same-node check"
+
+    The node check compares `hostname -s`. A rebuilt machine that kept its name
+    passes it, even though its disks and storage are entirely different.
+    `storage.cfg` is not reconciled against the live LVM or ZFS backends, and
+    `fstab` UUIDs are not checked against `blkid` — a stale UUID surfaces at the
+    next boot. Read the `diff` before you `--confirm`.
+
 ## Retention
 
 ```
@@ -304,6 +388,8 @@ pve-config-backup run --dry-run    # classify and hash, write nothing
 pve-config-backup run --force      # archive even if nothing changed
 pve-config-backup list             # archives newest first
 pve-config-backup log              # commit history, when git is enabled
+pve-config-backup inspect latest   # what a source holds
+pve-config-backup diff latest      # what restoring it would change
 pve-config-backup --test           # send a test notification
 ```
 
