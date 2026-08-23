@@ -16,7 +16,16 @@
 #
 set -euo pipefail
 
-TOOLBOX_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# `pve-toolbox link` symlinks this file into TOOLBOX_BIN_DIR, so BASH_SOURCE is
+# the symlink, not the checkout. Walk the chain to find where the libs really are.
+_src="${BASH_SOURCE[0]}"
+while [[ -L $_src ]]; do
+    _dir="$(cd -- "$(dirname -- "$_src")" && pwd)"
+    _src="$(readlink -- "$_src")"
+    [[ $_src != /* ]] && _src="$_dir/$_src"
+done
+TOOLBOX_ROOT="$(cd -- "$(dirname -- "$_src")" && pwd)"
+unset _src _dir
 MODULE_DIR="$TOOLBOX_ROOT/modules"
 
 # shellcheck source=lib/common.sh
