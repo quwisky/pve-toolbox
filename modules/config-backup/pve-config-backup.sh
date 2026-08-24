@@ -434,7 +434,10 @@ _cb_collect_custom_units() {
     while IFS= read -r f; do
         rel=${f#"$src"/}
         mkdir -p "$(dirname "$CB_STAGE/host/etc/systemd/system/$rel")"
-        cp -a "$f" "$CB_STAGE/host/etc/systemd/system/$rel" 2>/dev/null || true
+        if ! cp -a "$f" "$CB_STAGE/host/etc/systemd/system/$rel" 2>/dev/null; then
+            log "warning: could not capture $f"
+            CB_TAKE_ERRORS=$((CB_TAKE_ERRORS + 1))
+        fi
     done < <(find "$src" -type f 2>/dev/null | LC_ALL=C sort)
     return 0
 }
@@ -516,6 +519,11 @@ _cb_drop_secrets() {
     done
     # Anything key-shaped anywhere in the tree, whatever produced it.
     find "$CB_STAGE" \( -name '*.key' -o -name '*.pem' \) -type f -delete 2>/dev/null || true
+    # Our own pre-restore sidecars. Left in, they are archived, restored onto
+    # the host, and then backed up again on the next restore - unbounded growth
+    # in /etc and in every archive.
+    find "$CB_STAGE" -name '*.bak.[0-9]*' -type f -delete 2>/dev/null || true
+    find "$CB_STAGE" -name '*.pve-toolbox.*' -type f -delete 2>/dev/null || true
     return 0
 }
 
@@ -538,17 +546,23 @@ _cb_encrypt_secrets() {
 # most important check in the list silently never runs.
 CB_SECRET_PATTERNS=(
     "private-key:-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*(=[[:space:]]*|:[[:space:]]+)[^[:space:]]{8,}"
+    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]"
     "bearer:Bearer [A-Za-z0-9._~+/-]{20,}"
     "webhook:https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{20,}"
 )
 
 _cb_allowed() { # _cb_allowed <relative-path>
     local glob
+    # set -f: the word splitting is wanted, the pathname expansion is not - an
+    # entry like `pve/*.cfg` would otherwise expand against whatever directory
+    # the runner was started from, allowing different files each time.
+    set -f
     for glob in $CB_SECRET_ALLOW; do
         # shellcheck disable=SC2053
-        [[ $1 == $glob ]] && return 0
+        # shellcheck disable=SC2053
+        [[ $1 == $glob ]] && { set +f; return 0; }
     done
+    set +f
     return 1
 }
 
@@ -572,7 +586,7 @@ _cb_secret_scan() {
         set -e
         # 0 matched, 1 matched nothing; anything else is a broken scan and must
         # not be mistaken for a clean one.
-        [[ $rc -le 1 ]] || { printf 'scan-error %s (grep exit %s)\n' "$name" "$rc"; return 1; }
+        [[ $rc -le 1 ]] || { printf 'scan-error %s (grep exit %s)\n' "$name" "$rc"; rm -f "$hitfile"; return 1; }
         mapfile -t found < "$hitfile"
         for f in "${found[@]:-}"; do
             [[ -n $f ]] || continue
@@ -1007,7 +1021,13 @@ _cb_source_prepare() { # _cb_source_prepare <source>
         _cb_git archive --format=tar "$src" | tar -C "$CB_SRC_DIR" -xf - \
             || fail "could not extract the git ref $src"
         CB_SRC_HASH=$(_cb_git log -1 --format=%H "$src" 2>/dev/null || printf 'unknown')
-        CB_SRC_NODE=$HOST_SHORT
+        # Not $HOST_SHORT. meta/capture.txt is reference-class, so the git
+        # backend never commits it and there is nothing here to read a node
+        # from - claiming this host made the same-node gate structurally inert,
+        # and with a shared remote another node's branch restored with no check
+        # at all. Left empty, the unknown-node BLOCK catches it and
+        # --target-node is how you say what you mean.
+        CB_SRC_NODE=""
         log "source: git $src"
         return 0
     fi
@@ -1028,8 +1048,12 @@ _cb_source_prepare() { # _cb_source_prepare <source>
     fi
 
     tar -C "$CB_SRC_DIR" -xzf "$path" || fail "could not extract $path"
-    CB_SRC_NODE=$(sed -n 's/^node=//p' "$CB_SRC_DIR/meta/capture.txt" 2>/dev/null | head -n1)
-    CB_SRC_HASH=$(awk -F'\t' '{print $4}' "$path.manifest" 2>/dev/null | sha256sum | awk '{print $1}')
+    # || true on both: sed and awk exit 2 on a missing file, 2>/dev/null hides
+    # the message but not the status, and pipefail carries it out of the
+    # substitution into the ERR trap - on exactly the hand-copied archive the
+    # node guard exists to catch.
+    CB_SRC_NODE=$(sed -n 's/^node=//p' "$CB_SRC_DIR/meta/capture.txt" 2>/dev/null | head -n1) || true
+    CB_SRC_HASH=$(awk -F'\t' '{print $4}' "$path.manifest" 2>/dev/null | sha256sum | awk '{print $1}') || true
     log "source: $path"
     return 0
 }
@@ -1037,7 +1061,10 @@ _cb_source_prepare() { # _cb_source_prepare <source>
 _cb_selected() { # _cb_selected <relpath>
     [[ -z $CB_SELECTOR ]] && return 0
     # shellcheck disable=SC2053
-    [[ $1 == $CB_SELECTOR || $1 == $CB_SELECTOR/* || $1 == $CB_SELECTOR* ]]
+    # Exact, or a path component below it. A bare `$CB_SELECTOR*` made a
+    # truncated selector match far more than intended - `pve/f` selected all of
+    # pve/firewall/ - widening what is written *and* what rollback deletes.
+    [[ $1 == "$CB_SELECTOR" || $1 == "$CB_SELECTOR"/* ]]
 }
 
 # The live path a staged path maps back onto.
@@ -1085,16 +1112,29 @@ _cb_restore_plan() { # _cb_restore_plan <out>
 }
 
 # Every check runs before anything is written. Hard failures abort.
-_cb_restore_preflight() { # _cb_restore_preflight <plan>
-    local plan=$1 hard=0 rel class live parent
+# <allow-in-progress> is set by rollback, which is the sanctioned consumer of
+# an unfinished restore: blocking it there deadlocked the host in exactly the
+# state the marker exists to flag, with the tool's own error message pointing
+# at the command it had just forbidden.
+_cb_restore_preflight() { # _cb_restore_preflight <plan> [allow-in-progress]
+    local plan=$1 allow_in_progress=${2:-0} hard=0 rel class live parent
     step_log "Pre-flight"
 
-    if [[ -n $(_cb_state_get RESTORE_IN_PROGRESS) ]]; then
+    if [[ $allow_in_progress -eq 0 && -n $(_cb_state_get RESTORE_IN_PROGRESS) ]]; then
         log "  BLOCK  a previous restore did not finish (started $(_cb_state_get RESTORE_IN_PROGRESS))"
         log "         inspect it, then clear it with: pve-config-backup rollback --confirm"
         hard=1
     fi
 
+    # An unknown source node is a BLOCK, not a skipped check. Treating it as
+    # "nothing to compare, carry on" let an archive with no node= line - and
+    # every git-ref source - restore onto any host at all. --target-node is
+    # the way to say what you mean in either case.
+    if [[ -z $CB_TARGET_NODE && -z $CB_SRC_NODE ]]; then
+        log "  BLOCK  this source does not record which node it came from"
+        log "         say so explicitly: --target-node $HOST_SHORT"
+        hard=1
+    fi
     if [[ -z $CB_TARGET_NODE && -n $CB_SRC_NODE && $CB_SRC_NODE != "$HOST_SHORT" ]]; then
         log "  BLOCK  this archive is from node '$CB_SRC_NODE', this host is '$HOST_SHORT'"
         log "         say so explicitly: --target-node $HOST_SHORT [--mode dr|clone]"
@@ -1102,7 +1142,12 @@ _cb_restore_preflight() { # _cb_restore_preflight <plan>
     fi
 
     # pmxcfs has to be there before anything addressed to it is attempted.
-    if awk -F'\t' '$1 != "skip" && ($3 == "pmxcfs" || $3 == "guest")' "$plan" | grep -q .; then
+    # No pipe. `awk ... | grep -q` returns awk's status under pipefail, and
+    # grep -q exits on the first match, so awk takes SIGPIPE once its output
+    # outgrows a pipe buffer - and the guard then reads as "no pmxcfs paths in
+    # the plan", skipping the mount and writability check entirely.
+    if awk -F'\t' '$1 != "skip" && ($3 == "pmxcfs" || $3 == "guest") { found = 1; exit }
+                   END { exit !found }' "$plan"; then
         if [[ ! -d $CB_PVE_DIR ]]; then
             log "  BLOCK  $CB_PVE_DIR does not exist - pmxcfs is not mounted"
             hard=1
@@ -1170,7 +1215,14 @@ _cb_backup_file() { # _cb_backup_file <live-path> <class>
     return 0
 }
 
+# The temp file in flight, so a signal mid-write does not leave it behind to be
+# captured into the next archive - and, being classifiable, restored later as
+# though it were a real config file.
+CB_WRITE_TMP=""
+_cb_clean_write_tmp() { [[ -n ${CB_WRITE_TMP:-} ]] && rm -f "$CB_WRITE_TMP"; return 0; }
+
 _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
+    trap '_cb_clean_write_tmp' EXIT INT TERM
     local action rel class reason live wrote=0 created=0 skipped=0 failed=0
     local -a reload=() reboot=()
     while IFS=$'\t' read -r action rel class reason; do
@@ -1219,15 +1271,26 @@ _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
 # rename(2) is atomic, and pmxcfs supports it: no reader ever sees a torn or
 # missing file, and an interrupt leaves the old content rather than nothing.
 _cb_write_file() { # _cb_write_file <source> <destination> <mode>
-    local tmp="$2.pve-toolbox.$$"
-    cp -f "$1" "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    # mktemp, not "$2.pve-toolbox.$$": the pid is predictable, and cp -f
+    # *follows* a symlink already sitting at that name - so the restored
+    # content went through the link into an unrelated file and the destination
+    # was left pointing at the attacker's path. Directories the tool writes
+    # into are not all root-exclusive (/var/spool/cron/crontabs is 1730).
+    local tmp
+    tmp=$(mktemp "$2.XXXXXX" 2>/dev/null) || return 1
+    CB_WRITE_TMP=$tmp
+    # > rather than cp, so an existing link at the target cannot be traversed:
+    # mktemp just created this as a regular file we own.
+    if ! cat "$1" > "$tmp" 2>/dev/null; then
+        rm -f "$tmp"; CB_WRITE_TMP=""; return 1
+    fi
     # pmxcfs enforces its own mode and refuses chmod, so a failure here is
     # expected there and must not fail the write.
     chmod "$3" "$tmp" 2>/dev/null || true
     if ! mv -f "$tmp" "$2" 2>/dev/null; then
-        rm -f "$tmp"
-        return 1
+        rm -f "$tmp"; CB_WRITE_TMP=""; return 1
     fi
+    CB_WRITE_TMP=""
     return 0
 }
 
@@ -1411,20 +1474,33 @@ _cb_rollback() {
     # same checks. Without them it would push through an unmounted pmxcfs,
     # report every write FAILED, delete the live-only paths anyway, and still
     # record the outcome as a successful rollback and exit 0.
-    _cb_restore_preflight "$plan"
+    _cb_restore_preflight "$plan" 1
 
     _cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
     step_log "Rolling back"
     local rb_ok=1
     _cb_apply "$plan" || rb_ok=0
+    # Only delete once every write landed. Deleting anyway left the host in a
+    # third state - neither what it was before the restore nor what the restore
+    # made it.
     local rel live
-    while IFS= read -r rel; do
-        [[ -n $rel ]] || continue
-        live=$(_cb_live_path "$rel") || continue
-        rm -f "$live" && log "  deleted $rel"
-    done < "$extra"
+    if [[ $rb_ok -eq 1 ]]; then
+        while IFS= read -r rel; do
+            [[ -n $rel ]] || continue
+            live=$(_cb_live_path "$rel") || continue
+            if rm -f "$live"; then log "  deleted $rel"; fi
+        done < "$extra"
+    else
+        log "  writes failed - not deleting anything the restore created"
+    fi
     if [[ $rb_ok -eq 1 ]]; then
         _cb_state_set RESTORE_IN_PROGRESS ""
+        # Retire the rollback point with the rollback. Leaving both set let a
+        # second `rollback --confirm` run against a stale list and delete files
+        # an operator had written by hand since.
+        _cb_state_set ROLLBACK_ARCHIVE ""
+        _cb_state_set ROLLBACK_SELECTOR ""
+        rm -f "$CB_ARCHIVE_DIR/restore-created.list"
         _cb_restore_record rollback "$rollback" "$rollback" "$plan"
         rm -f "$plan" "$extra"
         return 0
@@ -1446,7 +1522,12 @@ _cb_rollback() {
 # dry run, so a plain `rollback` appeared to hang.
 _cb_rollback_extras() {
     local list="$CB_ARCHIVE_DIR/restore-created.list" rel class
-    [[ -r $list ]] || return 0
+    if [[ ! -r $list ]]; then
+        # Say so. Silently rolling back everything except the created files is
+        # not the faithful inverse this claims to be.
+        log "warning: no record of what the restore created ($list) - nothing will be deleted"
+        return 0
+    fi
     while IFS= read -r rel; do
         [[ -n $rel ]] || continue
         _cb_selected "$rel" || continue
@@ -1848,7 +1929,9 @@ _cb_run() {
 # Everything a capture does, minus the lock, so a restore can take its own
 # pre-restore snapshot while already holding it.
 _cb_capture_once() {
-    CB_IN_CAPTURE=1
+    # Not under --dry-run: a dry run must no more write state than it writes
+    # an archive, and this flag is what lets a failure stamp LAST_RESULT.
+    [[ $CB_DRY_RUN -eq 0 ]] && CB_IN_CAPTURE=1
     CB_TAKE_ERRORS=0
     CB_STAGE=$(mktemp -d)
     CB_MANIFEST=$(mktemp)
@@ -1995,6 +2078,10 @@ _cb_write_archive() { # _cb_write_archive <manifest> <hash> <filecount>
     _cb_state_set ARCHIVE_BYTES "$(_cb_archive_bytes)"
 
     log "wrote $path ($bytes bytes, $files files, $took)"
+    # The capture is over. Leaving this set meant every later restore-time
+    # failure stamped LAST_RESULT=failed and sent "the configuration snapshot
+    # did not complete" - reporting a healthy backup as broken.
+    CB_IN_CAPTURE=0
 
     return 0
 }
@@ -2134,6 +2221,12 @@ main() {
         esac
         shift
     done
+
+    # Before the dependency checks below, which call fail(): without this a
+    # run that cannot find jq left LAST_RESULT=ok while every timer firing
+    # failed. Not for --dry-run, which must no more write state than it writes
+    # an archive.
+    [[ $mode == run && $CB_DRY_RUN -eq 0 ]] && CB_IN_CAPTURE=1
 
     _cb_load_lib
     trap '_cb_unexpected $? $LINENO' ERR
