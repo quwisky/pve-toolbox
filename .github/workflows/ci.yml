@@ -41,7 +41,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            make git ca-certificates whiptail expect zsh jq rsync
+            make git ca-certificates whiptail expect zsh curl jq rsync tar gzip
 
       - uses: actions/checkout@v4
 
