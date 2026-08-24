@@ -1811,7 +1811,10 @@ _cb_xn_guard() {
     return 0
 }
 
-# PVE's own range. A remapped guest that lands outside it cannot be started,
+# Proxmox's registered OUI, so these are globally administered addresses -
+# which is what PVE itself hands out. (An earlier comment here claimed locally
+# administered; the bytes say otherwise.)
+# PVE's own VMID range. A remapped guest that lands outside it cannot be started,
 # and finding that out after the restore is too late.
 _cb_valid_vmid() { [[ $1 =~ ^[0-9]+$ && $1 -ge 100 && $1 -le 999999999 ]]; }
 
@@ -1846,7 +1849,7 @@ _cb_vmid_taken() { # _cb_vmid_taken <vmid> <source-node>
 # field it belongs to, and reaches inside [snapshot] and [PENDING] sections,
 # which carry their own copies of every disk line.
 _cb_xn_guest() { # _cb_xn_guest <file> <old-vmid> <new-vmid>
-    local f=$1 old=$2 new=$3 key from to
+    local f=$1 old=$2 new=$3 key from to line
     local tmp; tmp=$(mktemp)
 
     local before
@@ -1902,8 +1905,13 @@ _cb_xn_guest() { # _cb_xn_guest <file> <old-vmid> <new-vmid>
                 # address in the running config and in every snapshot stanza -
                 # otherwise rolling back to a snapshot hands the guest a MAC it
                 # never had.
-                [[ -n ${macmap[$old_mac]:-} ]] || macmap[$old_mac]=$(_cb_rand_mac)
-                new_mac=${macmap[$old_mac]}
+                # Keyed uppercase: the same interface written AA:BB in the
+                # running config and aa:bb in a snapshot would otherwise get
+                # two different new addresses - the very divergence the map
+                # exists to prevent.
+                local key_mac=${old_mac^^}
+                [[ -n ${macmap[$key_mac]:-} ]] || macmap[$key_mac]=$(_cb_rand_mac)
+                new_mac=${macmap[$key_mac]}
                 printf '%s\n' "${line//$old_mac/$new_mac}" >> "$tmp"
                 changed=1
             else
@@ -1929,13 +1937,12 @@ _cb_xn_guest() { # _cb_xn_guest <file> <old-vmid> <new-vmid>
 
 _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
     CB_XN_REPORT=$(mktemp)
+    _cb_cleanup_add "$CB_XN_REPORT"
     _cb_xn_guard
 
     local src=${CB_SRC_NODE:-unknown}
     _cb_xn_note "Transform report"
     _cb_xn_note "  mode      $CB_XN_MODE"
-    _cb_xn_note "  node      $src -> $CB_TARGET_NODE"
-    _cb_xn_note ""
 
     # Auto-exclusions first, so nothing below can resurrect them.
     local rel why
@@ -1998,8 +2005,11 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
             fail "the source says node '$src' but its tree holds nodes/${staged_nodes[0]} - refusing to transform an inconsistent archive"
         fi
         src=${staged_nodes[0]}
-        _cb_xn_note "  source    nodes/$src/ (read from the tree)"
     fi
+    # After the derivation, so the one line an operator scans names the node
+    # actually used rather than whatever the metadata claimed.
+    _cb_xn_note "  node      $src -> $CB_TARGET_NODE"
+    _cb_xn_note ""
 
     # nodes/<src>/ -> nodes/<tgt>/, resolving the real path rather than the
     # qemu-server symlink, which the collector already skips.
