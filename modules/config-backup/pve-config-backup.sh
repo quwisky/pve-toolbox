@@ -42,7 +42,10 @@ set -Eeuo pipefail
 
 CB_CONF="${CB_CONF:-/etc/pve-toolbox/config-backup.conf}"
 CB_STATE_FILE="${CB_STATE_FILE:-/var/lib/pve-toolbox/config-backup.state}"
-CB_LOCK_DIR="${CB_LOCK_DIR:-/run/lock}"
+# Not /run/lock: it is world-writable (drwxrwxrwt), so any local user could
+# create the lock file and hold an flock - and every capture would then exit 0
+# with "already running", write no archive and no state, and never report it.
+CB_LOCK_DIR="${CB_LOCK_DIR:-/run/pve-toolbox}"
 
 # Every collected path is routed through one of these two prefixes, so the
 # collector can be pointed at a fixture tree and exercised off a PVE host -
@@ -82,7 +85,7 @@ CB_GIT_AUTHOR_EMAIL="${CB_GIT_AUTHOR_EMAIL:-}"
 #
 # Allow-listing two known files is the right trade against narrowing the
 # pattern, which cost `password:secret` and every value under eight characters.
-CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-pve/user.cfg derived/dpkg-selections.txt}"
+CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-pve/user.cfg:credential derived/dpkg-selections.txt:credential}"
 DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"
 
 CB_STAGE=""
@@ -106,7 +109,11 @@ _cb_load_lib() {
     local dir="${PVE_TOOLBOX_LIB:-/usr/local/lib/pve-toolbox}"
     # shellcheck source=../../lib/discord.sh
     source "$dir/discord.sh" 2>/dev/null \
-        || { printf 'error: cannot source %s/discord.sh\n' "$dir" >&2; exit 1; }
+        || { printf 'error: cannot source %s/discord.sh\n' "$dir" >&2
+             _cb_state_set LAST_RUN "$(date -Is)" 2>/dev/null || true
+             [[ ${CB_IN_CAPTURE:-0} -eq 1 ]] \
+                 && { _cb_state_set LAST_RESULT failed 2>/dev/null || true; }
+             exit 1; }
 }
 
 # Both of these report before they exit, so a failed capture is never silent.
@@ -527,21 +534,28 @@ _cb_encrypt_secrets() {
 # most important check in the list silently never runs.
 CB_SECRET_PATTERNS=(
     "private-key:-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]"
+    "credential:(^|[^A-Za-z])(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]"
     "bearer:Bearer [A-Za-z0-9._~+/-]{20,}"
     "webhook:https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{20,}"
 )
 
-_cb_allowed() { # _cb_allowed <relative-path>
-    local glob
+# <glob> exempts every pattern; <glob>:<pattern> exempts only that one. The
+# shipped defaults are per-pattern, because exempting a file wholesale for the
+# one record shape it is known to contain also switched off the private-key,
+# bearer and webhook checks on a file carrying operator free text.
+_cb_allowed() { # _cb_allowed <relative-path> <pattern-name>
+    local glob want
     # set -f: the word splitting is wanted, the pathname expansion is not - an
     # entry like `pve/*.cfg` would otherwise expand against whatever directory
     # the runner was started from, allowing different files each time.
     set -f
     for glob in $CB_SECRET_ALLOW; do
+        want=""
+        [[ $glob == *:* ]] && { want=${glob##*:}; glob=${glob%:*}; }
         # shellcheck disable=SC2053
-        # shellcheck disable=SC2053
-        [[ $1 == $glob ]] && { set +f; return 0; }
+        if [[ $1 == $glob ]] && [[ -z $want || $want == "$2" ]]; then
+            set +f; return 0
+        fi
     done
     set +f
     return 1
@@ -562,7 +576,12 @@ _cb_secret_scan() {
         # -a, not -I: -I skips any file containing a NUL byte, so a key
         # hidden in one was never scanned at all. A gate that declines to open
         # a file cannot be said to have checked it.
-        grep -raEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
+        # -i, and anchored on a non-letter: unanchored and case-sensitive it
+        # matched cloud-init's `cipassword:` - refusing the entire capture on a
+        # very ordinary guest - while missing every RESTIC_PASSWORD= and
+        # API_TOKEN=, which is the form these two trees actually contain. The
+        # anchor still treats _ as a separator so RESTIC_PASSWORD is caught.
+        grep -raiEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
         rc=$?
         set -e
         # 0 matched, 1 matched nothing; anything else is a broken scan and must
@@ -572,7 +591,7 @@ _cb_secret_scan() {
         for f in "${found[@]:-}"; do
             [[ -n $f ]] || continue
             rel=${f#"$CB_STAGE"/}
-            _cb_allowed "$rel" && continue
+            _cb_allowed "$rel" "$name" && continue
             printf '%s %s\n' "$rel" "$name"
             hits=$((hits + 1))
         done
@@ -609,6 +628,10 @@ _cb_hash_of() { # _cb_hash_of <manifest>
 # archive but out of anything that decides whether something changed.
 _cb_volatile_regex() {
     local p out=""
+    # set -f for the same reason as _cb_allowed: the split is wanted, the
+    # pathname expansion is not - and without it the escaping below is dead
+    # code, because the shell eats the glob first.
+    set -f
     for p in $CB_VOLATILE_SECTIONS; do
         [[ -n $p ]] || continue
         # Doubled, because a dynamic regex is a string first: awk consumes
@@ -616,6 +639,7 @@ _cb_volatile_regex() {
         # plain .` on every single run.
         out+="${out:+|}^$(printf '%s' "$p" | sed 's/[.[\*^$(){}?+|]/\\\\&/g')"
     done
+    set +f
     printf '%s' "$out"
 }
 
@@ -742,6 +766,10 @@ _cb_archive_bytes() {
 # prints remote URLs on error, and a URL can carry an embedded credential.
 
 _cb_git() { # _cb_git <args...>
+    # umask here, not only UMask= on the unit: a manual run inherits the
+    # caller's, and root's default 022 leaves .git objects world-readable -
+    # so containment would rest entirely on two directory modes.
+    umask 077
     local -a ssh=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
                   -o ConnectTimeout=10)
     [[ -n $CB_GIT_SSH_KEY ]] && ssh+=(-i "$CB_GIT_SSH_KEY" -o IdentitiesOnly=yes)
@@ -916,7 +944,10 @@ _cb_git_prune_removed() { # _cb_git_prune_removed <manifest>
     _cb_git rev-parse --verify HEAD >/dev/null 2>&1 || return 0
     keep=$(mktemp); tracked=$(mktemp)
     _cb_git_include "$1" | LC_ALL=C sort > "$keep"
-    _cb_git ls-files | LC_ALL=C sort > "$tracked"
+    # -c core.quotePath=false and -z: ls-files otherwise quotes a non-ASCII
+    # path, so comm saw a string that never matches and the rm below targeted
+    # a file that does not exist - leaving it tracked and committed forever.
+    _cb_git -c core.quotePath=false ls-files | LC_ALL=C sort > "$tracked"
     while IFS= read -r f; do
         [[ -n $f ]] || continue
         rm -f "$CB_GIT_DIR/$f"
@@ -1004,6 +1035,7 @@ _cb_git_state() {
 _cb_lock() {
     local dir=$CB_LOCK_DIR
     mkdir -p "$dir" 2>/dev/null || dir=/tmp
+    chmod 0700 "$dir" 2>/dev/null || true
     exec 9>"$dir/pve-config-backup.lock"
     if ! flock -n 9; then
         log "a capture is already running - leaving it alone"
@@ -1068,6 +1100,16 @@ _cb_run() {
         return 0
     fi
 
+    # The archive the hash stands for has to still be there. Comparing hashes
+    # alone meant an emptied archive directory - or a repointed CB_ARCHIVE_DIR,
+    # or an NFS mount absent at boot - reported "unchanged", exited 0, and left
+    # module_status showing a healthy archive count with nothing on disk.
+    local last_archive; last_archive=$(_cb_state_get LAST_ARCHIVE)
+    if [[ $hash == "$previous" && $CB_FORCE -eq 0 && -n $last_archive \
+          && ! -r $CB_ARCHIVE_DIR/$last_archive ]]; then
+        log "the last archive ($last_archive) is gone - writing a new one"
+        previous=""
+    fi
     if [[ $hash == "$previous" && $CB_FORCE -eq 0 ]]; then
         log "configuration unchanged ($hash) - no new archive"
         _cb_state_set LAST_RUN "$(date -Is)"
@@ -1281,6 +1323,7 @@ main() {
     command -v curl >/dev/null 2>&1 || fail "curl not found"
     command -v jq   >/dev/null 2>&1 || fail "jq not found"
     command -v tar  >/dev/null 2>&1 || fail "tar not found"
+    command -v gzip >/dev/null 2>&1 || fail "gzip not found"
 
     _cb_read_conf
 
