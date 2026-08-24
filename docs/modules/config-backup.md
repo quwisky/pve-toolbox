@@ -255,7 +255,7 @@ CB_NOTIFY_ON_CHANGE='0'
 CB_INCLUDE_SECRETS='0'
 CB_AGE_RECIPIENT=''
 CB_VOLATILE_SECTIONS='firewall-live/'
-CB_SECRET_ALLOW=''
+CB_SECRET_ALLOW='pve/user.cfg'
 ```
 
 A failed capture always reports. `CB_NOTIFY_ON_CHANGE=1` additionally reports
@@ -276,6 +276,7 @@ routine and a channel that pings on every edit stops being read.
 | `CB_AGE_RECIPIENT` | — | age recipient (`age1...`) for encrypted secrets |
 | `CB_SECRET_ALLOW` | — | Space-separated path globs the secret scan may ignore |
 | `CB_RUN_NOW` | `n` | Take the first snapshot at the end of the install |
+| `CB_TEST_NOTIFY` | `y` | Send a test notification during install |
 | `CB_LOCAL_ENABLED` | `y` | Keep `tar.gz` archives |
 | `CB_GIT_ENABLED` | `n` | Keep a git history |
 | `CB_GIT_DIR` | `/var/lib/pve-toolbox/config-backup.git` | Working clone |
