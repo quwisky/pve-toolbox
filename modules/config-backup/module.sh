@@ -135,6 +135,7 @@ _cb_defaults() {
     : "${CB_VOLATILE_SECTIONS:=firewall-live/}"
     : "${CB_SECRET_ALLOW:=}"
     : "${CB_RUN_NOW:=n}"
+    : "${CB_TEST_NOTIFY:=y}"
     : "${CB_LOCAL_ENABLED:=y}"
     : "${CB_GIT_ENABLED:=n}"
     : "${CB_GIT_DIR:=/var/lib/pve-toolbox/config-backup.git}"
@@ -362,9 +363,10 @@ module_install() {
         "$(_cb_exec)" "$CB_SCHEDULE"
 
     step "Verification"
-    local t=y
-    ask_yn t "send a test notification to Discord now" "y"
-    if [[ $t == y ]]; then
+    # The only prompt without an env var of its own, which made every -y
+    # install fire an outbound webhook call whether or not anyone wanted one.
+    ask_yn CB_TEST_NOTIFY "send a test notification to Discord now" "$CB_TEST_NOTIFY"
+    if [[ $CB_TEST_NOTIFY == y ]]; then
         if _cb_run_helper --test; then
             ok "sent - check the channel"
         else
@@ -386,17 +388,20 @@ module_install() {
         CB_RUN_NOW=n
     fi
 
-    ask_yn CB_RUN_NOW "take the first snapshot right now" "$CB_RUN_NOW"
-    if [[ $CB_RUN_NOW == y ]]; then
-        systemctl start --no-block "$CB_UNIT.service"
-        ok "started $CB_UNIT.service (runs in the background)"
-    fi
-
+    # State before the unit starts: the runner writes this same file, so
+    # starting it first leaves a window where its results are overwritten by
+    # the install's own read-modify-write.
     state_set "$MODULE_NAME" ARCHIVE_DIR "$CB_ARCHIVE_DIR"
     state_set "$MODULE_NAME" SCHEDULE "$CB_SCHEDULE"
     state_set "$MODULE_NAME" STALE_AFTER_DAYS "$(_cb_stale_days_for "$CB_SCHEDULE")"
     state_set "$MODULE_NAME" SCRIPT_SUM "$(_cb_sum "$(_cb_src)")"
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
+
+    ask_yn CB_RUN_NOW "take the first snapshot right now" "$CB_RUN_NOW"
+    if [[ $CB_RUN_NOW == y ]]; then
+        systemctl start --no-block "$CB_UNIT.service"
+        ok "started $CB_UNIT.service (runs in the background)"
+    fi
 
     step "Done - snapshots $CB_SCHEDULE"
     dim "  systemctl list-timers '$CB_UNIT.timer'"
@@ -517,6 +522,7 @@ module_status() {
 }
 
 module_status_long() {
+    local HOST_SHORT; HOST_SHORT=$(hostname -s 2>/dev/null || hostname)
     if ! _cb_installed; then
         warn "not installed"
         return 1
@@ -540,16 +546,16 @@ module_status_long() {
     # The one place that is allowed to look at the archive directory.
     echo
     if [[ -d $dir ]]; then
-        count=$(find "$dir" -maxdepth 1 -name 'pve-config_*.tar.gz' -type f 2>/dev/null | wc -l)
+        count=$(find "$dir" -maxdepth 1 -name "pve-config_${HOST_SHORT:-*}_*.tar.gz" -type f 2>/dev/null | wc -l)
         bytes=0
         local f
         while IFS= read -r f; do
             bytes=$((bytes + $(wc -c < "$f")))
-        done < <(find "$dir" -maxdepth 1 -name 'pve-config_*.tar.gz' -type f 2>/dev/null)
+        done < <(find "$dir" -maxdepth 1 -name "pve-config_${HOST_SHORT:-*}_*.tar.gz" -type f 2>/dev/null)
         printf '  %s archive(s), %s\n' "$(printf '%s' "$count" | tr -d ' ')" "$(_cb_human "$bytes")"
         local newest oldest
-        newest=$(find "$dir" -maxdepth 1 -name 'pve-config_*.tar.gz' -type f 2>/dev/null | LC_ALL=C sort | tail -n1)
-        oldest=$(find "$dir" -maxdepth 1 -name 'pve-config_*.tar.gz' -type f 2>/dev/null | LC_ALL=C sort | head -n1)
+        newest=$(find "$dir" -maxdepth 1 -name "pve-config_${HOST_SHORT:-*}_*.tar.gz" -type f 2>/dev/null | LC_ALL=C sort | tail -n1)
+        oldest=$(find "$dir" -maxdepth 1 -name "pve-config_${HOST_SHORT:-*}_*.tar.gz" -type f 2>/dev/null | LC_ALL=C sort | awk 'NR == 1 { v = $0 } END { print v }')
         [[ -n $newest ]] && printf '  newest     %s\n' "$(basename "$newest")"
         [[ -n $oldest ]] && printf '  oldest     %s\n' "$(basename "$oldest")"
     else

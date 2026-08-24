@@ -71,11 +71,17 @@ CB_GIT_SSH_KEY="${CB_GIT_SSH_KEY:-}"
 CB_GIT_TOKEN_FILE="${CB_GIT_TOKEN_FILE:-}"
 CB_GIT_AUTHOR_NAME="${CB_GIT_AUTHOR_NAME:-pve-toolbox}"
 CB_GIT_AUTHOR_EMAIL="${CB_GIT_AUTHOR_EMAIL:-}"
-CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-}"
+# user.cfg is where PVE records API tokens, as `token:root@pam!name:0:0::...`.
+# That is a record type, not a credential - the token secret lives in
+# priv/token.cfg, which is dropped before the scan ever runs. Without this the
+# scan aborts every run on any host with a Grafana, Terraform or PBS
+# integration, which is to say most of them.
+CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-pve/user.cfg}"
 DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"
 
 CB_STAGE=""
 CB_MANIFEST=""
+CB_IN_CAPTURE=0
 CB_DRY_RUN=0
 CB_FORCE=0
 CB_STARTED=$SECONDS
@@ -126,8 +132,15 @@ _cb_notify_failure() {
     # State first: the record has to survive a webhook outage, and it is what
     # module_status reads. Without it a failed capture keeps reporting the
     # last success and the status line never says anything went wrong.
-    _cb_state_set LAST_RUN "$(date -Is)" 2>/dev/null || true
-    _cb_state_set LAST_RESULT failed 2>/dev/null || true
+    #
+    # Only for a capture, though. --test and the argument checks go through
+    # fail() too, and stamping LAST_RESULT there left a module whose webhook
+    # had a typo reporting a failed *backup* from installation onward - for a
+    # capture that was never attempted.
+    if [[ ${CB_IN_CAPTURE:-0} -eq 1 ]]; then
+        _cb_state_set LAST_RUN "$(date -Is)" 2>/dev/null || true
+        _cb_state_set LAST_RESULT failed 2>/dev/null || true
+    fi
 
     declare -F discord_notify >/dev/null || return 0
     [[ -n $DISCORD_WEBHOOK ]] || return 0
@@ -199,6 +212,13 @@ CB_CLASSES=(
     "pve/nodes/*/qemu-server/*.conf:guest"
     "pve/nodes/*/lxc/*.conf:guest"
 
+    # Written by pve-ha-lrm and pve-ha-crm on their watchdog interval, with a
+    # timestamp inside. They are state, not configuration, and being
+    # pmxcfs-class would put them in the hash - which means a new archive on
+    # every single run on any host with HA enabled.
+    "pve/ha/manager_status:reference"
+    "pve/nodes/*/lrm_status:reference"
+
     "pve/storage.cfg:pmxcfs"
     "pve/datacenter.cfg:pmxcfs"
     "pve/user.cfg:pmxcfs"
@@ -267,15 +287,26 @@ CB_SECRET_PATHS=(
 
 # ------------------------------------------------------------ collection --
 
+# A backup tool must never report success over a source it could not read.
+# Swallowing the failure here is what let an unreadable file vanish from the
+# archive silently - and every later phase restores from this.
+CB_TAKE_ERRORS=0
+
 _cb_take() { # _cb_take <absolute-source> <relative-destination>
     local src=$1 dest="$CB_STAGE/$2"
     [[ -e $src ]] || return 0
     if [[ -d $src ]]; then
         mkdir -p "$dest"
-        cp -a "$src/." "$dest/" 2>/dev/null || true
+        if ! cp -a "$src/." "$dest/" 2>/dev/null; then
+            log "warning: could not fully capture $src"
+            CB_TAKE_ERRORS=$((CB_TAKE_ERRORS + 1))
+        fi
     else
         mkdir -p "$(dirname "$dest")"
-        cp -a "$src" "$dest" 2>/dev/null || true
+        if ! cp -a "$src" "$dest" 2>/dev/null; then
+            log "warning: could not capture $src"
+            CB_TAKE_ERRORS=$((CB_TAKE_ERRORS + 1))
+        fi
     fi
     return 0
 }
@@ -300,9 +331,14 @@ _cb_collect_pmxcfs() {
     done
     # Raw copies, not `qm config`: the files carry the snapshot stanzas the
     # resolved view omits, and they are what a restore writes back.
-    for p in firewall ha sdn mapping nodes priv; do
+    for p in firewall ha sdn mapping nodes; do
         _cb_take "$CB_PVE_DIR/$p" "pve/$p"
     done
+    # Only stage the cluster's key material when it is actually going to be
+    # encrypted. Otherwise the root CA key and authkey are copied in cleartext
+    # to $TMPDIR - usually the root filesystem on a PVE host - and unlinked
+    # again, daily, for no benefit at all.
+    [[ $CB_INCLUDE_SECRETS -eq 1 ]] && _cb_take "$CB_PVE_DIR/priv" "pve/priv"
     # On a real pmxcfs these two are symlinks into nodes/<local>/, which the
     # loop above already took whole. Following them would archive, digest and
     # tar every guest config a second time.
@@ -482,7 +518,7 @@ _cb_encrypt_secrets() {
 # most important check in the list silently never runs.
 CB_SECRET_PATTERNS=(
     "private-key:-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=]"
+    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*(=[[:space:]]*|:[[:space:]]+)[^[:space:]]{8,}"
     "bearer:Bearer [A-Za-z0-9._~+/-]{20,}"
     "webhook:https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{20,}"
 )
@@ -508,7 +544,10 @@ _cb_secret_scan() {
         # the pipeline's - which made the check below unreachable, so a scan
         # that broke outright read as a scan that found nothing.
         set +e
-        grep -rIEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
+        # -a, not -I: -I skips any file containing a NUL byte, so a key
+        # hidden in one was never scanned at all. A gate that declines to open
+        # a file cannot be said to have checked it.
+        grep -raEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
         rc=$?
         set -e
         # 0 matched, 1 matched nothing; anything else is a broken scan and must
@@ -557,9 +596,10 @@ _cb_volatile_regex() {
     local p out=""
     for p in $CB_VOLATILE_SECTIONS; do
         [[ -n $p ]] || continue
-        # ERE-escape, but not the slash: awk needs no escaping for / in a
-        # dynamic regex and warns about the redundant backslash.
-        out+="${out:+|}^$(printf '%s' "$p" | sed 's/[.[\*^$(){}?+|]/\\&/g')"
+        # Doubled, because a dynamic regex is a string first: awk consumes
+        # one backslash reading it and warns `escape sequence \. treated as
+        # plain .` on every single run.
+        out+="${out:+|}^$(printf '%s' "$p" | sed 's/[.[\*^$(){}?+|]/\\\\&/g')"
     done
     printf '%s' "$out"
 }
@@ -896,6 +936,7 @@ _cb_lock() {
 }
 
 _cb_run() {
+    CB_IN_CAPTURE=1
     _cb_lock
 
     CB_STAGE=$(mktemp -d)
@@ -918,6 +959,16 @@ _cb_run() {
     if ! scan=$(_cb_secret_scan); then
         fail "secret scan refused the capture:"$'\n'"$scan"
     fi
+
+    # Everything above either read what it was asked for or said so. A
+    # capture that quietly lost files, or one taken while pmxcfs was down,
+    # must not be written, verified, symlinked as `latest` and then counted
+    # toward the retention floor - thirty of those evict every good archive,
+    # and the status line reads archives:30 the whole time.
+    [[ $CB_TAKE_ERRORS -eq 0 ]] \
+        || fail "$CB_TAKE_ERRORS path(s) could not be captured - refusing to write a partial archive"
+    [[ -d $CB_STAGE/pve/nodes ]] \
+        || fail "$CB_PVE_DIR has no nodes/ - pmxcfs does not look mounted (is pve-cluster running?)"
 
     _cb_normalise
 
@@ -1039,7 +1090,11 @@ _cb_write_archive() { # _cb_write_archive <manifest> <hash> <filecount>
 
 _cb_relink_latest() {
     local newest
-    newest=$(_cb_archives_newest_first | head -n1)
+    # Drain the pipe rather than truncating it: `| head -n1` closes the read
+    # end, the upstream cut takes SIGPIPE, and pipefail turns that into 141 -
+    # tripping the ERR trap, sending a false "nothing was written" alert, and
+    # leaving LAST_HASH unset so every later run writes another archive.
+    newest=$(_cb_archives_newest_first | awk 'NR == 1 { v = $0 } END { print v }')
     if [[ -n $newest ]]; then
         ln -sfn "$(basename "$newest")" "$CB_ARCHIVE_DIR/latest"
     else
