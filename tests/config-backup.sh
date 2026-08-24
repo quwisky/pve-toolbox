@@ -297,6 +297,11 @@ gate_run() { # gate_run <args...> -> runs the real runner against GDIR
     PVE_TOOLBOX_LIB="$ROOT/lib" "$RUNNER" "$@"
 }
 
+# The runner hard-requires jq, so without it every gate below reads as a
+# refusal rather than as the missing dependency it is.
+if ! command -v jq >/dev/null 2>&1; then
+    printf 'skip the end-to-end gate tests, no jq\n'
+else
 gate_fixture
 gate_run run >/dev/null 2>&1 || fail "a healthy capture was refused"
 [[ $(find "$GDIR/ar" -name '*.tar.gz' | wc -l) -eq 1 ]] || fail "no archive from a healthy capture"
@@ -354,6 +359,7 @@ chmod 644 "$GDIR/pve/datacenter.cfg" 2>/dev/null || true
 [[ $(grep '^LAST_RESULT=' "$GDIR/state") == "$before" ]] \
     || fail "--dry-run overwrote the recorded result of a real capture"
 pass "--dry-run writes no state"
+fi
 
 # --- 4. retention: count is a floor, not a cap --------------------------
 
