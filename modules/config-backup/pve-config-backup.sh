@@ -766,10 +766,6 @@ _cb_archive_bytes() {
 # prints remote URLs on error, and a URL can carry an embedded credential.
 
 _cb_git() { # _cb_git <args...>
-    # umask here, not only UMask= on the unit: a manual run inherits the
-    # caller's, and root's default 022 leaves .git objects world-readable -
-    # so containment would rest entirely on two directory modes.
-    umask 077
     local -a ssh=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
                   -o ConnectTimeout=10)
     [[ -n $CB_GIT_SSH_KEY ]] && ssh+=(-i "$CB_GIT_SSH_KEY" -o IdentitiesOnly=yes)
@@ -791,7 +787,12 @@ _cb_git() { # _cb_git <args...>
               -c "credential.${CB_GIT_REMOTE}.helper=$(_cb_git_credential_helper)"
               -c "http.followRedirects=false")
     fi
-    timeout 300 "${pre[@]}" git -C "$CB_GIT_DIR" "${cred[@]}" "$@"
+    # The umask goes in a subshell: it is not function-scoped, so setting it
+    # in the function body leaks to the whole process and every later write
+    # lands 0600 instead of its own mode. Needed beyond UMask= on the unit
+    # because a manual run inherits root's 022, which leaves .git objects
+    # world-readable.
+    ( umask 077; timeout 300 "${pre[@]}" git -C "$CB_GIT_DIR" "${cred[@]}" "$@" )
 }
 
 # The git-credential protocol, not a bare cat: git needs username= and
