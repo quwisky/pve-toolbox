@@ -1577,7 +1577,9 @@ _cb_run() {
 # Everything a capture does, minus the lock, so a restore can take its own
 # pre-restore snapshot while already holding it.
 _cb_capture_once() {
-    CB_IN_CAPTURE=1
+    # Not under --dry-run: a dry run must no more write state than it writes
+    # an archive, and this flag is what lets a failure stamp LAST_RESULT.
+    [[ $CB_DRY_RUN -eq 0 ]] && CB_IN_CAPTURE=1
     CB_TAKE_ERRORS=0
     CB_STAGE=$(mktemp -d)
     CB_MANIFEST=$(mktemp)
