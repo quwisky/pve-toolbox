@@ -42,7 +42,10 @@ printf 'name: test\nmemory: 2048\n'          > "$FIX/pve/qemu-server/100.conf"
 printf 'arch: amd64\nhostname: ct1\n'        > "$FIX/pve/lxc/200.conf"
 printf 'dir: local\n\tpath /var/lib/vz\n'    > "$FIX/pve/storage.cfg"
 printf 'keyboard: en-us\n'                   > "$FIX/pve/datacenter.cfg"
-printf 'user:root@pam:1:0:::\n'              > "$FIX/pve/user.cfg"
+# A realistic user.cfg: PVE records API tokens here as a `token:` record.
+# The old fixture had only a user line, which is why the scan's false positive
+# on this file went unnoticed until it aborted every run on a real host.
+printf 'user:root@pam:1:0:::::\ntoken:root@pam!grafana:0:0::monitoring:\ngroup:admins:root@pam::\n' > "$FIX/pve/user.cfg"
 printf '[OPTIONS]\nenable: 1\n'              > "$FIX/pve/firewall/cluster.fw"
 printf 'totem { cluster_name: cl }\n'        > "$FIX/pve/corosync.conf"
 printf 'auto vmbr0\niface vmbr0 inet static\n' > "$FIX/root/etc/network/interfaces"
@@ -131,11 +134,23 @@ pass "every staged path is classified"
 # the archive and never trips the scan either.
 printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n' > "$FIX/pve/priv/authkey.key"
 stage_fixture; stage=$CB_STAGE
-[[ -f $stage/pve/priv/authkey.key ]] || fail "the fixture key was not collected in the first place"
+# With secrets disabled - the default, and the only mode most hosts use - the
+# cluster's key material must never be staged at all. Copying it to $TMPDIR
+# and unlinking it again is an unnecessary daily cleartext copy of the most
+# sensitive thing on the host, outside pmxcfs, for no benefit.
+[[ -e $stage/pve/priv ]] && fail "priv/ was staged even though CB_INCLUDE_SECRETS is off"
+_cb_drop_secrets
+_cb_secret_scan >/dev/null || fail "the scan flagged a tree with nothing left in it"
+pass "priv/ is never staged when secrets are disabled"
+
+# _cb_drop_secrets stays as the belt-and-braces pass for anything key-shaped
+# that reaches the stage by another route.
+stage_fixture; stage=$CB_STAGE
+mkdir -p "$stage/pve/priv"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n' > "$stage/pve/priv/authkey.key"
 _cb_drop_secrets
 [[ -e $stage/pve/priv/authkey.key ]] && fail "a key under priv/ survived _cb_drop_secrets"
-_cb_secret_scan >/dev/null || fail "the scan flagged a tree with nothing left in it"
-pass "priv/ is dropped before the scan"
+pass "priv/ is dropped if it reaches the stage anyway"
 
 # A key somewhere the drop list does not cover has to stop the run. The
 # pattern starts with a dash, so a scan that passes it to grep without -e
@@ -210,6 +225,62 @@ m=$(mktemp "$WORK/mfXXXXXX"); _cb_manifest "$b" "$m"
 grep -q '^derived/cluster-resources.json' "$m" \
     || fail "reference data was excluded from the archive, not just from the hash"
 pass "content hash"
+
+# --- 3b. the defects the first review round found -------------------------
+
+# A real user.cfg records API tokens as `token:root@pam!name:...`. That is a
+# record type, not a credential - the secret lives in priv/token.cfg, which is
+# dropped before the scan runs. Matching it aborted every run on any host with
+# a Grafana, Terraform or PBS integration: the module wrote no backups at all.
+stage_fixture; _cb_drop_secrets
+_cb_secret_scan >/dev/null \
+    || fail "a user.cfg with an API token aborted the scan"
+pass "an API token in user.cfg is not a credential"
+
+# ...but a real credential in the same file still has to be caught.
+printf 'password: hunter2trustno1\n' >> "$CB_STAGE/pve/datacenter.cfg"
+_cb_secret_scan >/dev/null && fail "a real password was not caught"
+pass "a real credential is still caught"
+
+# -I skips any file containing a NUL byte, so a key hidden in one was never
+# scanned. A gate that declines to open a file has not checked it.
+stage_fixture; _cb_drop_secrets
+printf -- '-----BEGIN RSA PRIVATE KEY-----\nAAAA\0BBBB\n' > "$CB_STAGE/pve/sdn/binary.bin"
+hits=$(_cb_secret_scan) && fail "a key inside a binary file was not scanned"
+[[ $hits == *"binary.bin private-key"* ]] || fail "the binary file was not named: $hits"
+pass "the scan reads binary files too"
+
+# pve-ha-lrm and pve-ha-crm rewrite these with a timestamp on their watchdog
+# interval. Classified pmxcfs they sат inside the hash, so any host running HA
+# wrote a fresh archive every single run and the retention floor filled with
+# identical snapshots.
+class_is "pve/ha/manager_status"      reference
+class_is "pve/nodes/pve1/lrm_status"  reference
+stage_fixture; _cb_drop_secrets
+mkdir -p "$CB_STAGE/pve/ha" "$CB_STAGE/pve/nodes/pve1"
+printf '{"timestamp":1}\n'   > "$CB_STAGE/pve/ha/manager_status"
+printf '{"timestamp":1}\n'   > "$CB_STAGE/pve/nodes/pve1/lrm_status"
+h1=$(hash_of "$CB_STAGE")
+printf '{"timestamp":999}\n' > "$CB_STAGE/pve/ha/manager_status"
+printf '{"timestamp":999}\n' > "$CB_STAGE/pve/nodes/pve1/lrm_status"
+[[ $(hash_of "$CB_STAGE") == "$h1" ]] || fail "live HA status churn moved the content hash"
+pass "HA status files are state, not configuration"
+
+# A capture that could not read a source used to report ok, and every later
+# phase restores from that archive.
+stage_fixture
+CB_TAKE_ERRORS=0
+_cb_take /nonexistent/definitely-not-here "pve/nope.cfg"
+[[ $CB_TAKE_ERRORS -eq 0 ]] || fail "an absent source counted as a failure"
+if [[ $EUID -ne 0 ]]; then
+    unreadable="$WORK/unreadable.cfg"; printf 'x\n' > "$unreadable"; chmod 000 "$unreadable"
+    _cb_take "$unreadable" "pve/unreadable.cfg"
+    chmod 644 "$unreadable"
+    [[ $CB_TAKE_ERRORS -eq 1 ]] || fail "an unreadable source was silently dropped"
+    pass "an unreadable source is counted, not swallowed"
+else
+    printf 'skip unreadable-source case, running as root\n'
+fi
 
 # --- 4. retention: count is a floor, not a cap --------------------------
 
@@ -291,6 +362,11 @@ cred_is() { # cred_is <url> <yes|no>
 }
 cred_is 'https://tok:x@github.com/a/b.git'  yes
 cred_is 'https://user:pass@example.com/r'   yes
+# The colon-requiring form missed these - and a bare token is how GitHub and
+# GitLab document embedding a PAT, i.e. the exact case the docs claimed was
+# refused. It lands verbatim in .git/config and is re-applied every run.
+cred_is 'https://ghp_AAAABBBBCCCCDDDD@github.com/a/b.git' yes
+cred_is 'https://glpat-XXXXXXXXXXXX@gitlab.com/a/b.git'   yes
 cred_is 'https://github.com/a/b.git'        no
 cred_is 'git@github.com:a/b.git'            no
 cred_is 'ssh://git@host/repo.git'           no
@@ -406,6 +482,29 @@ after=$(git -C "$REMOTE" rev-parse master)
     || fail "the local commit was lost when the push was refused"
 pass "diverged remote is left alone"
 
+# A branch name is passed to git as a *refspec*, so `+master` is a force push:
+# ls-remote matches nothing, the code takes the first-push path, never fetches,
+# and the divergence check never runs. The source-grep guard cannot see this,
+# because `--force` never appears in it. Assert on the remote's tip instead.
+FORCEREPO="$WORK/forcerepo"; FORCEREMOTE="$WORK/forceremote.git"
+git init -q --bare "$FORCEREMOTE"
+export CB_GIT_DIR="$FORCEREPO" CB_GIT_REMOTE="$FORCEREMOTE" CB_GIT_PUSH=1 CB_GIT_BRANCH=master
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" 111122223333
+git clone -q -b master "$FORCEREMOTE" "$WORK/forceother"
+git -C "$WORK/forceother" -c user.name=o -c user.email=o@e commit -q --allow-empty -m "another writer"
+git -C "$WORK/forceother" push -q origin master
+tip_before=$(git -C "$FORCEREMOTE" rev-parse master)
+
+CB_GIT_BRANCH='+master'
+printf 'hotplug: disk\n' >> "$gstage/pve/qemu-server/100.conf"
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" 444455556666 2>/dev/null || true
+[[ $(git -C "$FORCEREMOTE" rev-parse master) == "$tip_before" ]] \
+    || fail "a '+branch' name force-pushed and destroyed the remote's history"
+CB_GIT_BRANCH=master
+pass "a branch name cannot smuggle in a force push"
+
 # The token must not end up persisted anywhere in the repository.
 grep -rq 'ghp_TESTTOKENVALUE' "$CB_GIT_DIR/.git/config" 2>/dev/null \
     && fail "a token was written into .git/config"
@@ -468,6 +567,42 @@ grep -q MUTATED "$LIVE/pve/qemu-server/100.conf" || fail "rollback did not resto
 [[ -e $LIVE/pve/datacenter.cfg ]] && fail "rollback left behind a file the restore created"
 [[ $(tree_hash "$LIVE") == "$MUTATED" ]] || fail "rollback did not reproduce the pre-restore tree exactly"
 pass "rollback is a faithful inverse"
+
+# A file the capture could not read used to be silently absent from the
+# snapshot, which rollback then read as "the restore created this" and
+# deleted - taking a live config file the restore never touched.
+if [[ $EUID -ne 0 ]]; then
+    printf 'options vfio-pci ids=1\n' > "$LIVE/root/etc/modprobe.d/vfio.conf"
+    CB_CONFIRM=1
+    _cb_restore "$BASE" >/dev/null 2>&1 || true
+    _cb_rollback >/dev/null 2>&1 || true
+    [[ -e $LIVE/root/etc/modprobe.d/vfio.conf ]] \
+        || fail "rollback deleted a live file the restore never created"
+    pass "rollback deletes only what the restore created"
+fi
+
+# A symlinked target must not be severed silently: find -type f never saw one,
+# so it reached no plan, and `[[ -e ]]` following the link made an archived
+# symlink read as absent - which rollback then deleted.
+printf '127.0.0.1 localhost\n' > "$LIVE/root/etc/hosts.real"
+ln -sfn hosts.real "$LIVE/root/etc/hosts"
+CB_CONFIRM=1
+_cb_restore "$BASE" >/dev/null 2>&1 || true
+[[ -L $LIVE/root/etc/hosts ]] || fail "a symlinked target was replaced silently"
+_cb_rollback >/dev/null 2>&1 || true
+[[ -e $LIVE/root/etc/hosts ]] || fail "rollback deleted a symlinked config file"
+pass "symlinked targets survive restore and rollback"
+
+# Writes go in by rename, never by unlink-then-create: on pmxcfs the removal
+# replicates to every node, so an interrupt would leave the file *absent*
+# cluster-wide rather than merely stale.
+wtmp=$(mktemp -d "$WORK/wXXXXXX")
+printf 'old\n' > "$wtmp/dest"; printf 'new\n' > "$wtmp/src"
+_cb_write_file "$wtmp/src" "$wtmp/dest" 0600 || fail "_cb_write_file failed"
+[[ $(cat "$wtmp/dest") == new ]] || fail "the write did not land"
+[[ $(mode_of "$wtmp/dest") == 600 ]] || fail "the mode was not applied"
+[[ -z $(find "$wtmp" -name '*.pve-toolbox.*') ]] || fail "a temp file was left behind"
+pass "writes are atomic"
 
 [[ $(grep -c . "$CB_ARCHIVE_DIR/restore.log") -ge 3 ]] || fail "the restore log has no record"
 grep -q 'rollback' "$CB_ARCHIVE_DIR/restore.log" || fail "the rollback was not logged"

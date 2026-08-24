@@ -91,11 +91,17 @@ CB_GIT_SSH_KEY="${CB_GIT_SSH_KEY:-}"
 CB_GIT_TOKEN_FILE="${CB_GIT_TOKEN_FILE:-}"
 CB_GIT_AUTHOR_NAME="${CB_GIT_AUTHOR_NAME:-pve-toolbox}"
 CB_GIT_AUTHOR_EMAIL="${CB_GIT_AUTHOR_EMAIL:-}"
-CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-}"
+# user.cfg is where PVE records API tokens, as `token:root@pam!name:0:0::...`.
+# That is a record type, not a credential - the token secret lives in
+# priv/token.cfg, which is dropped before the scan ever runs. Without this the
+# scan aborts every run on any host with a Grafana, Terraform or PBS
+# integration, which is to say most of them.
+CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-pve/user.cfg}"
 DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"
 
 CB_STAGE=""
 CB_MANIFEST=""
+CB_IN_CAPTURE=0
 CB_DRY_RUN=0
 CB_FORCE=0
 CB_STARTED=$SECONDS
@@ -146,8 +152,15 @@ _cb_notify_failure() {
     # State first: the record has to survive a webhook outage, and it is what
     # module_status reads. Without it a failed capture keeps reporting the
     # last success and the status line never says anything went wrong.
-    _cb_state_set LAST_RUN "$(date -Is)" 2>/dev/null || true
-    _cb_state_set LAST_RESULT failed 2>/dev/null || true
+    #
+    # Only for a capture, though. --test and the argument checks go through
+    # fail() too, and stamping LAST_RESULT there left a module whose webhook
+    # had a typo reporting a failed *backup* from installation onward - for a
+    # capture that was never attempted.
+    if [[ ${CB_IN_CAPTURE:-0} -eq 1 ]]; then
+        _cb_state_set LAST_RUN "$(date -Is)" 2>/dev/null || true
+        _cb_state_set LAST_RESULT failed 2>/dev/null || true
+    fi
 
     declare -F discord_notify >/dev/null || return 0
     [[ -n $DISCORD_WEBHOOK ]] || return 0
@@ -219,6 +232,13 @@ CB_CLASSES=(
     "pve/nodes/*/qemu-server/*.conf:guest"
     "pve/nodes/*/lxc/*.conf:guest"
 
+    # Written by pve-ha-lrm and pve-ha-crm on their watchdog interval, with a
+    # timestamp inside. They are state, not configuration, and being
+    # pmxcfs-class would put them in the hash - which means a new archive on
+    # every single run on any host with HA enabled.
+    "pve/ha/manager_status:reference"
+    "pve/nodes/*/lrm_status:reference"
+
     "pve/storage.cfg:pmxcfs"
     "pve/datacenter.cfg:pmxcfs"
     "pve/user.cfg:pmxcfs"
@@ -287,15 +307,26 @@ CB_SECRET_PATHS=(
 
 # ------------------------------------------------------------ collection --
 
+# A backup tool must never report success over a source it could not read.
+# Swallowing the failure here is what let an unreadable file vanish from the
+# archive silently - and every later phase restores from this.
+CB_TAKE_ERRORS=0
+
 _cb_take() { # _cb_take <absolute-source> <relative-destination>
     local src=$1 dest="$CB_STAGE/$2"
     [[ -e $src ]] || return 0
     if [[ -d $src ]]; then
         mkdir -p "$dest"
-        cp -a "$src/." "$dest/" 2>/dev/null || true
+        if ! cp -a "$src/." "$dest/" 2>/dev/null; then
+            log "warning: could not fully capture $src"
+            CB_TAKE_ERRORS=$((CB_TAKE_ERRORS + 1))
+        fi
     else
         mkdir -p "$(dirname "$dest")"
-        cp -a "$src" "$dest" 2>/dev/null || true
+        if ! cp -a "$src" "$dest" 2>/dev/null; then
+            log "warning: could not capture $src"
+            CB_TAKE_ERRORS=$((CB_TAKE_ERRORS + 1))
+        fi
     fi
     return 0
 }
@@ -320,9 +351,14 @@ _cb_collect_pmxcfs() {
     done
     # Raw copies, not `qm config`: the files carry the snapshot stanzas the
     # resolved view omits, and they are what a restore writes back.
-    for p in firewall ha sdn mapping nodes priv; do
+    for p in firewall ha sdn mapping nodes; do
         _cb_take "$CB_PVE_DIR/$p" "pve/$p"
     done
+    # Only stage the cluster's key material when it is actually going to be
+    # encrypted. Otherwise the root CA key and authkey are copied in cleartext
+    # to $TMPDIR - usually the root filesystem on a PVE host - and unlinked
+    # again, daily, for no benefit at all.
+    [[ $CB_INCLUDE_SECRETS -eq 1 ]] && _cb_take "$CB_PVE_DIR/priv" "pve/priv"
     # On a real pmxcfs these two are symlinks into nodes/<local>/, which the
     # loop above already took whole. Following them would archive, digest and
     # tar every guest config a second time.
@@ -502,7 +538,7 @@ _cb_encrypt_secrets() {
 # most important check in the list silently never runs.
 CB_SECRET_PATTERNS=(
     "private-key:-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=]"
+    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*(=[[:space:]]*|:[[:space:]]+)[^[:space:]]{8,}"
     "bearer:Bearer [A-Za-z0-9._~+/-]{20,}"
     "webhook:https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{20,}"
 )
@@ -528,7 +564,10 @@ _cb_secret_scan() {
         # the pipeline's - which made the check below unreachable, so a scan
         # that broke outright read as a scan that found nothing.
         set +e
-        grep -rIEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
+        # -a, not -I: -I skips any file containing a NUL byte, so a key
+        # hidden in one was never scanned at all. A gate that declines to open
+        # a file cannot be said to have checked it.
+        grep -raEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
         rc=$?
         set -e
         # 0 matched, 1 matched nothing; anything else is a broken scan and must
@@ -577,9 +616,10 @@ _cb_volatile_regex() {
     local p out=""
     for p in $CB_VOLATILE_SECTIONS; do
         [[ -n $p ]] || continue
-        # ERE-escape, but not the slash: awk needs no escaping for / in a
-        # dynamic regex and warns about the redundant backslash.
-        out+="${out:+|}^$(printf '%s' "$p" | sed 's/[.[\*^$(){}?+|]/\\&/g')"
+        # Doubled, because a dynamic regex is a string first: awk consumes
+        # one backslash reading it and warns `escape sequence \. treated as
+        # plain .` on every single run.
+        out+="${out:+|}^$(printf '%s' "$p" | sed 's/[.[\*^$(){}?+|]/\\\\&/g')"
     done
     printf '%s' "$out"
 }
@@ -710,7 +750,12 @@ _cb_git() { # _cb_git <args...>
     local -a ssh=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
                   -o ConnectTimeout=10)
     [[ -n $CB_GIT_SSH_KEY ]] && ssh+=(-i "$CB_GIT_SSH_KEY" -o IdentitiesOnly=yes)
-    local -a pre=(env "GIT_TERMINAL_PROMPT=0" "GIT_SSH_COMMAND=${ssh[*]}")
+    # %q per word: ${ssh[*]} loses quoting, and a key path containing a space
+    # would split into two arguments - with IdentitiesOnly=yes there is no
+    # fallback identity, so pushes fail permanently.
+    local sshcmd="" w
+    for w in "${ssh[@]}"; do sshcmd+="${sshcmd:+ }$(printf '%q' "$w")"; done
+    local -a pre=(env "GIT_TERMINAL_PROMPT=0" "GIT_SSH_COMMAND=$sshcmd")
     local -a cred=()
     if [[ -n $CB_GIT_TOKEN_FILE ]]; then
         cred=(-c "credential.helper=$(_cb_git_credential_helper)")
@@ -723,14 +768,22 @@ _cb_git() { # _cb_git <args...>
 # or falls through to prompting for a username. The token's *path* is what
 # ends up in the process table; the value is read when the helper runs.
 _cb_git_credential_helper() {
-    printf '!f() { echo username=x-access-token; echo "password=$(cat %s)"; }; f' \
+    # %q, because the path is interpolated into a string git runs with sh -c.
+    # Unquoted, a path containing a space silently breaks auth forever while
+    # install's readability check still passes, and a crafted path executes.
+    printf '!f() { echo username=x-access-token; echo "password=$(cat %q)"; }; f' \
         "$CB_GIT_TOKEN_FILE"
 }
 
 # A remote that already carries a credential defeats CB_GIT_TOKEN_FILE: git
 # writes it verbatim into .git/config and puts it in every argv.
 _cb_git_remote_has_credential() { # _cb_git_remote_has_credential <url>
-    [[ $1 =~ ^[a-zA-Z+]+://[^/@]*:[^/@]*@ ]]
+    # Any userinfo at all, not just a colon-separated pair. `https://<token>@host`
+    # is how GitHub and GitLab document embedding a PAT, and the colon-requiring
+    # form let exactly that through - the one case the docs claimed it refused.
+    # ssh URLs legitimately carry a bare user, so they are exempt.
+    case $1 in ssh://*|git+ssh://*) return 1 ;; esac
+    [[ $1 =~ ^[a-zA-Z][a-zA-Z0-9+.-]*://[^/@]+@ ]]
 }
 
 _cb_git_init() {
@@ -802,7 +855,11 @@ _cb_git_sync() { # _cb_git_sync <stage> <manifest> <hash>
     # tracked that the include list no longer covers.
     _cb_git_prune_removed "$manifest"
 
-    if ! _cb_git add -A; then
+    # Scoped to the include list, not -A. `git add -A` stages the whole work
+    # tree, so anything that already lived in CB_GIT_DIR - never seen by the
+    # secret scan, which only ever walks the stage - was committed on the
+    # first sync and is permanent once pushed.
+    if ! _cb_git add -A -- . 2>/dev/null; then
         fail "git add failed"
     fi
     # Exits 1 exactly when there is something to commit, which is the common
@@ -871,7 +928,13 @@ _cb_git_push() {
             return 0
         fi
     fi
-    if _cb_git push -q origin "$CB_GIT_BRANCH"; then
+    # An explicit, fully-qualified refspec. `git push origin "$CB_GIT_BRANCH"`
+    # passes the branch as a *refspec*, so a name of `+master` is a force
+    # push - every guard above is skipped (ls-remote matches nothing, so it
+    # takes the first-push path and never fetches) and the remote's history is
+    # destroyed. The grep-guard in the tests cannot see that, because
+    # `--force` never appears in the source.
+    if _cb_git push -q origin "refs/heads/$CB_GIT_BRANCH:refs/heads/$CB_GIT_BRANCH"; then
         log "git: pushed to origin/$CB_GIT_BRANCH"
         _cb_state_set GIT_PUSH_STATE ok
         _cb_state_set GIT_LAST_PUSH "$(date -Is)"
@@ -1004,7 +1067,11 @@ _cb_restore_plan() { # _cb_restore_plan <out>
         esac
         if [[ -z $action ]]; then
             live=$(_cb_live_path "$rel") || { printf 'skip\t%s\t%s\tnot a restorable prefix\n' "$rel" "$class" >> "$1"; continue; }
-            if [[ ! -e $live ]]; then
+            if [[ -L $CB_SRC_DIR/$rel ]]; then
+                # Archived as a symlink. Restoring it as a regular file would
+                # sever whatever it pointed at, so say so rather than guess.
+                action='skip'; reason="symlink in the source: restore it by hand"
+            elif [[ ! -e $live && ! -L $live ]]; then
                 action='create'; reason="absent on this host"
             elif cmp -s "$CB_SRC_DIR/$rel" "$live"; then
                 action='same'; reason="identical"
@@ -1013,7 +1080,7 @@ _cb_restore_plan() { # _cb_restore_plan <out>
             fi
         fi
         printf '%s\t%s\t%s\t%s\n' "$action" "$rel" "$class" "$reason" >> "$1"
-    done < <(cd "$CB_SRC_DIR" && find . -type f | LC_ALL=C sort)
+    done < <(cd "$CB_SRC_DIR" && find . \( -type f -o -type l \) | LC_ALL=C sort)
     return 0
 }
 
@@ -1113,10 +1180,13 @@ _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
         esac
         live=$(_cb_live_path "$rel") || continue
         _cb_backup_file "$live" "$class" >/dev/null
-        # Mode first, then content, so a restored sshd_config never sits
-        # world-readable even briefly.
-        if install -m "$(_cb_src_mode "$rel")" "$CB_SRC_DIR/$rel" "$live" 2>/dev/null \
-           || cp -f "$CB_SRC_DIR/$rel" "$live" 2>/dev/null; then
+        # Written to a sibling temp file and renamed into place. `install` does
+        # unlinkat() then openat(O_CREAT|O_EXCL), so every write opened a
+        # window where the config file simply did not exist - and on pmxcfs
+        # that removal replicates to every node in the cluster. Worse, pmxcfs
+        # rejects the trailing chmod, so install reported failure and the
+        # `|| cp -f` fallback then wrote the file a second time.
+        if _cb_write_file "$CB_SRC_DIR/$rel" "$live" "$(_cb_src_mode "$rel")"; then
             [[ $action == create ]] && created=$((created + 1)) || wrote=$((wrote + 1))
             log "  wrote   $rel"
             _cb_needs_reload "$rel" && reload+=("$(_cb_needs_reload "$rel")")
@@ -1130,6 +1200,7 @@ _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
     # pmxcfs is the only place PVE parses on our behalf, so it is the only
     # place a write can be confirmed rather than assumed.
     _cb_verify_pmxcfs "$plan"
+    failed=$((failed + CB_VERIFY_FAILED))
 
     step_log "Summary"
     printf '  written   %s\n  created   %s\n  skipped   %s\n  failed    %s\n' \
@@ -1143,6 +1214,21 @@ _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
         printf '%s\n' "${reboot[@]}" | LC_ALL=C sort -u | sed 's/^/  /'
     fi
     [[ $failed -eq 0 ]]
+}
+
+# rename(2) is atomic, and pmxcfs supports it: no reader ever sees a torn or
+# missing file, and an interrupt leaves the old content rather than nothing.
+_cb_write_file() { # _cb_write_file <source> <destination> <mode>
+    local tmp="$2.pve-toolbox.$$"
+    cp -f "$1" "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    # pmxcfs enforces its own mode and refuses chmod, so a failure here is
+    # expected there and must not fail the write.
+    chmod "$3" "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$2" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    return 0
 }
 
 _cb_src_mode() { # _cb_src_mode <relpath>
@@ -1174,13 +1260,17 @@ _cb_needs_reboot() { # _cb_needs_reboot <relpath>
     esac
 }
 
+CB_VERIFY_FAILED=0
+
 _cb_verify_pmxcfs() { # _cb_verify_pmxcfs <plan>
     local rel live
+    CB_VERIFY_FAILED=0
     while IFS=$'\t' read -r rel; do
         [[ -n $rel ]] || continue
         live=$(_cb_live_path "$rel") || continue
         if ! cmp -s "$CB_SRC_DIR/$rel" "$live"; then
-            log "  WARN    $rel did not read back as written - PVE may have rejected or rewritten it"
+            log "  FAILED  $rel did not read back as written - PVE rejected or rewrote it"
+            CB_VERIFY_FAILED=$((CB_VERIFY_FAILED + 1))
         fi
     done < <(awk -F'\t' '($3 == "pmxcfs" || $3 == "guest") && ($1 == "write" || $1 == "create") {print $2}' "$1")
     return 0
@@ -1227,9 +1317,20 @@ _cb_restore() { # _cb_restore <source> [selector]
     fi
 
     step_log "Snapshot before restoring"
-    _cb_capture_once || fail "the pre-restore snapshot failed - refusing to restore without a rollback"
+    # Forced, and never allowed a dry-run or git-only path: the dedup guard
+    # would skip the write when nothing changed since the last capture, and a
+    # git-only install writes no archive at all - both leaving a stale
+    # LAST_ARCHIVE pointing at something else entirely.
+    local prev_archive; prev_archive=$(_cb_state_get LAST_ARCHIVE)
+    CB_FORCE=1 CB_DRY_RUN=0 CB_LOCAL_ENABLED=1 _cb_capture_once \
+        || fail "the pre-restore snapshot failed - refusing to restore without a rollback"
     local rollback; rollback=$(_cb_state_get LAST_ARCHIVE)
+    # A non-empty string is not a rollback point.
     [[ -n $rollback ]] || fail "no rollback archive was produced - refusing to restore"
+    [[ -f $CB_ARCHIVE_DIR/$rollback ]] \
+        || fail "the rollback archive $rollback is not on disk - refusing to restore"
+    [[ $rollback != "$prev_archive" ]] \
+        || fail "the pre-restore snapshot wrote nothing new - refusing to restore without a rollback"
     _cb_state_set ROLLBACK_ARCHIVE "$rollback"
     _cb_state_set ROLLBACK_SELECTOR "$CB_SELECTOR"
     ok_log "rollback point: $rollback"
@@ -1237,6 +1338,13 @@ _cb_restore() { # _cb_restore <source> [selector]
     # Written before the first byte, so an interrupted restore leaves evidence
     # rather than looking like it never happened.
     _cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
+    # Exactly what this restore creates, recorded before the first byte. This
+    # is what rollback deletes - inferring it from "absent from the snapshot"
+    # meant an unreadable file that never made it into the snapshot looked
+    # like something the restore had created, and got removed from a live host.
+    local created_list="$CB_ARCHIVE_DIR/restore-created.list"
+    awk -F'\t' '$1 == "create" { print $2 }' "$plan" > "$created_list"
+    chmod 0600 "$created_list" 2>/dev/null || true
     _cb_restore_record started "$1" "$rollback" "$plan"
 
     step_log "Applying"
@@ -1247,7 +1355,9 @@ _cb_restore() { # _cb_restore <source> [selector]
             "Configuration was restored from a snapshot. Nothing was reloaded; check the summary." \
             Host "$HOST_SHORT" Source "$1" Rollback "$rollback"
     else
-        _cb_state_set RESTORE_IN_PROGRESS ""
+        # The marker stays set. Its entire purpose is to stop another restore
+        # running on a host that is half-restored, and clearing it here made
+        # the detected-failure path less safe than an outright crash.
         _cb_restore_record partial "$1" "$rollback" "$plan"
         rm -f "$plan"
         fail "some files could not be written - the host is part-restored, roll back with: pve-config-backup rollback --confirm"
@@ -1283,7 +1393,7 @@ _cb_rollback() {
     local plan; plan=$(mktemp)
     _cb_restore_plan "$plan"
     local extra; extra=$(mktemp)
-    _cb_rollback_extras "$plan" > "$extra"
+    _cb_rollback_extras > "$extra"
 
     _cb_show_plan "$plan"
     if [[ -s $extra ]]; then
@@ -1297,37 +1407,54 @@ _cb_rollback() {
         return 0
     fi
 
+    # Rollback writes to the same live host a restore does, so it runs the
+    # same checks. Without them it would push through an unmounted pmxcfs,
+    # report every write FAILED, delete the live-only paths anyway, and still
+    # record the outcome as a successful rollback and exit 0.
+    _cb_restore_preflight "$plan"
+
     _cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
     step_log "Rolling back"
-    _cb_apply "$plan" || log "  some files could not be written"
+    local rb_ok=1
+    _cb_apply "$plan" || rb_ok=0
     local rel live
     while IFS= read -r rel; do
         [[ -n $rel ]] || continue
         live=$(_cb_live_path "$rel") || continue
         rm -f "$live" && log "  deleted $rel"
     done < "$extra"
-    _cb_state_set RESTORE_IN_PROGRESS ""
-    _cb_restore_record rollback "$rollback" "$rollback" "$plan"
+    if [[ $rb_ok -eq 1 ]]; then
+        _cb_state_set RESTORE_IN_PROGRESS ""
+        _cb_restore_record rollback "$rollback" "$rollback" "$plan"
+        rm -f "$plan" "$extra"
+        return 0
+    fi
+    # Leave the marker set: a rollback that could not write everything has not
+    # put the host back, and the next restore must stay blocked until someone
+    # has looked.
+    _cb_restore_record rollback-partial "$rollback" "$rollback" "$plan"
     rm -f "$plan" "$extra"
-    return 0
+    fail "the rollback did not complete - the host is part-restored"
 }
 
 # Restorable paths that are live now and absent from the rollback source.
-_cb_rollback_extras() { # _cb_rollback_extras <plan>
-    local prefix rel live class
-    for prefix in pve host; do
-        local root
-        root=$(_cb_live_path "$prefix/") || continue
-        [[ -d $root ]] || continue
-        while IFS= read -r live; do
-            rel="$prefix/${live#"${root%/}"/}"
-            _cb_selected "$rel" || continue
-            [[ -e $CB_SRC_DIR/$rel ]] && continue
-            class=$(_cb_classify "$rel") || continue
-            case $class in never|reference|unclassified) continue ;; esac
-            printf '%s\n' "$rel"
-        done < <(find "$root" -type f ! -name '*.bak.*' 2>/dev/null | LC_ALL=C sort)
-    done
+# What the restore actually created, read back from the list it wrote before
+# it wrote anything. Walking the live filesystem and calling everything absent
+# from the snapshot "created" was wrong twice over: a file the capture could
+# not read looked created and was deleted, and the walk was an unbounded
+# `find /` that traversed /proc, /sys and every NFS mount - in the default
+# dry run, so a plain `rollback` appeared to hang.
+_cb_rollback_extras() {
+    local list="$CB_ARCHIVE_DIR/restore-created.list" rel class
+    [[ -r $list ]] || return 0
+    while IFS= read -r rel; do
+        [[ -n $rel ]] || continue
+        _cb_selected "$rel" || continue
+        class=$(_cb_classify "$rel") || continue
+        case $class in never|reference|unclassified) continue ;; esac
+        [[ -e $(_cb_live_path "$rel") ]] || continue
+        printf '%s\n' "$rel"
+    done < "$list"
     return 0
 }
 
@@ -1647,6 +1774,8 @@ _cb_run() {
 # Everything a capture does, minus the lock, so a restore can take its own
 # pre-restore snapshot while already holding it.
 _cb_capture_once() {
+    CB_IN_CAPTURE=1
+    CB_TAKE_ERRORS=0
     CB_STAGE=$(mktemp -d)
     CB_MANIFEST=$(mktemp)
     # shellcheck disable=SC2064
@@ -1667,6 +1796,16 @@ _cb_capture_once() {
     if ! scan=$(_cb_secret_scan); then
         fail "secret scan refused the capture:"$'\n'"$scan"
     fi
+
+    # Everything above either read what it was asked for or said so. A
+    # capture that quietly lost files, or one taken while pmxcfs was down,
+    # must not be written, verified, symlinked as `latest` and then counted
+    # toward the retention floor - thirty of those evict every good archive,
+    # and the status line reads archives:30 the whole time.
+    [[ $CB_TAKE_ERRORS -eq 0 ]] \
+        || fail "$CB_TAKE_ERRORS path(s) could not be captured - refusing to write a partial archive"
+    [[ -d $CB_STAGE/pve/nodes ]] \
+        || fail "$CB_PVE_DIR has no nodes/ - pmxcfs does not look mounted (is pve-cluster running?)"
 
     _cb_normalise
 
@@ -1788,7 +1927,11 @@ _cb_write_archive() { # _cb_write_archive <manifest> <hash> <filecount>
 
 _cb_relink_latest() {
     local newest
-    newest=$(_cb_archives_newest_first | head -n1)
+    # Drain the pipe rather than truncating it: `| head -n1` closes the read
+    # end, the upstream cut takes SIGPIPE, and pipefail turns that into 141 -
+    # tripping the ERR trap, sending a false "nothing was written" alert, and
+    # leaving LAST_HASH unset so every later run writes another archive.
+    newest=$(_cb_archives_newest_first | awk 'NR == 1 { v = $0 } END { print v }')
     if [[ -n $newest ]]; then
         ln -sfn "$(basename "$newest")" "$CB_ARCHIVE_DIR/latest"
     else
@@ -1849,6 +1992,8 @@ _cb_read_conf() {
     [[ $CB_GIT_ENABLED   =~ ^[01]$ ]] || CB_GIT_ENABLED=0
     [[ $CB_GIT_PUSH      =~ ^[01]$ ]] || CB_GIT_PUSH=0
     [[ -n $CB_GIT_BRANCH ]] || CB_GIT_BRANCH=master
+    git check-ref-format --branch "$CB_GIT_BRANCH" >/dev/null 2>&1 \
+        || fail "invalid git branch name: $CB_GIT_BRANCH"
     [[ -n $CB_GIT_AUTHOR_EMAIL ]] || CB_GIT_AUTHOR_EMAIL="pve-toolbox@$HOST_SHORT"
     # Refusing both leaves a timer that captures and then throws it away.
     [[ $CB_LOCAL_ENABLED -eq 1 || $CB_GIT_ENABLED -eq 1 ]] \
@@ -1875,11 +2020,19 @@ main() {
     while [[ $# -gt 0 ]]; do
         case $1 in
             --dry-run)
+                [[ $CB_CONFIRM -eq 1 ]] \
+                    && { printf 'error: --dry-run and --confirm are contradictory\n' >&2; exit 2; }
                 case $mode in
                     run|restore|rollback) CB_DRY_RUN=1; CB_CONFIRM=0 ;;
                     *) printf 'error: --dry-run does not apply to %s\n' "$mode" >&2; exit 2 ;;
                 esac ;;
             --confirm)
+                # Never alongside --dry-run. Last-flag-wins left both set, so
+                # the restore applied while the pre-restore snapshot took its
+                # own dry-run path and wrote nothing - making the rollback
+                # point the archive being restored *from*.
+                [[ $CB_DRY_RUN -eq 1 ]] \
+                    && { printf 'error: --dry-run and --confirm are contradictory\n' >&2; exit 2; }
                 case $mode in
                     restore|rollback) CB_CONFIRM=1 ;;
                     *) printf 'error: --confirm does not apply to %s\n' "$mode" >&2; exit 2 ;;
