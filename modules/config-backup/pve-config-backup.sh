@@ -539,17 +539,23 @@ _cb_encrypt_secrets() {
 # most important check in the list silently never runs.
 CB_SECRET_PATTERNS=(
     "private-key:-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*(=[[:space:]]*|:[[:space:]]+)[^[:space:]]{8,}"
+    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]"
     "bearer:Bearer [A-Za-z0-9._~+/-]{20,}"
     "webhook:https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{20,}"
 )
 
 _cb_allowed() { # _cb_allowed <relative-path>
     local glob
+    # set -f: the word splitting is wanted, the pathname expansion is not - an
+    # entry like `pve/*.cfg` would otherwise expand against whatever directory
+    # the runner was started from, allowing different files each time.
+    set -f
     for glob in $CB_SECRET_ALLOW; do
         # shellcheck disable=SC2053
-        [[ $1 == $glob ]] && return 0
+        # shellcheck disable=SC2053
+        [[ $1 == $glob ]] && { set +f; return 0; }
     done
+    set +f
     return 1
 }
 
@@ -573,7 +579,7 @@ _cb_secret_scan() {
         set -e
         # 0 matched, 1 matched nothing; anything else is a broken scan and must
         # not be mistaken for a clean one.
-        [[ $rc -le 1 ]] || { printf 'scan-error %s (grep exit %s)\n' "$name" "$rc"; return 1; }
+        [[ $rc -le 1 ]] || { printf 'scan-error %s (grep exit %s)\n' "$name" "$rc"; rm -f "$hitfile"; return 1; }
         mapfile -t found < "$hitfile"
         for f in "${found[@]:-}"; do
             [[ -n $f ]] || continue
@@ -1842,6 +1848,12 @@ main() {
         esac
         shift
     done
+
+    # Before the dependency checks below, which call fail(): without this a
+    # run that cannot find jq left LAST_RESULT=ok while every timer firing
+    # failed. Not for --dry-run, which must no more write state than it writes
+    # an archive.
+    [[ $mode == run && $CB_DRY_RUN -eq 0 ]] && CB_IN_CAPTURE=1
 
     _cb_load_lib
     trap '_cb_unexpected $? $LINENO' ERR
