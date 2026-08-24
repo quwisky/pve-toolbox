@@ -307,10 +307,14 @@ gate_run() { # gate_run <args...> -> runs the real runner against GDIR
     PVE_TOOLBOX_LIB="$ROOT/lib" "$RUNNER" "$@"
 }
 
-# The runner hard-requires jq, so without it every gate below reads as a
-# refusal rather than as the missing dependency it is.
-if ! command -v jq >/dev/null 2>&1; then
-    printf 'skip the end-to-end gate tests, no jq\n'
+# The runner hard-requires all of these, so without any one of them every gate
+# below reads as a refusal rather than as the missing dependency it is.
+gate_missing=""
+for gate_dep in curl jq tar gzip; do
+    command -v "$gate_dep" >/dev/null 2>&1 || gate_missing="$gate_missing $gate_dep"
+done
+if [[ -n $gate_missing ]]; then
+    printf 'skip the end-to-end gate tests, missing:%s\n' "$gate_missing"
 else
 gate_fixture
 # Capture the reason: "a healthy capture was refused" on its own told CI
