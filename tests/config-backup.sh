@@ -232,10 +232,20 @@ pass "content hash"
 # dropped before the scan runs. Matching it aborted every run on any host with
 # a Grafana, Terraform or PBS integration: the module wrote no backups at all.
 stage_fixture; _cb_drop_secrets
-CB_SECRET_ALLOW='pve/user.cfg'   # the shipped default
+CB_SECRET_ALLOW='pve/user.cfg derived/dpkg-selections.txt'   # the shipped default
 _cb_secret_scan >/dev/null \
     || fail "a user.cfg with an API token aborted the scan"
 pass "an API token in user.cfg is not a credential"
+
+# Multiarch dpkg emits `passwd:arm64  install`, so the package named passwd
+# reads as `passwd:<value>` to the credential pattern. This is a file the
+# capture deliberately archives, and it broke every CI run on debian.
+stage_fixture; _cb_drop_secrets
+mkdir -p "$CB_STAGE/derived"
+printf 'passwd:arm64\t\tinstall\nlibc6:arm64\t\tinstall\n' > "$CB_STAGE/derived/dpkg-selections.txt"
+CB_SECRET_ALLOW='pve/user.cfg derived/dpkg-selections.txt'
+_cb_secret_scan >/dev/null || fail "a multiarch dpkg selections list aborted the scan"
+pass "a multiarch package list is not a credential"
 
 # ...but a real credential in the same file still has to be caught.
 printf 'password: hunter2trustno1\n' >> "$CB_STAGE/pve/datacenter.cfg"
@@ -303,7 +313,12 @@ if ! command -v jq >/dev/null 2>&1; then
     printf 'skip the end-to-end gate tests, no jq\n'
 else
 gate_fixture
-gate_run run >/dev/null 2>&1 || fail "a healthy capture was refused"
+# Capture the reason: "a healthy capture was refused" on its own told CI
+# nothing, and the cause was a secret-scan false positive on a file the
+# capture archives by design.
+if ! gate_out=$(gate_run run 2>&1); then
+    fail "a healthy capture was refused: $gate_out"
+fi
 [[ $(find "$GDIR/ar" -name '*.tar.gz' | wc -l) -eq 1 ]] || fail "no archive from a healthy capture"
 pass "a healthy capture passes every gate"
 
