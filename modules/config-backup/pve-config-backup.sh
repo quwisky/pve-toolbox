@@ -1612,7 +1612,7 @@ declare -A CB_MAP_VMID=()
 # needs per-entry merge semantics this tool does not have, so it says no.
 CB_CLUSTER_WIDE=(
     "pve/storage.cfg" "pve/datacenter.cfg" "pve/user.cfg" "pve/jobs.cfg"
-    "pve/firewall/*" "pve/sdn/*" "pve/ha/*"
+    "pve/firewall/cluster.fw" "pve/sdn/*" "pve/ha/*"
 )
 
 _cb_is_cluster_wide() { # _cb_is_cluster_wide <relpath>
@@ -1657,6 +1657,17 @@ _cb_xn_guard() {
     [[ $CB_TARGET_NODE == "$HOST_SHORT" ]] \
         || fail "--target-node must name this host ($HOST_SHORT). Writing another node's host files through a shared /etc/pve would hit the wrong machine, and the rollback point would be recorded on the wrong machine too - ssh to the target and run it there."
 
+    # Both modes, not just clone: a typo in dr mode used to reach the per-guest
+    # check and drop that guest from the restore with a note, rather than
+    # refusing before anything ran.
+    local k
+    for k in "${!CB_MAP_VMID[@]}"; do
+        [[ $k =~ ^[0-9]+$ && ${CB_MAP_VMID[$k]} =~ ^[0-9]+$ ]] \
+            || fail "--map-vmid takes numbers: $k=${CB_MAP_VMID[$k]}"
+        _cb_valid_vmid "${CB_MAP_VMID[$k]}" \
+            || fail "--map-vmid target ${CB_MAP_VMID[$k]} is not a valid VMID (100-999999999)"
+    done
+
     case $CB_XN_MODE in
         dr)
             [[ $CB_XN_SOURCE_GONE -eq 1 ]] \
@@ -1665,13 +1676,6 @@ _cb_xn_guard() {
         clone)
             [[ $CB_XN_VMID_OFFSET -ne 0 || ${#CB_MAP_VMID[@]} -gt 0 ]] \
                 || fail "--mode clone needs --vmid-offset or --map-vmid: the source node is alive and its VMIDs are taken"
-            local k
-            for k in "${!CB_MAP_VMID[@]}"; do
-                [[ $k =~ ^[0-9]+$ && ${CB_MAP_VMID[$k]} =~ ^[0-9]+$ ]] \
-                    || fail "--map-vmid takes numbers: $k=${CB_MAP_VMID[$k]}"
-                _cb_valid_vmid "${CB_MAP_VMID[$k]}" \
-                    || fail "--map-vmid target ${CB_MAP_VMID[$k]} is not a valid VMID (100-999999999)"
-            done
             ;;
         *) fail "--mode must be dr or clone" ;;
     esac
@@ -1718,7 +1722,7 @@ _cb_xn_guest() { # _cb_xn_guest <file> <old-vmid> <new-vmid>
 
     local before
     for key in "${!CB_MAP_STORAGE[@]}"; do
-        from=$key; to=${CB_MAP_STORAGE[$key]}
+        from=$(_cb_ere_quote "$key"); to=${CB_MAP_STORAGE[$key]}
         before=$(sha256sum "$f" | awk '{print $1}')
         # ^<key>: <storage>: - never a bare or \b match, which would rewrite
         # `my-local` when mapping `local`, since - is a word boundary.
@@ -1731,7 +1735,7 @@ _cb_xn_guest() { # _cb_xn_guest <file> <old-vmid> <new-vmid>
     done
 
     for key in "${!CB_MAP_BRIDGE[@]}"; do
-        from=$key; to=${CB_MAP_BRIDGE[$key]}
+        from=$(_cb_ere_quote "$key"); to=${CB_MAP_BRIDGE[$key]}
         # A # delimiter, because the alternation below contains a pipe and a
         # | delimiter made sed reject the expression - which failed silently
         # for every mid-line bridge= and only ever rewrote end-of-line ones.
@@ -1823,14 +1827,43 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
     # rewrote configs under nodes/<source>/ - which maps onto that node's live
     # pmxcfs directory, so restoring on pve2 overwrote pve1's running guests.
     local -a staged_nodes=()
-    local d
-    for d in "$CB_SRC_DIR"/pve/nodes/*/; do
-        [[ -d $d ]] || continue
-        staged_nodes+=("$(basename "$d")")
-    done
+    local d name
+    # find -type d, not a glob: a glob with [[ -d ]] accepts a symlink to a
+    # directory, and cp -a would then resolve through it - materialising files
+    # from outside the staged tree as regular files before _cb_restore_plan
+    # ever sees them, defeating its symlink guard entirely.
+    # -type l first, and its own message: find -type d simply omits a symlink,
+    # so without this the archive fell through to the inconsistency check and
+    # reported "holds only <the others>" - true, but not the reason.
+    while IFS= read -r d; do
+        fail "nodes/$(basename "$d") is a symlink - refusing to transform an archive that points outside itself"
+    done < <(find "$CB_SRC_DIR/pve/nodes" -mindepth 1 -maxdepth 1 -type l 2>/dev/null)
+    while IFS= read -r d; do
+        name=$(basename "$d")
+        staged_nodes+=("$name")
+    done < <(find "$CB_SRC_DIR/pve/nodes" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | LC_ALL=C sort)
+
+    # /etc/pve is a cluster filesystem: nodes/ holds a directory for every
+    # member, and the collector takes it whole. So more than one is the normal
+    # case on any clustered host - refusing it made cross-node restore
+    # impossible from exactly the topology this feature exists for. Pick the
+    # source node, and drop the others: they are another live node's guests
+    # and must never be written here.
     if [[ ${#staged_nodes[@]} -gt 1 ]]; then
-        fail "the source holds more than one node directory (${staged_nodes[*]}) - refusing to guess which to transform"
+        if [[ -z $src || $src == unknown ]]; then
+            fail "the source holds ${#staged_nodes[@]} node directories (${staged_nodes[*]}) and does not say which it came from - name it with --target-node and restore from an archive that records its node"
+        fi
+        local keep=0
+        for name in "${staged_nodes[@]}"; do
+            [[ $name == "$src" ]] && { keep=1; continue; }
+            rm -rf "${CB_SRC_DIR:?}/pve/nodes/$name"
+            _cb_xn_note "  dropped   nodes/$name/ (another node's guests)"
+        done
+        [[ $keep -eq 1 ]] \
+            || fail "the source says node '$src' but its tree holds only ${staged_nodes[*]} - refusing to transform an inconsistent archive"
+        staged_nodes=("$src")
     fi
+
     if [[ ${#staged_nodes[@]} -eq 1 ]]; then
         if [[ -n $src && $src != unknown && $src != "${staged_nodes[0]}" ]]; then
             fail "the source says node '$src' but its tree holds nodes/${staged_nodes[0]} - refusing to transform an inconsistent archive"
@@ -2139,9 +2172,18 @@ _cb_list() {
 
 _cb_add_map() { # _cb_add_map <arrayname> <A=B>
     [[ ${2:-} == *=* ]] || { printf 'error: expected A=B, got: %s\n' "${2:-}" >&2; exit 2; }
+    local k=${2%%=*} v=${2#*=}
+    # Both halves required: an empty target wrote an empty storage name, giving
+    # `scsi0: :100/vm-100-disk-0` - a volume ID PVE rejects on start.
+    [[ -n $k && -n $v ]] || { printf 'error: both sides of A=B must be set: %s\n' "$2" >&2; exit 2; }
     local -n _m=$1
-    _m["${2%%=*}"]="${2#*=}"
+    _m["$k"]="$v"
 }
+
+# The map key is interpolated into an ERE, and a storage ID may contain a dot -
+# which would otherwise match any character and repoint a guest at a storage
+# nobody named, while the before/after check reported it as a real mapping.
+_cb_ere_quote() { printf '%s' "$1" | sed 's/[].[^$(){}?+*\\|/]/\\&/g'; }
 
 _cb_read_conf() {
     if [[ -r $CB_CONF ]]; then

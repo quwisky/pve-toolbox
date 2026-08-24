@@ -851,6 +851,64 @@ xn_run() {
     _cb_transform >/dev/null 2>&1
 }
 
+# /etc/pve is a cluster filesystem: nodes/ holds a directory per member and
+# the collector takes it whole, so more than one is the normal case on any
+# clustered host. Refusing it made cross-node restore impossible from exactly
+# the topology the feature exists for - and the fixture only ever built one
+# node, so nothing in the suite could see it.
+xn_fixture
+mkdir -p "$XSRC/pve/nodes/pve7/qemu-server" "$XSRC/pve/nodes/pve8/qemu-server"
+printf 'name: other7\n' > "$XSRC/pve/nodes/pve7/qemu-server/700.conf"
+printf 'name: other8\n' > "$XSRC/pve/nodes/pve8/qemu-server/800.conf"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run ) \
+    || fail "a clustered archive was refused"
+[[ -f $XSRC/pve/nodes/pve2/qemu-server/100.conf ]] \
+    || fail "the source node's guest did not reach the target"
+[[ -e $XSRC/pve/nodes/pve7 || -e $XSRC/pve/nodes/pve8 ]] \
+    && fail "another node's guests survived the transform"
+pass "a clustered archive transforms, and other nodes are dropped"
+
+# cp -a resolves through a symlinked node directory, materialising files from
+# outside the archive as regular files before the restore plan can apply its
+# own symlink guard.
+xn_fixture
+outside=$(mktemp -d "$WORK/outsideXXXXXX"); mkdir -p "$outside/qemu-server"
+printf 'name: evil\n' > "$outside/qemu-server/999.conf"
+rm -rf "$XSRC/pve/nodes/pve1"; ln -s "$outside" "$XSRC/pve/nodes/pve1"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run ) \
+    && fail "a symlinked node directory was transformed"
+[[ -e $XSRC/pve/nodes/pve2/qemu-server/999.conf ]] \
+    && fail "a file from outside the archive was staged"
+pass "a symlinked node directory is refused"
+
+# A guest's own <vmid>.fw is not cluster-shared - dropping it brings the guest
+# up on the target with no firewall at all.
+xn_fixture
+mkdir -p "$XSRC/pve/firewall"
+printf '[OPTIONS]\npolicy_in: DROP\n' > "$XSRC/pve/firewall/100.fw"
+printf '[OPTIONS]\n' > "$XSRC/pve/firewall/cluster.fw"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run )
+[[ -e $XSRC/pve/firewall/100.fw ]] || fail "a guest's own firewall rules were dropped as cluster-wide"
+[[ -e $XSRC/pve/firewall/cluster.fw ]] && fail "cluster.fw was not blocked"
+pass "guest firewall rules survive, cluster.fw does not"
+
+# A typo in dr mode used to reach the per-guest check and drop that guest with
+# a line in the report, rather than refusing before anything ran.
+xn_fixture
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1
+  CB_MAP_VMID=([100]=1O0); xn_run ) && fail "a non-numeric --map-vmid was accepted in dr mode"
+pass "--map-vmid is validated in both modes"
+
+# A storage ID may contain a dot, which is a wildcard in the ERE the mapping
+# is interpolated into.
+xn_fixture
+printf 'name: x\nscsi9: localXssd:vm-100-disk-9\n' >> "$XSRC/pve/nodes/pve1/qemu-server/100.conf"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1
+  CB_MAP_STORAGE=([local.ssd]=nas); xn_run )
+grep -q 'localXssd:' "$XSRC/pve/nodes/pve2/qemu-server/100.conf" \
+    || fail "a dot in a storage map key matched any character"
+pass "map keys are escaped before they reach sed"
+
 # --target-node has to name this host. Writing another node's sshd_config or
 # cron.d through a shared /etc/pve would land on the wrong machine, and the
 # rollback point would be recorded on the wrong machine too.

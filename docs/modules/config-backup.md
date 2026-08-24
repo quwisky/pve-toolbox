@@ -342,8 +342,9 @@ Refusing beats a transform that is right most of the time.
   state. Naming a different node would put both on the wrong box. SSH to the
   target and run it there.
 - **Cluster-shared files are blocked, and `--force` does not lift it.**
-  `storage.cfg`, `datacenter.cfg`, `user.cfg`, `jobs.cfg`, `firewall/`, `sdn/`
-  and `ha/` are one file for the whole cluster. A restore installs a whole
+  `storage.cfg`, `datacenter.cfg`, `user.cfg`, `jobs.cfg`, `firewall/cluster.fw`,
+  `sdn/` and `ha/` are one file for the whole cluster. A guest's own
+  `firewall/<vmid>.fw` is not, and travels with it. A restore installs a whole
   file, so restoring another node's copy would delete every entry this cluster
   has that the source lacked — instantly, on every node. Doing it correctly
   needs per-entry merge semantics this tool does not have.
@@ -351,6 +352,12 @@ Refusing beats a transform that is right most of the time.
   rewritten; the volumes are not, because nothing here touches storage. A guest
   renamed 100 → 1100 refers to `vm-1100-disk-0` while the volume is still
   called `vm-100-disk-0`. Move the volumes first; the report names them.
+- **An archive from a cluster keeps only its own node.** `/etc/pve/nodes/`
+  holds a directory per member, so an archive taken on a cluster contains every
+  node's guests. The transform keeps the source node's and drops the rest —
+  they belong to a live machine and must never be written here. An archive that
+  does not record which node it came from is refused rather than guessed at, as
+  is one whose `nodes/` entry is a symlink.
 - **`--mode dr` requires `--source-node-gone`.** DR mode deliberately reuses
   the source's VMIDs, MACs and IPs. This tool cannot tell a dead node from a
   partitioned one, and guessing wrong puts a second guest with a duplicate
