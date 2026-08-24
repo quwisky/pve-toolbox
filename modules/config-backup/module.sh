@@ -133,7 +133,11 @@ _cb_defaults() {
     : "${CB_INCLUDE_SECRETS:=n}"
     : "${CB_AGE_RECIPIENT:=}"
     : "${CB_VOLATILE_SECTIONS:=firewall-live/}"
-    : "${CB_SECRET_ALLOW:=}"
+    # Must match the runner's default: _cb_write_conf writes this
+    # unconditionally, and the runner sources the conf after its own default -
+    # so an empty value here silently disabled the allow-list on every
+    # installed host, leaving user.cfg protected by nothing.
+    : "${CB_SECRET_ALLOW:=pve/user.cfg}"
     : "${CB_RUN_NOW:=n}"
     : "${CB_TEST_NOTIFY:=y}"
 }

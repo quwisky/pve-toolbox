@@ -14,6 +14,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 ROOT=$PWD
 
 WORK=$(mktemp -d)
+RUNNER="$ROOT/modules/config-backup/pve-config-backup.sh"
 trap 'rm -rf "$WORK"' EXIT
 
 pass() { printf 'ok  %s\n' "$1"; }
@@ -167,7 +168,7 @@ hits=$(_cb_secret_scan) && fail "the secret scan passed a bearer token"
 [[ $hits == *"host/etc/cron.d/leak bearer"* ]] || fail "the bearer pattern did not fire: $hits"
 
 # An allow-listed path is the operator saying "I looked, it is fine".
-CB_SECRET_ALLOW='pve/sdn/leaked.conf host/etc/cron.d/leak'
+CB_SECRET_ALLOW='pve/user.cfg pve/sdn/leaked.conf host/etc/cron.d/leak'
 _cb_secret_scan >/dev/null || fail "the allow-list did not suppress a known hit"
 CB_SECRET_ALLOW=''
 pass "secret scan"
@@ -231,6 +232,7 @@ pass "content hash"
 # dropped before the scan runs. Matching it aborted every run on any host with
 # a Grafana, Terraform or PBS integration: the module wrote no backups at all.
 stage_fixture; _cb_drop_secrets
+CB_SECRET_ALLOW='pve/user.cfg'   # the shipped default
 _cb_secret_scan >/dev/null \
     || fail "a user.cfg with an API token aborted the scan"
 pass "an API token in user.cfg is not a credential"
@@ -279,6 +281,79 @@ if [[ $EUID -ne 0 ]]; then
 else
     printf 'skip unreadable-source case, running as root\n'
 fi
+
+# The three refusal gates, driven through the runner rather than its helpers.
+# They fail closed - a mistake in one stops every host backing up - so they are
+# the highest-value thing to pin, and none of them had a test.
+gate_fixture() { # gate_fixture -> a live-ish tree in GDIR
+    GDIR=$(mktemp -d "$WORK/gateXXXXXX")
+    mkdir -p "$GDIR/pve"/{qemu-server,nodes/pve1} "$GDIR/root/etc"
+    printf 'name: t\n' > "$GDIR/pve/qemu-server/100.conf"
+    printf 'k: v\n'    > "$GDIR/pve/datacenter.cfg"
+}
+gate_run() { # gate_run <args...> -> runs the real runner against GDIR
+    CB_PVE_DIR="$GDIR/pve" CB_ROOT_DIR="$GDIR/root" CB_ARCHIVE_DIR="$GDIR/ar" \
+    CB_STATE_FILE="$GDIR/state" CB_CONF=/dev/null CB_LOCK_DIR="$GDIR" \
+    PVE_TOOLBOX_LIB="$ROOT/lib" "$RUNNER" "$@"
+}
+
+gate_fixture
+gate_run run >/dev/null 2>&1 || fail "a healthy capture was refused"
+[[ $(find "$GDIR/ar" -name '*.tar.gz' | wc -l) -eq 1 ]] || fail "no archive from a healthy capture"
+pass "a healthy capture passes every gate"
+
+# An empty /etc/pve means pmxcfs is down. Writing a successful empty archive
+# let thirty of them evict every good one from the retention floor.
+gate_fixture; rm -rf "${GDIR:?}/pve"; mkdir -p "$GDIR/pve"
+gate_run run >/dev/null 2>&1 && fail "a capture with no nodes/ was accepted"
+[[ $(find "$GDIR/ar" -name '*.tar.gz' 2>/dev/null | wc -l) -eq 0 ]] \
+    || fail "an archive was written despite the nodes/ gate"
+pass "an empty /etc/pve is refused"
+
+if [[ $EUID -ne 0 ]]; then
+    gate_fixture
+    mkdir -p "$GDIR/root/etc/systemd/system"
+    printf '[Unit]\n' > "$GDIR/root/etc/systemd/system/critical.service"
+    chmod 000 "$GDIR/root/etc/systemd/system/critical.service"
+    gate_run run >/dev/null 2>&1 && fail "a capture that could not read a custom unit succeeded"
+    chmod 644 "$GDIR/root/etc/systemd/system/critical.service"
+    pass "an unreadable custom unit fails the capture"
+fi
+
+# A run that cannot find its dependencies has to record the failure, or the
+# status line reports health while every timer firing fails. A PATH holding
+# everything except jq, rather than an empty one, so the runner gets far enough
+# to reach the check being tested.
+gate_fixture
+shimpath=$(mktemp -d "$WORK/pathXXXXXX")
+for b in $(compgen -c 2>/dev/null | sort -u); do :; done
+for d in /usr/bin /bin /usr/sbin /sbin; do
+    [[ -d $d ]] || continue
+    for f in "$d"/*; do
+        [[ -x $f && ! -d $f ]] || continue
+        [[ $(basename "$f") == jq ]] && continue
+        ln -sf "$f" "$shimpath/$(basename "$f")" 2>/dev/null || true
+    done
+done
+if [[ -x $shimpath/tar && ! -e $shimpath/jq ]]; then
+    ( PATH="$shimpath" gate_run run ) >/dev/null 2>&1 || true
+    grep -q '^LAST_RESULT=failed' "$GDIR/state" 2>/dev/null \
+        || fail "a run that failed its dependency checks did not record it"
+    pass "a failed run records the failure"
+else
+    printf 'skip dependency-failure case, could not build a jq-less PATH\n'
+fi
+
+# ...but --dry-run must no more write state than it writes an archive.
+gate_fixture
+gate_run run >/dev/null 2>&1
+before=$(grep '^LAST_RESULT=' "$GDIR/state")
+chmod 000 "$GDIR/pve/datacenter.cfg" 2>/dev/null || true
+( gate_run run --dry-run ) >/dev/null 2>&1 || true
+chmod 644 "$GDIR/pve/datacenter.cfg" 2>/dev/null || true
+[[ $(grep '^LAST_RESULT=' "$GDIR/state") == "$before" ]] \
+    || fail "--dry-run overwrote the recorded result of a real capture"
+pass "--dry-run writes no state"
 
 # --- 4. retention: count is a floor, not a cap --------------------------
 
