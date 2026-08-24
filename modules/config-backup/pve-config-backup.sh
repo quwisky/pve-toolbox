@@ -93,7 +93,11 @@ _cb_load_lib() {
     local dir="${PVE_TOOLBOX_LIB:-/usr/local/lib/pve-toolbox}"
     # shellcheck source=../../lib/discord.sh
     source "$dir/discord.sh" 2>/dev/null \
-        || { printf 'error: cannot source %s/discord.sh\n' "$dir" >&2; exit 1; }
+        || { printf 'error: cannot source %s/discord.sh\n' "$dir" >&2
+             _cb_state_set LAST_RUN "$(date -Is)" 2>/dev/null || true
+             [[ ${CB_IN_CAPTURE:-0} -eq 1 ]] \
+                 && { _cb_state_set LAST_RESULT failed 2>/dev/null || true; }
+             exit 1; }
 }
 
 # Both of these report before they exit, so a failed capture is never silent.
@@ -502,7 +506,7 @@ _cb_encrypt_secrets() {
 # most important check in the list silently never runs.
 CB_SECRET_PATTERNS=(
     "private-key:-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]"
+    "credential:(^|[^A-Za-z])(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]"
     "bearer:Bearer [A-Za-z0-9._~+/-]{20,}"
     "webhook:https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{20,}"
 )
@@ -537,7 +541,12 @@ _cb_secret_scan() {
         # -a, not -I: -I skips any file containing a NUL byte, so a key
         # hidden in one was never scanned at all. A gate that declines to open
         # a file cannot be said to have checked it.
-        grep -raEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
+        # -i, and anchored on a non-letter: unanchored and case-sensitive it
+        # matched cloud-init's `cipassword:` - refusing the entire capture on a
+        # very ordinary guest - while missing every RESTIC_PASSWORD= and
+        # API_TOKEN=, which is the form these two trees actually contain. The
+        # anchor still treats _ as a separator so RESTIC_PASSWORD is caught.
+        grep -raiEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
         rc=$?
         set -e
         # 0 matched, 1 matched nothing; anything else is a broken scan and must
@@ -584,6 +593,10 @@ _cb_hash_of() { # _cb_hash_of <manifest>
 # archive but out of anything that decides whether something changed.
 _cb_volatile_regex() {
     local p out=""
+    # set -f for the same reason as _cb_allowed: the split is wanted, the
+    # pathname expansion is not - and without it the escaping below is dead
+    # code, because the shell eats the glob first.
+    set -f
     for p in $CB_VOLATILE_SECTIONS; do
         [[ -n $p ]] || continue
         # Doubled, because a dynamic regex is a string first: awk consumes
@@ -591,6 +604,7 @@ _cb_volatile_regex() {
         # plain .` on every single run.
         out+="${out:+|}^$(printf '%s' "$p" | sed 's/[.[\*^$(){}?+|]/\\\\&/g')"
     done
+    set +f
     printf '%s' "$out"
 }
 
@@ -770,6 +784,16 @@ _cb_run() {
         return 0
     fi
 
+    # The archive the hash stands for has to still be there. Comparing hashes
+    # alone meant an emptied archive directory - or a repointed CB_ARCHIVE_DIR,
+    # or an NFS mount absent at boot - reported "unchanged", exited 0, and left
+    # module_status showing a healthy archive count with nothing on disk.
+    local last_archive; last_archive=$(_cb_state_get LAST_ARCHIVE)
+    if [[ $hash == "$previous" && $CB_FORCE -eq 0 && -n $last_archive \
+          && ! -r $CB_ARCHIVE_DIR/$last_archive ]]; then
+        log "the last archive ($last_archive) is gone - writing a new one"
+        previous=""
+    fi
     if [[ $hash == "$previous" && $CB_FORCE -eq 0 ]]; then
         log "configuration unchanged ($hash) - no new archive"
         _cb_state_set LAST_RUN "$(date -Is)"

@@ -78,8 +78,8 @@ flag on this module will do it.
 
 `/etc/pve/priv/`, anything named `*.pem` or `*.key`, and `/etc/apt/auth.conf`
 are removed from the staged tree before anything else looks at it. What is left
-is then scanned for private key headers, `password=`/`token=`-shaped
-assignments, bearer tokens and Discord webhook URLs. **An unexpected match
+is then scanned for private key headers, `password:`/`token=`-shaped
+assignments in any case, bearer tokens and Discord webhook URLs. **An unexpected match
 aborts the run** — no archive is written and the failure is reported.
 
 That is deliberately louder than skipping the file. A capture that quietly
@@ -185,7 +185,7 @@ CB_NOTIFY_ON_CHANGE='0'
 CB_INCLUDE_SECRETS='0'
 CB_AGE_RECIPIENT=''
 CB_VOLATILE_SECTIONS='firewall-live/'
-CB_SECRET_ALLOW='pve/user.cfg'
+CB_SECRET_ALLOW='pve/user.cfg derived/dpkg-selections.txt'
 ```
 
 A failed capture always reports. `CB_NOTIFY_ON_CHANGE=1` additionally reports
@@ -204,7 +204,7 @@ routine and a channel that pings on every edit stops being read.
 | `CB_NOTIFY_ON_CHANGE` | `n` | Also report when the configuration changed |
 | `CB_INCLUDE_SECRETS` | `n` | Archive secrets, encrypted. Needs `CB_AGE_RECIPIENT` |
 | `CB_AGE_RECIPIENT` | — | age recipient (`age1...`) for encrypted secrets |
-| `CB_SECRET_ALLOW` | — | Space-separated path globs the secret scan may ignore |
+| `CB_SECRET_ALLOW` | `pve/user.cfg derived/dpkg-selections.txt` | Space-separated path globs the secret scan may ignore |
 | `CB_RUN_NOW` | `n` | Take the first snapshot at the end of the install |
 | `CB_TEST_NOTIFY` | `y` | Send a test notification during install |
 

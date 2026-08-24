@@ -237,6 +237,23 @@ _cb_secret_scan >/dev/null \
     || fail "a user.cfg with an API token aborted the scan"
 pass "an API token in user.cfg is not a credential"
 
+# cloud-init writes `cipassword:` into a guest config. Unanchored, the pattern
+# matched it and refused the entire capture - so a very ordinary guest meant no
+# backups at all. Anchored on a non-letter it drops out, while RESTIC_PASSWORD=
+# and API_TOKEN=, the form these trees actually contain, are now caught for the
+# first time.
+stage_fixture; _cb_drop_secrets
+printf 'cipassword: $5$rounds=5000$abcdef\nname: web\n' > "$CB_STAGE/pve/qemu-server/101.conf"
+_cb_secret_scan >/dev/null || fail "a cloud-init guest config aborted the scan"
+pass "cloud-init cipassword is not a credential"
+
+stage_fixture; _cb_drop_secrets
+mkdir -p "$CB_STAGE/host/etc/systemd/system"
+printf 'Environment=RESTIC_PASSWORD=hunter2trustno1\n' > "$CB_STAGE/host/etc/systemd/system/backup.service"
+hits=$(_cb_secret_scan) && fail "an uppercase credential was archived verbatim"
+[[ $hits == *"backup.service credential"* ]] || fail "the uppercase form was not named: $hits"
+pass "uppercase credentials are caught"
+
 # Multiarch dpkg emits `passwd:arm64  install`, so the package named passwd
 # reads as `passwd:<value>` to the credential pattern. This is a file the
 # capture deliberately archives, and it broke every CI run on debian.
@@ -261,7 +278,7 @@ hits=$(_cb_secret_scan) && fail "a key inside a binary file was not scanned"
 pass "the scan reads binary files too"
 
 # pve-ha-lrm and pve-ha-crm rewrite these with a timestamp on their watchdog
-# interval. Classified pmxcfs they sат inside the hash, so any host running HA
+# interval. Classified pmxcfs they sat inside the hash, so any host running HA
 # wrote a fresh archive every single run and the retention floor filled with
 # identical snapshots.
 class_is "pve/ha/manager_status"      reference
