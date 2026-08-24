@@ -752,8 +752,16 @@ _cb_git() { # _cb_git <args...>
     for w in "${ssh[@]}"; do sshcmd+="${sshcmd:+ }$(printf '%q' "$w")"; done
     local -a pre=(env "GIT_TERMINAL_PROMPT=0" "GIT_SSH_COMMAND=$sshcmd")
     local -a cred=()
-    if [[ -n $CB_GIT_TOKEN_FILE ]]; then
-        cred=(-c "credential.helper=$(_cb_git_credential_helper)")
+    if [[ -n $CB_GIT_TOKEN_FILE && -n $CB_GIT_REMOTE ]]; then
+        # Scoped to this remote, and the inherited chain reset first: `-c
+        # credential.helper=X` appends rather than replaces, so a root with
+        # `store` configured would have git persist this token in cleartext
+        # under ~/.git-credentials - keyed to whichever host it just spoke to,
+        # including a redirect target. followRedirects=false because git's
+        # default follows exactly the request that carries the credential.
+        cred=(-c "credential.helper="
+              -c "credential.${CB_GIT_REMOTE}.helper=$(_cb_git_credential_helper)"
+              -c "http.followRedirects=false")
     fi
     timeout 300 "${pre[@]}" git -C "$CB_GIT_DIR" "${cred[@]}" "$@"
 }
@@ -763,11 +771,16 @@ _cb_git() { # _cb_git <args...>
 # or falls through to prompting for a username. The token's *path* is what
 # ends up in the process table; the value is read when the helper runs.
 _cb_git_credential_helper() {
-    # %q, because the path is interpolated into a string git runs with sh -c.
-    # Unquoted, a path containing a space silently breaks auth forever while
-    # install's readability check still passes, and a crafted path executes.
-    printf '!f() { echo username=x-access-token; echo "password=$(cat %q)"; }; f' \
-        "$CB_GIT_TOKEN_FILE"
+    local host=${CB_GIT_REMOTE#*://}; host=${host%%/*}; host=${host#*@}
+    # Reads its input and answers only for the configured host. A helper that
+    # ignores stdin hands the token to whatever git asks about - which after a
+    # redirect is the redirect target.
+    #
+    # %q on the path, because this is interpolated into a string git runs with
+    # sh -c: unquoted, a path with a space breaks auth while install's
+    # readability check still passes, and a crafted path executes.
+    printf '!f() { local h=""; while IFS== read -r k v; do [ "$k" = host ] && h=$v; done; [ "$h" = %q ] || exit 0; echo username=x-access-token; echo "password=$(cat %q)"; }; f' \
+        "$host" "$CB_GIT_TOKEN_FILE"
 }
 
 # A remote that already carries a credential defeats CB_GIT_TOKEN_FILE: git
@@ -832,6 +845,9 @@ _cb_git_sync() { # _cb_git_sync <stage> <manifest> <hash>
     _cb_git_init
 
     include=$(mktemp)
+    # Newline-separated, because rsync --files-from reads it that way unless
+    # given --from0. git wants NUL, so the list is converted for git alone
+    # below - one format change here silently broke the other consumer.
     _cb_git_include "$manifest" > "$include"
 
     # --delete against a live work tree has none of the staging the tar path
@@ -844,7 +860,6 @@ _cb_git_sync() { # _cb_git_sync <stage> <manifest> <hash>
         rm -f "$include"
         fail "rsync into the git work tree failed - nothing was committed"
     fi
-    rm -f "$include"
 
     # --files-from does not delete what is no longer listed, so prune anything
     # tracked that the include list no longer covers.
@@ -854,9 +869,29 @@ _cb_git_sync() { # _cb_git_sync <stage> <manifest> <hash>
     # tree, so anything that already lived in CB_GIT_DIR - never seen by the
     # secret scan, which only ever walks the stage - was committed on the
     # first sync and is permanent once pushed.
-    if ! _cb_git add -A -- . 2>/dev/null; then
-        fail "git add failed"
+    # Staged from the include list, never from the tree. `git add -A` - with or
+    # without `-- .`, which is a no-op because _cb_git runs -C at the work-tree
+    # root - stages whatever already lives in CB_GIT_DIR. That content never
+    # passed the secret scan, which only ever walks $CB_STAGE, and a pushed
+    # blob is permanent. Unpacking an archive there to look at it was enough.
+    # Only paths that actually landed: git add errors on a pathspec matching
+    # nothing, and rsync skips a source file that vanished mid-run. Removals
+    # are staged by _cb_git_prune_removed with git rm, not here.
+    local present; present=$(mktemp)
+    while IFS= read -r rel; do
+        [[ -n $rel ]] || continue
+        [[ -e $CB_GIT_DIR/$rel ]] && printf '%s\0' "$rel"
+    done < "$include" > "$present"
+    rm -f "$include"
+
+    local add_err
+    if [[ -s $present ]]; then
+        if ! add_err=$(_cb_git add -A --pathspec-from-file="$present" --pathspec-file-nul 2>&1); then
+            rm -f "$present"
+            fail "git add failed: $add_err"
+        fi
     fi
+    rm -f "$present"
     # Exits 1 exactly when there is something to commit, which is the common
     # case here - a bare call would take the ERR trap every real change.
     if _cb_git diff --cached --quiet; then
@@ -885,6 +920,9 @@ _cb_git_prune_removed() { # _cb_git_prune_removed <manifest>
     while IFS= read -r f; do
         [[ -n $f ]] || continue
         rm -f "$CB_GIT_DIR/$f"
+        # --cached and --ignore-unmatch: the file is already gone from the work
+        # tree, and git add no longer stages removals for us.
+        _cb_git rm -q --cached --ignore-unmatch -- "$f" >/dev/null 2>&1 || true
     done < <(comm -23 "$tracked" "$keep")
     rm -f "$keep" "$tracked"
     return 0

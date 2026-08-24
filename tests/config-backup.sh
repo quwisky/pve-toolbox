@@ -478,16 +478,27 @@ pass "remote credential detection"
 # timer with no stdin is a hang, not an error.
 TOKFILE="$WORK/token"; printf 'ghp_TESTTOKENVALUE\n' > "$TOKFILE"; chmod 600 "$TOKFILE"
 CB_GIT_TOKEN_FILE="$TOKFILE"
+CB_GIT_REMOTE='https://github.com/a/b.git'
 helper=$(_cb_git_credential_helper)
 [[ $helper != *ghp_TESTTOKENVALUE* ]] \
     || fail "the token value is in the helper string, so it would show up in ps"
 [[ $helper == *"$TOKFILE"* ]] || fail "the helper does not reference the token file"
-out=$(eval "${helper#!}" <<<'protocol=https
-host=github.com
-' 2>/dev/null || true)
+
+# sh -c, not eval under bash: git runs the helper with sh, which on Debian is
+# dash, and a bash-only construct would work here and fail in production.
+ask_helper() { printf 'protocol=https\nhost=%s\n' "$1" | sh -c "${helper#!}" 2>/dev/null; }
+
+out=$(ask_helper github.com)
 [[ $out == *"username="* ]] || fail "the helper emits no username= line: $out"
 [[ $out == *"password=ghp_TESTTOKENVALUE"* ]] || fail "the helper emits no password= line: $out"
-CB_GIT_TOKEN_FILE=""
+
+# And only for the configured host. A helper that ignores its input hands the
+# token to whatever git asks about - which after a redirect is the redirect
+# target, not the remote the operator configured.
+out=$(ask_helper evil.example)
+[[ $out != *ghp_TESTTOKENVALUE* ]] \
+    || fail "the helper gave the token to a host that is not the configured remote"
+CB_GIT_TOKEN_FILE=""; CB_GIT_REMOTE=""
 pass "credential helper speaks the git protocol"
 
 # What reaches git: not the regenerated dumps, not the secrets, not whatever
@@ -505,6 +516,26 @@ grep -q 'firewall-live/'     <<<"$inc" && fail "live firewall state reached the 
 grep -q 'secrets/'           <<<"$inc" && fail "an encrypted secret reached the git tree"
 grep -q 'resolved/'          <<<"$inc" && fail "a resolved guest view reached the git tree"
 pass "git include set"
+
+# Anything already sitting in CB_GIT_DIR never passed the secret scan, which
+# only walks the stage - and a pushed blob is permanent. Unpacking an archive
+# there to look at it was enough to publish it.
+export CB_GIT_DIR="$WORK/preexisting"
+mkdir -p "$CB_GIT_DIR"
+printf 'TOKENTOKENTOKENTOKEN\n' > "$CB_GIT_DIR/.env"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\n' > "$CB_GIT_DIR/id_deploy"
+export CB_GIT_REMOTE="" CB_GIT_PUSH=0
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" cafecafecafe
+git -C "$CB_GIT_DIR" grep -q TOKENTOKENTOKENTOKEN HEAD 2>/dev/null \
+    && fail "a file already in CB_GIT_DIR was committed without ever being scanned"
+git -C "$CB_GIT_DIR" grep -q 'PRIVATE KEY' HEAD 2>/dev/null \
+    && fail "a key already in CB_GIT_DIR was committed"
+git -C "$CB_GIT_DIR" ls-files | grep -q '^pve/' \
+    || fail "the staged configuration was not committed"
+pass "only the manifest reaches a commit"
+
+export CB_GIT_DIR="$WORK/repo"
 
 # Commit only on change, and a change confined to a reference path is not one.
 export CB_GIT_DIR="$WORK/repo"
