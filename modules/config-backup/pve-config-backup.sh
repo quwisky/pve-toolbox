@@ -990,6 +990,8 @@ _cb_git_state() {
 # reclassified must not be able to resurrect it.
 
 CB_CONFIRM=0
+CB_RESTORE_STAMP=""
+CB_ROLLBACK_INCOMPLETE=0
 CB_SRC_DIR=""
 CB_SRC_HASH=""
 CB_SRC_NODE=""
@@ -1002,6 +1004,7 @@ _cb_restore_log() { printf '%s/restore.log' "$CB_ARCHIVE_DIR"; }
 _cb_source_prepare() { # _cb_source_prepare <source>
     local src=$1 path=""
     CB_SRC_DIR=$(mktemp -d)
+    _cb_cleanup_add "$CB_SRC_DIR"
 
     if [[ $CB_GIT_ENABLED -eq 1 && -d $CB_GIT_DIR/.git ]] \
        && _cb_git rev-parse --verify "$src^{commit}" >/dev/null 2>&1; then
@@ -1193,9 +1196,15 @@ _cb_backup_file() { # _cb_backup_file <live-path> <class>
         printf 'existed'
         return 0
     fi
-    local bak
-    bak="$1.bak.$(date +%Y%m%d%H%M%S)"
-    cp -a "$1" "$bak" 2>/dev/null || { printf 'existed'; return 0; }
+    # Beside the archive, not beside the target: /etc/network/interfaces
+    # sources interfaces.d/* with a glob, so a sidecar written there is parsed
+    # as a second interfaces file, and its duplicate iface stanza breaks
+    # ifreload - on the host you reach over that network. The pre-restore
+    # snapshot is the real rollback; these are a convenience.
+    local bakdir="$CB_ARCHIVE_DIR/pre-restore/${CB_RESTORE_STAMP:-manual}"
+    mkdir -p "$bakdir$(dirname "$1")" 2>/dev/null || { printf 'existed'; return 0; }
+    cp -a "$1" "$bakdir$1" 2>/dev/null || true
+    chmod -R go-rwx "$CB_ARCHIVE_DIR/pre-restore" 2>/dev/null || true
     printf 'existed'
     return 0
 }
@@ -1204,10 +1213,37 @@ _cb_backup_file() { # _cb_backup_file <live-path> <class>
 # captured into the next archive - and, being classifiable, restored later as
 # though it were a real config file.
 CB_WRITE_TMP=""
-_cb_clean_write_tmp() { [[ -n ${CB_WRITE_TMP:-} ]] && rm -f "$CB_WRITE_TMP"; return 0; }
+CB_ABORT=0
+declare -a CB_CLEANUP=()
+
+# trap is process-global, so a second `trap ... EXIT` silently replaces the
+# first. Everything registers here and one handler removes the lot.
+_cb_cleanup_add() { CB_CLEANUP+=("$1"); }
+_cb_cleanup_run() {
+    [[ -n ${CB_WRITE_TMP:-} ]] && rm -f "$CB_WRITE_TMP"
+    local pth
+    for pth in "${CB_CLEANUP[@]:-}"; do
+        [[ -n $pth ]] && rm -rf "$pth"
+    done
+    return 0
+}
+
+# A handler that only cleans up and returns lets bash resume what it
+# interrupted: a Ctrl-C, a systemctl stop or the unit's own TimeoutStartSec
+# kill part way through a restore would write every remaining file and then
+# report success. Raise the flag the apply loop checks, then re-raise so the
+# exit status is honest.
+_cb_on_signal() { # _cb_on_signal <signal>
+    CB_ABORT=1
+    _cb_cleanup_run
+    trap - "$1"
+    kill -s "$1" $$
+}
+trap '_cb_cleanup_run' EXIT
+trap '_cb_on_signal INT' INT
+trap '_cb_on_signal TERM' TERM
 
 _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
-    trap '_cb_clean_write_tmp' EXIT INT TERM
     local action rel class reason live wrote=0 created=0 skipped=0 failed=0
     local -a reload=() reboot=()
     while IFS=$'\t' read -r action rel class reason; do
@@ -1215,6 +1251,11 @@ _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
             write|create) ;;
             *) skipped=$((skipped + 1)); continue ;;
         esac
+        if [[ $CB_ABORT -eq 1 ]]; then
+            log "  aborted after $((wrote + created)) file(s) - the host is part-restored"
+            failed=$((failed + 1))
+            break
+        fi
         live=$(_cb_live_path "$rel") || continue
         _cb_backup_file "$live" "$class" >/dev/null
         # Written to a sibling temp file and renamed into place. `install` does
@@ -1262,7 +1303,11 @@ _cb_write_file() { # _cb_write_file <source> <destination> <mode>
     # was left pointing at the attacker's path. Directories the tool writes
     # into are not all root-exclusive (/var/spool/cron/crontabs is 1730).
     local tmp
-    tmp=$(mktemp "$2.XXXXXX" 2>/dev/null) || return 1
+    # A fixed infix, so one glob still finds an orphan left by a SIGKILL or a
+    # power loss. Renaming the scheme without moving the cleanup meant an
+    # orphan was captured, classified dropin, archived, and written back onto
+    # the host by a later restore - worst of all into interfaces.d/.
+    tmp=$(mktemp "$2.pve-toolbox.XXXXXX" 2>/dev/null) || return 1
     CB_WRITE_TMP=$tmp
     # > rather than cp, so an existing link at the target cannot be traversed:
     # mktemp just created this as a regular file we own.
@@ -1375,6 +1420,7 @@ _cb_restore() { # _cb_restore <source> [selector]
 
     # Written before the first byte, so an interrupted restore leaves evidence
     # rather than looking like it never happened.
+    CB_RESTORE_STAMP=$(date +%Y%m%dT%H%M%S)
     _cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
     # Exactly what this restore creates, recorded before the first byte. This
     # is what rollback deletes - inferring it from "absent from the snapshot"
@@ -1420,6 +1466,7 @@ _cb_restore_record() { # _cb_restore_record <outcome> <source> <rollback> <plan>
 # archive holds would never visit it and never remove it. Live-only paths
 # inside the same scope are deleted.
 _cb_rollback() {
+    CB_ROLLBACK_INCOMPLETE=0
     _cb_take_lock || fail "a capture or restore is already running - refusing to start another"
     local rollback; rollback=$(_cb_state_get ROLLBACK_ARCHIVE)
     [[ -n $rollback ]] || fail "there is no rollback point recorded"
@@ -1463,11 +1510,19 @@ _cb_rollback() {
         while IFS= read -r rel; do
             [[ -n $rel ]] || continue
             live=$(_cb_live_path "$rel") || continue
-            if rm -f "$live"; then log "  deleted $rel"; fi
+            if rm -f "$live"; then
+                log "  deleted $rel"
+            else
+                log "  FAILED to delete $rel"
+                CB_ROLLBACK_INCOMPLETE=1
+            fi
         done < "$extra"
     else
         log "  writes failed - not deleting anything the restore created"
     fi
+    # A rollback that knowingly skipped part of its work is not a success:
+    # reporting one retired the rollback point and made a retry impossible.
+    [[ $CB_ROLLBACK_INCOMPLETE -eq 1 ]] && rb_ok=0
     if [[ $rb_ok -eq 1 ]]; then
         _cb_state_set RESTORE_IN_PROGRESS ""
         # Retire the rollback point with the rollback. Leaving both set let a
@@ -1501,6 +1556,7 @@ _cb_rollback_extras() {
         # Say so. Silently rolling back everything except the created files is
         # not the faithful inverse this claims to be.
         log "warning: no record of what the restore created ($list) - nothing will be deleted"
+        CB_ROLLBACK_INCOMPLETE=1
         return 0
     fi
     while IFS= read -r rel; do
@@ -1589,8 +1645,8 @@ _cb_capture_once() {
     CB_TAKE_ERRORS=0
     CB_STAGE=$(mktemp -d)
     CB_MANIFEST=$(mktemp)
-    # shellcheck disable=SC2064
-    trap "rm -rf '$CB_STAGE' '$CB_MANIFEST'" EXIT
+    _cb_cleanup_add "$CB_STAGE"
+    _cb_cleanup_add "$CB_MANIFEST"
 
     _cb_collect_pmxcfs
     _cb_collect_resolved
