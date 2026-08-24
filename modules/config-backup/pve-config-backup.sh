@@ -1048,7 +1048,11 @@ _cb_restore_plan() { # _cb_restore_plan <out>
         esac
         if [[ -z $action ]]; then
             live=$(_cb_live_path "$rel") || { printf 'skip\t%s\t%s\tnot a restorable prefix\n' "$rel" "$class" >> "$1"; continue; }
-            if [[ ! -e $live ]]; then
+            if [[ -L $CB_SRC_DIR/$rel ]]; then
+                # Archived as a symlink. Restoring it as a regular file would
+                # sever whatever it pointed at, so say so rather than guess.
+                action='skip'; reason="symlink in the source: restore it by hand"
+            elif [[ ! -e $live && ! -L $live ]]; then
                 action='create'; reason="absent on this host"
             elif cmp -s "$CB_SRC_DIR/$rel" "$live"; then
                 action='same'; reason="identical"
@@ -1057,7 +1061,7 @@ _cb_restore_plan() { # _cb_restore_plan <out>
             fi
         fi
         printf '%s\t%s\t%s\t%s\n' "$action" "$rel" "$class" "$reason" >> "$1"
-    done < <(cd "$CB_SRC_DIR" && find . -type f | LC_ALL=C sort)
+    done < <(cd "$CB_SRC_DIR" && find . \( -type f -o -type l \) | LC_ALL=C sort)
     return 0
 }
 
@@ -1157,10 +1161,13 @@ _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
         esac
         live=$(_cb_live_path "$rel") || continue
         _cb_backup_file "$live" "$class" >/dev/null
-        # Mode first, then content, so a restored sshd_config never sits
-        # world-readable even briefly.
-        if install -m "$(_cb_src_mode "$rel")" "$CB_SRC_DIR/$rel" "$live" 2>/dev/null \
-           || cp -f "$CB_SRC_DIR/$rel" "$live" 2>/dev/null; then
+        # Written to a sibling temp file and renamed into place. `install` does
+        # unlinkat() then openat(O_CREAT|O_EXCL), so every write opened a
+        # window where the config file simply did not exist - and on pmxcfs
+        # that removal replicates to every node in the cluster. Worse, pmxcfs
+        # rejects the trailing chmod, so install reported failure and the
+        # `|| cp -f` fallback then wrote the file a second time.
+        if _cb_write_file "$CB_SRC_DIR/$rel" "$live" "$(_cb_src_mode "$rel")"; then
             [[ $action == create ]] && created=$((created + 1)) || wrote=$((wrote + 1))
             log "  wrote   $rel"
             _cb_needs_reload "$rel" && reload+=("$(_cb_needs_reload "$rel")")
@@ -1174,6 +1181,7 @@ _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
     # pmxcfs is the only place PVE parses on our behalf, so it is the only
     # place a write can be confirmed rather than assumed.
     _cb_verify_pmxcfs "$plan"
+    failed=$((failed + CB_VERIFY_FAILED))
 
     step_log "Summary"
     printf '  written   %s\n  created   %s\n  skipped   %s\n  failed    %s\n' \
@@ -1187,6 +1195,21 @@ _cb_apply() { # _cb_apply <plan> -> writes, prints a summary
         printf '%s\n' "${reboot[@]}" | LC_ALL=C sort -u | sed 's/^/  /'
     fi
     [[ $failed -eq 0 ]]
+}
+
+# rename(2) is atomic, and pmxcfs supports it: no reader ever sees a torn or
+# missing file, and an interrupt leaves the old content rather than nothing.
+_cb_write_file() { # _cb_write_file <source> <destination> <mode>
+    local tmp="$2.pve-toolbox.$$"
+    cp -f "$1" "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+    # pmxcfs enforces its own mode and refuses chmod, so a failure here is
+    # expected there and must not fail the write.
+    chmod "$3" "$tmp" 2>/dev/null || true
+    if ! mv -f "$tmp" "$2" 2>/dev/null; then
+        rm -f "$tmp"
+        return 1
+    fi
+    return 0
 }
 
 _cb_src_mode() { # _cb_src_mode <relpath>
@@ -1218,13 +1241,17 @@ _cb_needs_reboot() { # _cb_needs_reboot <relpath>
     esac
 }
 
+CB_VERIFY_FAILED=0
+
 _cb_verify_pmxcfs() { # _cb_verify_pmxcfs <plan>
     local rel live
+    CB_VERIFY_FAILED=0
     while IFS=$'\t' read -r rel; do
         [[ -n $rel ]] || continue
         live=$(_cb_live_path "$rel") || continue
         if ! cmp -s "$CB_SRC_DIR/$rel" "$live"; then
-            log "  WARN    $rel did not read back as written - PVE may have rejected or rewritten it"
+            log "  FAILED  $rel did not read back as written - PVE rejected or rewrote it"
+            CB_VERIFY_FAILED=$((CB_VERIFY_FAILED + 1))
         fi
     done < <(awk -F'\t' '($3 == "pmxcfs" || $3 == "guest") && ($1 == "write" || $1 == "create") {print $2}' "$1")
     return 0
@@ -1261,9 +1288,20 @@ _cb_restore() { # _cb_restore <source> [selector]
     fi
 
     step_log "Snapshot before restoring"
-    _cb_capture_once || fail "the pre-restore snapshot failed - refusing to restore without a rollback"
+    # Forced, and never allowed a dry-run or git-only path: the dedup guard
+    # would skip the write when nothing changed since the last capture, and a
+    # git-only install writes no archive at all - both leaving a stale
+    # LAST_ARCHIVE pointing at something else entirely.
+    local prev_archive; prev_archive=$(_cb_state_get LAST_ARCHIVE)
+    CB_FORCE=1 CB_DRY_RUN=0 CB_LOCAL_ENABLED=1 _cb_capture_once \
+        || fail "the pre-restore snapshot failed - refusing to restore without a rollback"
     local rollback; rollback=$(_cb_state_get LAST_ARCHIVE)
+    # A non-empty string is not a rollback point.
     [[ -n $rollback ]] || fail "no rollback archive was produced - refusing to restore"
+    [[ -f $CB_ARCHIVE_DIR/$rollback ]] \
+        || fail "the rollback archive $rollback is not on disk - refusing to restore"
+    [[ $rollback != "$prev_archive" ]] \
+        || fail "the pre-restore snapshot wrote nothing new - refusing to restore without a rollback"
     _cb_state_set ROLLBACK_ARCHIVE "$rollback"
     _cb_state_set ROLLBACK_SELECTOR "$CB_SELECTOR"
     ok_log "rollback point: $rollback"
@@ -1271,6 +1309,13 @@ _cb_restore() { # _cb_restore <source> [selector]
     # Written before the first byte, so an interrupted restore leaves evidence
     # rather than looking like it never happened.
     _cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
+    # Exactly what this restore creates, recorded before the first byte. This
+    # is what rollback deletes - inferring it from "absent from the snapshot"
+    # meant an unreadable file that never made it into the snapshot looked
+    # like something the restore had created, and got removed from a live host.
+    local created_list="$CB_ARCHIVE_DIR/restore-created.list"
+    awk -F'\t' '$1 == "create" { print $2 }' "$plan" > "$created_list"
+    chmod 0600 "$created_list" 2>/dev/null || true
     _cb_restore_record started "$1" "$rollback" "$plan"
 
     step_log "Applying"
@@ -1281,7 +1326,9 @@ _cb_restore() { # _cb_restore <source> [selector]
             "Configuration was restored from a snapshot. Nothing was reloaded; check the summary." \
             Host "$HOST_SHORT" Source "$1" Rollback "$rollback"
     else
-        _cb_state_set RESTORE_IN_PROGRESS ""
+        # The marker stays set. Its entire purpose is to stop another restore
+        # running on a host that is half-restored, and clearing it here made
+        # the detected-failure path less safe than an outright crash.
         _cb_restore_record partial "$1" "$rollback" "$plan"
         rm -f "$plan"
         fail "some files could not be written - the host is part-restored, roll back with: pve-config-backup rollback --confirm"
@@ -1317,7 +1364,7 @@ _cb_rollback() {
     local plan; plan=$(mktemp)
     _cb_restore_plan "$plan"
     local extra; extra=$(mktemp)
-    _cb_rollback_extras "$plan" > "$extra"
+    _cb_rollback_extras > "$extra"
 
     _cb_show_plan "$plan"
     if [[ -s $extra ]]; then
@@ -1331,37 +1378,54 @@ _cb_rollback() {
         return 0
     fi
 
+    # Rollback writes to the same live host a restore does, so it runs the
+    # same checks. Without them it would push through an unmounted pmxcfs,
+    # report every write FAILED, delete the live-only paths anyway, and still
+    # record the outcome as a successful rollback and exit 0.
+    _cb_restore_preflight "$plan"
+
     _cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
     step_log "Rolling back"
-    _cb_apply "$plan" || log "  some files could not be written"
+    local rb_ok=1
+    _cb_apply "$plan" || rb_ok=0
     local rel live
     while IFS= read -r rel; do
         [[ -n $rel ]] || continue
         live=$(_cb_live_path "$rel") || continue
         rm -f "$live" && log "  deleted $rel"
     done < "$extra"
-    _cb_state_set RESTORE_IN_PROGRESS ""
-    _cb_restore_record rollback "$rollback" "$rollback" "$plan"
+    if [[ $rb_ok -eq 1 ]]; then
+        _cb_state_set RESTORE_IN_PROGRESS ""
+        _cb_restore_record rollback "$rollback" "$rollback" "$plan"
+        rm -f "$plan" "$extra"
+        return 0
+    fi
+    # Leave the marker set: a rollback that could not write everything has not
+    # put the host back, and the next restore must stay blocked until someone
+    # has looked.
+    _cb_restore_record rollback-partial "$rollback" "$rollback" "$plan"
     rm -f "$plan" "$extra"
-    return 0
+    fail "the rollback did not complete - the host is part-restored"
 }
 
 # Restorable paths that are live now and absent from the rollback source.
-_cb_rollback_extras() { # _cb_rollback_extras <plan>
-    local prefix rel live class
-    for prefix in pve host; do
-        local root
-        root=$(_cb_live_path "$prefix/") || continue
-        [[ -d $root ]] || continue
-        while IFS= read -r live; do
-            rel="$prefix/${live#"${root%/}"/}"
-            _cb_selected "$rel" || continue
-            [[ -e $CB_SRC_DIR/$rel ]] && continue
-            class=$(_cb_classify "$rel") || continue
-            case $class in never|reference|unclassified) continue ;; esac
-            printf '%s\n' "$rel"
-        done < <(find "$root" -type f ! -name '*.bak.*' 2>/dev/null | LC_ALL=C sort)
-    done
+# What the restore actually created, read back from the list it wrote before
+# it wrote anything. Walking the live filesystem and calling everything absent
+# from the snapshot "created" was wrong twice over: a file the capture could
+# not read looked created and was deleted, and the walk was an unbounded
+# `find /` that traversed /proc, /sys and every NFS mount - in the default
+# dry run, so a plain `rollback` appeared to hang.
+_cb_rollback_extras() {
+    local list="$CB_ARCHIVE_DIR/restore-created.list" rel class
+    [[ -r $list ]] || return 0
+    while IFS= read -r rel; do
+        [[ -n $rel ]] || continue
+        _cb_selected "$rel" || continue
+        class=$(_cb_classify "$rel") || continue
+        case $class in never|reference|unclassified) continue ;; esac
+        [[ -e $(_cb_live_path "$rel") ]] || continue
+        printf '%s\n' "$rel"
+    done < "$list"
     return 0
 }
 
@@ -1427,7 +1491,6 @@ _cb_lock() {
 }
 
 _cb_run() {
-    CB_IN_CAPTURE=1
     _cb_lock
     _cb_capture_once
 }
@@ -1435,6 +1498,8 @@ _cb_run() {
 # Everything a capture does, minus the lock, so a restore can take its own
 # pre-restore snapshot while already holding it.
 _cb_capture_once() {
+    CB_IN_CAPTURE=1
+    CB_TAKE_ERRORS=0
     CB_STAGE=$(mktemp -d)
     CB_MANIFEST=$(mktemp)
     # shellcheck disable=SC2064
@@ -1673,11 +1738,19 @@ main() {
     while [[ $# -gt 0 ]]; do
         case $1 in
             --dry-run)
+                [[ $CB_CONFIRM -eq 1 ]] \
+                    && { printf 'error: --dry-run and --confirm are contradictory\n' >&2; exit 2; }
                 case $mode in
                     run|restore|rollback) CB_DRY_RUN=1; CB_CONFIRM=0 ;;
                     *) printf 'error: --dry-run does not apply to %s\n' "$mode" >&2; exit 2 ;;
                 esac ;;
             --confirm)
+                # Never alongside --dry-run. Last-flag-wins left both set, so
+                # the restore applied while the pre-restore snapshot took its
+                # own dry-run path and wrote nothing - making the rollback
+                # point the archive being restored *from*.
+                [[ $CB_DRY_RUN -eq 1 ]] \
+                    && { printf 'error: --dry-run and --confirm are contradictory\n' >&2; exit 2; }
                 case $mode in
                     restore|rollback) CB_CONFIRM=1 ;;
                     *) printf 'error: --confirm does not apply to %s\n' "$mode" >&2; exit 2 ;;

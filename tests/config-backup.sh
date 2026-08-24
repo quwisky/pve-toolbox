@@ -568,6 +568,42 @@ grep -q MUTATED "$LIVE/pve/qemu-server/100.conf" || fail "rollback did not resto
 [[ $(tree_hash "$LIVE") == "$MUTATED" ]] || fail "rollback did not reproduce the pre-restore tree exactly"
 pass "rollback is a faithful inverse"
 
+# A file the capture could not read used to be silently absent from the
+# snapshot, which rollback then read as "the restore created this" and
+# deleted - taking a live config file the restore never touched.
+if [[ $EUID -ne 0 ]]; then
+    printf 'options vfio-pci ids=1\n' > "$LIVE/root/etc/modprobe.d/vfio.conf"
+    CB_CONFIRM=1
+    _cb_restore "$BASE" >/dev/null 2>&1 || true
+    _cb_rollback >/dev/null 2>&1 || true
+    [[ -e $LIVE/root/etc/modprobe.d/vfio.conf ]] \
+        || fail "rollback deleted a live file the restore never created"
+    pass "rollback deletes only what the restore created"
+fi
+
+# A symlinked target must not be severed silently: find -type f never saw one,
+# so it reached no plan, and `[[ -e ]]` following the link made an archived
+# symlink read as absent - which rollback then deleted.
+printf '127.0.0.1 localhost\n' > "$LIVE/root/etc/hosts.real"
+ln -sfn hosts.real "$LIVE/root/etc/hosts"
+CB_CONFIRM=1
+_cb_restore "$BASE" >/dev/null 2>&1 || true
+[[ -L $LIVE/root/etc/hosts ]] || fail "a symlinked target was replaced silently"
+_cb_rollback >/dev/null 2>&1 || true
+[[ -e $LIVE/root/etc/hosts ]] || fail "rollback deleted a symlinked config file"
+pass "symlinked targets survive restore and rollback"
+
+# Writes go in by rename, never by unlink-then-create: on pmxcfs the removal
+# replicates to every node, so an interrupt would leave the file *absent*
+# cluster-wide rather than merely stale.
+wtmp=$(mktemp -d "$WORK/wXXXXXX")
+printf 'old\n' > "$wtmp/dest"; printf 'new\n' > "$wtmp/src"
+_cb_write_file "$wtmp/src" "$wtmp/dest" 0600 || fail "_cb_write_file failed"
+[[ $(cat "$wtmp/dest") == new ]] || fail "the write did not land"
+[[ $(mode_of "$wtmp/dest") == 600 ]] || fail "the mode was not applied"
+[[ -z $(find "$wtmp" -name '*.pve-toolbox.*') ]] || fail "a temp file was left behind"
+pass "writes are atomic"
+
 [[ $(grep -c . "$CB_ARCHIVE_DIR/restore.log") -ge 3 ]] || fail "the restore log has no record"
 grep -q 'rollback' "$CB_ARCHIVE_DIR/restore.log" || fail "the rollback was not logged"
 pass "restore log"
