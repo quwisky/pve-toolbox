@@ -1190,8 +1190,18 @@ _cb_read_conf() {
     [[ $CB_GIT_ENABLED   =~ ^[01]$ ]] || CB_GIT_ENABLED=0
     [[ $CB_GIT_PUSH      =~ ^[01]$ ]] || CB_GIT_PUSH=0
     [[ -n $CB_GIT_BRANCH ]] || CB_GIT_BRANCH=master
-    git check-ref-format --branch "$CB_GIT_BRANCH" >/dev/null 2>&1 \
-        || fail "invalid git branch name: $CB_GIT_BRANCH"
+    # Only when the git backend is on. Unguarded this ran on every install,
+    # including local-archive-only ones that never pkg_ensure git - so on a
+    # host without it every timer firing aborted before collecting anything,
+    # wrote no archive, and alerted about a branch name nobody set.
+    if [[ $CB_GIT_ENABLED -eq 1 ]]; then
+        command -v git >/dev/null 2>&1 \
+            || fail "git not found but the git backend is enabled"
+        command -v rsync >/dev/null 2>&1 \
+            || fail "rsync not found but the git backend is enabled"
+        git check-ref-format --branch "$CB_GIT_BRANCH" >/dev/null 2>&1 \
+            || fail "invalid git branch name: $CB_GIT_BRANCH"
+    fi
     [[ -n $CB_GIT_AUTHOR_EMAIL ]] || CB_GIT_AUTHOR_EMAIL="pve-toolbox@$HOST_SHORT"
     # Refusing both leaves a timer that captures and then throws it away.
     [[ $CB_LOCAL_ENABLED -eq 1 || $CB_GIT_ENABLED -eq 1 ]] \
@@ -1233,10 +1243,6 @@ main() {
     command -v curl >/dev/null 2>&1 || fail "curl not found"
     command -v jq   >/dev/null 2>&1 || fail "jq not found"
     command -v tar  >/dev/null 2>&1 || fail "tar not found"
-    if [[ $CB_GIT_ENABLED -eq 1 ]]; then
-        command -v git   >/dev/null 2>&1 || fail "git not found but the git backend is enabled"
-        command -v rsync >/dev/null 2>&1 || fail "rsync not found but the git backend is enabled"
-    fi
 
     _cb_read_conf
 
