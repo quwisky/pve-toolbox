@@ -691,6 +691,7 @@ cores: 4
 memory: 100
 name: web01
 net0: virtio=AA:BB:CC:11:22:33,bridge=vmbr0,firewall=1,tag=100
+net1: e1000-82545em=AA:BB:CC:11:22:34,bridge=vmbr1,mtu=9000
 scsi0: local-lvm:vm-100-disk-0,size=32G
 scsi1: local:100/vm-100-disk-1.qcow2,size=100G
 efidisk0: local-lvm:vm-100-disk-2,efitype=4m,size=1M
@@ -702,11 +703,15 @@ memory: 100
 net0: virtio=AA:BB:CC:11:22:33,bridge=vmbr0
 scsi0: local-lvm:vm-100-disk-0,size=32G
 CONF
+    # Real pct syntax. The old fixture wrote `net0: veth=<mac>,...`, which pct
+    # never emits - so the MAC assertion was validating the implementation
+    # against itself while --regenerate-macs did nothing to any container.
     cat > "$XSRC/pve/nodes/pve1/lxc/200.conf" <<'CONF'
 arch: amd64
 rootfs: local-lvm:subvol-200-disk-0,size=8G
 mp0: local:200/vm-200-disk-1.raw,mp=/data
-net0: veth=AA:BB:CC:00:11:22,bridge=vmbr0,name=eth0
+net0: name=eth0,bridge=vmbr0,firewall=1,hwaddr=BC:24:11:11:22:33,ip=dhcp,type=veth
+net1: name=eth1,bridge=vmbr0,hwaddr=BC:24:11:44:55:66,ip=10.0.0.5/24,type=veth
 CONF
     printf 'name: gpu\nhostpci0: 0000:01:00.0,pcie=1\n' > "$XSRC/pve/nodes/pve1/qemu-server/300.conf"
     printf 'dir: local\n\tnodes pve1,pve2\n' > "$XSRC/pve/storage.cfg"
@@ -778,7 +783,10 @@ pass "storage mapping is anchored"
 # The MAC is the value of the model key; everything after it survives.
 grep -qE '^net0: virtio=BC:24:11:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2},bridge=vmbr9,firewall=1,tag=100$' "$Q" \
     || fail "the regenerated net0 line lost its model or its options: $(grep '^net0:' "$Q")"
-grep -qE '^net0: veth=BC:24:11:' "$L" || fail "the lxc MAC was not regenerated"
+grep -qE '^net0: name=eth0,bridge=vmbr9,firewall=1,hwaddr=BC:24:11:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2},ip=dhcp,type=veth$' "$L" \
+    || fail "the lxc hwaddr was not regenerated, or the rest of the line moved: $(grep '^net0:' "$L")"
+grep -qE '^net1: e1000-82545em=BC:24:11:' "$Q" \
+    || fail "a hyphenated NIC model was skipped: $(grep '^net1:' "$Q")"
 pass "MAC regeneration keeps the rest of the line"
 
 # Hardware and identity that did not move with the config.

@@ -1578,11 +1578,22 @@ _cb_xn_guard() {
         clone)
             [[ $CB_XN_VMID_OFFSET -ne 0 || ${#CB_MAP_VMID[@]} -gt 0 ]] \
                 || fail "--mode clone needs --vmid-offset or --map-vmid: the source node is alive and its VMIDs are taken"
+            local k
+            for k in "${!CB_MAP_VMID[@]}"; do
+                [[ $k =~ ^[0-9]+$ && ${CB_MAP_VMID[$k]} =~ ^[0-9]+$ ]] \
+                    || fail "--map-vmid takes numbers: $k=${CB_MAP_VMID[$k]}"
+                _cb_valid_vmid "${CB_MAP_VMID[$k]}" \
+                    || fail "--map-vmid target ${CB_MAP_VMID[$k]} is not a valid VMID (100-999999999)"
+            done
             ;;
         *) fail "--mode must be dr or clone" ;;
     esac
     return 0
 }
+
+# PVE's own range. A remapped guest that lands outside it cannot be started,
+# and finding that out after the restore is too late.
+_cb_valid_vmid() { [[ $1 =~ ^[0-9]+$ && $1 -ge 100 && $1 -le 999999999 ]]; }
 
 _cb_rand_mac() {
     # Locally administered, unicast: second nibble 2.
@@ -1618,12 +1629,18 @@ _cb_xn_guest() { # _cb_xn_guest <file> <old-vmid> <new-vmid>
     local f=$1 old=$2 new=$3 key from to
     local tmp; tmp=$(mktemp)
 
+    local before
     for key in "${!CB_MAP_STORAGE[@]}"; do
         from=$key; to=${CB_MAP_STORAGE[$key]}
+        before=$(sha256sum "$f" | awk '{print $1}')
         # ^<key>: <storage>: - never a bare or \b match, which would rewrite
         # `my-local` when mapping `local`, since - is a word boundary.
         sed -E -i "s|^([a-z0-9_]+: )${from}:|\1${to}:|" "$f"
-        _cb_xn_note "  storage   $from -> $to   $(basename "$f")"
+        # Only report what actually changed. Noting it unconditionally meant a
+        # typo'd storage name read as a successful mapping in the one report
+        # the operator sees before --confirm.
+        [[ $(sha256sum "$f" | awk '{print $1}') != "$before" ]] \
+            && _cb_xn_note "  storage   $from -> $to   $(basename "$f")"
     done
 
     for key in "${!CB_MAP_BRIDGE[@]}"; do
@@ -1632,31 +1649,58 @@ _cb_xn_guest() { # _cb_xn_guest <file> <old-vmid> <new-vmid>
         # | delimiter made sed reject the expression - which failed silently
         # for every mid-line bridge= and only ever rewrote end-of-line ones.
         # The (,|$) anchor is what stops vmbr0 matching vmbr01.
+        before=$(sha256sum "$f" | awk '{print $1}')
         sed -E -i "s#^(net[0-9]+:.*)bridge=${from}(,|\$)#\1bridge=${to}\2#" "$f"
-        _cb_xn_note "  bridge    $from -> $to   $(basename "$f")"
+        [[ $(sha256sum "$f" | awk '{print $1}') != "$before" ]] \
+            && _cb_xn_note "  bridge    $from -> $to   $(basename "$f")"
     done
 
     if [[ $CB_XN_REGEN_MACS -eq 1 ]]; then
-        # The MAC is the value of the model key. Everything after it - bridge,
-        # tag, firewall, mtu - is preserved byte for byte.
-        while IFS= read -r line; do
-            printf '%s\n' "$line"
-        done < "$f" > "$tmp"
-        : > "$f"
-        while IFS= read -r line; do
-            if [[ $line =~ ^(net[0-9]+:[[:space:]]*[a-z0-9]+=)([0-9A-Fa-f:]{17})(.*)$ ]]; then
-                printf '%s%s%s\n' "${BASH_REMATCH[1]}" "$(_cb_rand_mac)" "${BASH_REMATCH[3]}"
-            else
-                printf '%s\n' "$line"
+        # Two serialisations, not one. qemu writes the MAC as the value of the
+        # model key (`net0: virtio=<mac>,...`); pct writes `hwaddr=<mac>`
+        # inside a comma list. Handling only the first meant --regenerate-macs
+        # silently did nothing to every container while the report said it had
+        # - the one safety control the operator asked for, reporting success.
+        #
+        # The model class allows - and _ because e1000-82545em and ne2k_pci are
+        # real entries in PVE's nic_model_list.
+        #
+        # `|| [[ -n $line ]]` because a file whose last line has no trailing
+        # newline would otherwise lose that line entirely.
+        local -A macmap=()
+        local old_mac new_mac changed=0
+        : > "$tmp"
+        while IFS= read -r line || [[ -n $line ]]; do
+            old_mac=""
+            if [[ $line =~ ^net[0-9]+:[[:space:]]*[a-z0-9_-]+=([0-9A-Fa-f:]{17}) ]]; then
+                old_mac=${BASH_REMATCH[1]}
+            elif [[ $line =~ (^|,)hwaddr=([0-9A-Fa-f:]{17}) ]]; then
+                old_mac=${BASH_REMATCH[2]}
             fi
-        done < "$tmp" >> "$f"
-        _cb_xn_note "  macs      regenerated   $(basename "$f")"
+            if [[ -n $old_mac ]]; then
+                # One new MAC per old MAC, so the same interface keeps the same
+                # address in the running config and in every snapshot stanza -
+                # otherwise rolling back to a snapshot hands the guest a MAC it
+                # never had.
+                [[ -n ${macmap[$old_mac]:-} ]] || macmap[$old_mac]=$(_cb_rand_mac)
+                new_mac=${macmap[$old_mac]}
+                printf '%s\n' "${line//$old_mac/$new_mac}" >> "$tmp"
+                changed=1
+            else
+                printf '%s\n' "$line" >> "$tmp"
+            fi
+        done < "$f"
+        mv -f "$tmp" "$f"
+        [[ $changed -eq 1 ]] && _cb_xn_note "  macs      regenerated   $(basename "$f")"
     fi
 
     if [[ $old != "$new" ]]; then
         # Only the volume tokens. A bare numeric substitution would rewrite
         # `memory: 100` and `tag=100` as well.
-        sed -E -i "s|vm-${old}-|vm-${new}-|g; s|subvol-${old}-|subvol-${new}-|g; s|(:[[:space:]]*[A-Za-z0-9_.-]+:)${old}/|\1${new}/|g" "$f"
+        # base-<id>- as well: a linked clone names its template's volume, and
+        # rewriting only half leaves the two halves naming different guests,
+        # which is worse than leaving both alone.
+        sed -E -i "s|vm-${old}-|vm-${new}-|g; s|subvol-${old}-|subvol-${new}-|g; s|base-${old}-|base-${new}-|g; s|(:[[:space:]]*[A-Za-z0-9_.-]+:)${old}/|\1${new}/|g" "$f"
         _cb_xn_note "  vmid      $old -> $new   volumes must be moved separately"
     fi
     rm -f "$tmp"
@@ -1687,6 +1731,27 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
     done < <(cd "$CB_SRC_DIR" && find . -type f | LC_ALL=C sort)
     _cb_xn_note ""
 
+    # Derive the source node from the staged tree, not from metadata. A wrong
+    # name made the rename below silently no-op while the guest loop still
+    # rewrote configs under nodes/<source>/ - which maps onto that node's live
+    # pmxcfs directory, so restoring on pve2 overwrote pve1's running guests.
+    local -a staged_nodes=()
+    local d
+    for d in "$CB_SRC_DIR"/pve/nodes/*/; do
+        [[ -d $d ]] || continue
+        staged_nodes+=("$(basename "$d")")
+    done
+    if [[ ${#staged_nodes[@]} -gt 1 ]]; then
+        fail "the source holds more than one node directory (${staged_nodes[*]}) - refusing to guess which to transform"
+    fi
+    if [[ ${#staged_nodes[@]} -eq 1 ]]; then
+        if [[ -n $src && $src != unknown && $src != "${staged_nodes[0]}" ]]; then
+            fail "the source says node '$src' but its tree holds nodes/${staged_nodes[0]} - refusing to transform an inconsistent archive"
+        fi
+        src=${staged_nodes[0]}
+        _cb_xn_note "  source    nodes/$src/ (read from the tree)"
+    fi
+
     # nodes/<src>/ -> nodes/<tgt>/, resolving the real path rather than the
     # qemu-server symlink, which the collector already skips.
     if [[ -d $CB_SRC_DIR/pve/nodes/$src && $src != "$CB_TARGET_NODE" ]]; then
@@ -1704,12 +1769,21 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
         base=$(basename "$f" .conf)
         [[ $base =~ ^[0-9]+$ ]] || continue
         old=$base; new=$(_cb_new_vmid "$old")
+        if ! _cb_valid_vmid "$new"; then
+            _cb_xn_note "  $old  BLOCKED    $new is not a valid VMID (100-999999999)"
+            rm -f "$f"
+            continue
+        fi
 
         hostpci=0
         grep -qE '^hostpci[0-9]+:' "$f" && hostpci=1
+        # usb0: host=1-4 is a physical bus-port on the source machine, exactly
+        # as unportable as a PCI address. host=<vendor>:<product> is portable
+        # and stays.
+        grep -qE '^usb[0-9]+:.*host=[0-9]+-[0-9]+' "$f" && hostpci=1
 
         if [[ $hostpci -eq 1 ]]; then
-            _cb_xn_note "  $old  BLOCKED    hostpci names a PCI address on the source machine"
+            _cb_xn_note "  $old  BLOCKED    it names host hardware (PCI address or USB bus-port) on the source machine"
             rm -f "$f"
             continue
         fi

@@ -322,11 +322,11 @@ pve-config-backup restore latest --target-node pve2 \
 
 | Transform | What moves |
 | --- | --- |
-| node path | `nodes/<src>/` → `nodes/<tgt>/`, and `<src>` inside `storage.cfg`'s `nodes` list |
+| node path | `nodes/<src>/` → `nodes/<tgt>/`, with the source node read from the staged tree rather than trusted from metadata |
 | `--map-storage A=B` | anchored on the field (`^key: A:`), so mapping `local` leaves `local-lvm` and `my-local` alone |
 | `--map-bridge A=B` | `bridge=A` in a `netN:` line; the model, MAC, tag and firewall options survive byte for byte |
 | `--vmid-offset N`, `--map-vmid A=B` | the filename and the `vm-<id>-`, `subvol-<id>-` and `<id>/` tokens — never a bare number, which would rewrite `memory: 100` and `tag=100` |
-| `--regenerate-macs` | the MAC, which is the *value* of the model key (`net0: virtio=<mac>,…`), not a `macaddr=` field |
+| `--regenerate-macs` | the MAC in both serialisations — qemu's `net0: <model>=<mac>,…` and LXC's `hwaddr=<mac>`. One new address per old one, so an interface keeps the same MAC in the running config and in every snapshot stanza |
 
 Covers qemu (`scsiN`, `ideN`, `virtioN`, `sataN`, `efidiskN`, `tpmstateN`,
 `unusedN`, `vmstate`) and LXC (`rootfs`, `mpN`), and reaches inside `[snapshot]`
