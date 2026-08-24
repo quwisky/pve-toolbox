@@ -184,7 +184,14 @@ CB_CONF_KEYS=(
 
 # A remote that already carries a credential lands verbatim in .git/config and
 # in every argv, which is exactly what CB_GIT_TOKEN_FILE exists to avoid.
-_cb_remote_has_credential() { [[ $1 =~ ^[a-zA-Z+]+://[^/@]*:[^/@]*@ ]]; }
+_cb_remote_has_credential() { # _cb_remote_has_credential <url>
+    # Any userinfo at all, not just a colon-separated pair. `https://<token>@host`
+    # is how GitHub and GitLab document embedding a PAT, and the colon-requiring
+    # form let exactly that through - the one case the docs claimed it refused.
+    # ssh URLs legitimately carry a bare user, so they are exempt.
+    case $1 in ssh://*|git+ssh://*) return 1 ;; esac
+    [[ $1 =~ ^[a-zA-Z][a-zA-Z0-9+.-]*://[^/@]+@ ]]
+}
 
 # Nesting either directory inside the other would sweep .git/objects into every
 # archive - unbounded, and non-deterministic, which loses the reproducible
@@ -331,7 +338,9 @@ module_install() {
                 && die "the remote URL carries a credential - use CB_GIT_TOKEN_FILE instead, so it does not land in .git/config"
             ask_yn CB_GIT_PUSH "push after each commit" "y"
             case $CB_GIT_REMOTE in
-                http*)
+                http://*)
+                    die "an http:// remote would send the token and the whole host configuration in cleartext - use https" ;;
+                https://*)
                     ask CB_GIT_TOKEN_FILE "file holding an access token" "$CB_GIT_TOKEN_FILE"
                     [[ -n $CB_GIT_TOKEN_FILE && ! -r $CB_GIT_TOKEN_FILE ]] \
                         && die "cannot read $CB_GIT_TOKEN_FILE"

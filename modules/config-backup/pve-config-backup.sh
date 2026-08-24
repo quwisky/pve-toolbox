@@ -730,7 +730,12 @@ _cb_git() { # _cb_git <args...>
     local -a ssh=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
                   -o ConnectTimeout=10)
     [[ -n $CB_GIT_SSH_KEY ]] && ssh+=(-i "$CB_GIT_SSH_KEY" -o IdentitiesOnly=yes)
-    local -a pre=(env "GIT_TERMINAL_PROMPT=0" "GIT_SSH_COMMAND=${ssh[*]}")
+    # %q per word: ${ssh[*]} loses quoting, and a key path containing a space
+    # would split into two arguments - with IdentitiesOnly=yes there is no
+    # fallback identity, so pushes fail permanently.
+    local sshcmd="" w
+    for w in "${ssh[@]}"; do sshcmd+="${sshcmd:+ }$(printf '%q' "$w")"; done
+    local -a pre=(env "GIT_TERMINAL_PROMPT=0" "GIT_SSH_COMMAND=$sshcmd")
     local -a cred=()
     if [[ -n $CB_GIT_TOKEN_FILE ]]; then
         cred=(-c "credential.helper=$(_cb_git_credential_helper)")
@@ -743,14 +748,22 @@ _cb_git() { # _cb_git <args...>
 # or falls through to prompting for a username. The token's *path* is what
 # ends up in the process table; the value is read when the helper runs.
 _cb_git_credential_helper() {
-    printf '!f() { echo username=x-access-token; echo "password=$(cat %s)"; }; f' \
+    # %q, because the path is interpolated into a string git runs with sh -c.
+    # Unquoted, a path containing a space silently breaks auth forever while
+    # install's readability check still passes, and a crafted path executes.
+    printf '!f() { echo username=x-access-token; echo "password=$(cat %q)"; }; f' \
         "$CB_GIT_TOKEN_FILE"
 }
 
 # A remote that already carries a credential defeats CB_GIT_TOKEN_FILE: git
 # writes it verbatim into .git/config and puts it in every argv.
 _cb_git_remote_has_credential() { # _cb_git_remote_has_credential <url>
-    [[ $1 =~ ^[a-zA-Z+]+://[^/@]*:[^/@]*@ ]]
+    # Any userinfo at all, not just a colon-separated pair. `https://<token>@host`
+    # is how GitHub and GitLab document embedding a PAT, and the colon-requiring
+    # form let exactly that through - the one case the docs claimed it refused.
+    # ssh URLs legitimately carry a bare user, so they are exempt.
+    case $1 in ssh://*|git+ssh://*) return 1 ;; esac
+    [[ $1 =~ ^[a-zA-Z][a-zA-Z0-9+.-]*://[^/@]+@ ]]
 }
 
 _cb_git_init() {
@@ -822,7 +835,11 @@ _cb_git_sync() { # _cb_git_sync <stage> <manifest> <hash>
     # tracked that the include list no longer covers.
     _cb_git_prune_removed "$manifest"
 
-    if ! _cb_git add -A; then
+    # Scoped to the include list, not -A. `git add -A` stages the whole work
+    # tree, so anything that already lived in CB_GIT_DIR - never seen by the
+    # secret scan, which only ever walks the stage - was committed on the
+    # first sync and is permanent once pushed.
+    if ! _cb_git add -A -- . 2>/dev/null; then
         fail "git add failed"
     fi
     # Exits 1 exactly when there is something to commit, which is the common
@@ -891,7 +908,13 @@ _cb_git_push() {
             return 0
         fi
     fi
-    if _cb_git push -q origin "$CB_GIT_BRANCH"; then
+    # An explicit, fully-qualified refspec. `git push origin "$CB_GIT_BRANCH"`
+    # passes the branch as a *refspec*, so a name of `+master` is a force
+    # push - every guard above is skipped (ls-remote matches nothing, so it
+    # takes the first-push path and never fetches) and the remote's history is
+    # destroyed. The grep-guard in the tests cannot see that, because
+    # `--force` never appears in the source.
+    if _cb_git push -q origin "refs/heads/$CB_GIT_BRANCH:refs/heads/$CB_GIT_BRANCH"; then
         log "git: pushed to origin/$CB_GIT_BRANCH"
         _cb_state_set GIT_PUSH_STATE ok
         _cb_state_set GIT_LAST_PUSH "$(date -Is)"
@@ -1149,6 +1172,8 @@ _cb_read_conf() {
     [[ $CB_GIT_ENABLED   =~ ^[01]$ ]] || CB_GIT_ENABLED=0
     [[ $CB_GIT_PUSH      =~ ^[01]$ ]] || CB_GIT_PUSH=0
     [[ -n $CB_GIT_BRANCH ]] || CB_GIT_BRANCH=master
+    git check-ref-format --branch "$CB_GIT_BRANCH" >/dev/null 2>&1 \
+        || fail "invalid git branch name: $CB_GIT_BRANCH"
     [[ -n $CB_GIT_AUTHOR_EMAIL ]] || CB_GIT_AUTHOR_EMAIL="pve-toolbox@$HOST_SHORT"
     # Refusing both leaves a timer that captures and then throws it away.
     [[ $CB_LOCAL_ENABLED -eq 1 || $CB_GIT_ENABLED -eq 1 ]] \

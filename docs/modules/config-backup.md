@@ -210,8 +210,10 @@ journal.
 !!! warning "Do not put a credential in the remote URL"
 
     `https://<token>@host/repo.git` is the habitual way to configure a remote,
-    and install refuses it. Git would write it verbatim into `.git/config` and
-    put it in the argv of every fetch and push.
+    and install refuses it — along with any other userinfo, and any `http://`
+    remote, which would send both the token and the whole host configuration in
+    cleartext. Git would otherwise write the credential verbatim into
+    `.git/config`, re-apply it on every run, and print it in `status --long`.
 
 ```bash
 pve-config-backup log          # commit history

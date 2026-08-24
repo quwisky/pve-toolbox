@@ -362,6 +362,11 @@ cred_is() { # cred_is <url> <yes|no>
 }
 cred_is 'https://tok:x@github.com/a/b.git'  yes
 cred_is 'https://user:pass@example.com/r'   yes
+# The colon-requiring form missed these - and a bare token is how GitHub and
+# GitLab document embedding a PAT, i.e. the exact case the docs claimed was
+# refused. It lands verbatim in .git/config and is re-applied every run.
+cred_is 'https://ghp_AAAABBBBCCCCDDDD@github.com/a/b.git' yes
+cred_is 'https://glpat-XXXXXXXXXXXX@gitlab.com/a/b.git'   yes
 cred_is 'https://github.com/a/b.git'        no
 cred_is 'git@github.com:a/b.git'            no
 cred_is 'ssh://git@host/repo.git'           no
@@ -476,6 +481,29 @@ after=$(git -C "$REMOTE" rev-parse master)
 [[ $(git -C "$CB_GIT_DIR" rev-list --count HEAD) == 2 ]] \
     || fail "the local commit was lost when the push was refused"
 pass "diverged remote is left alone"
+
+# A branch name is passed to git as a *refspec*, so `+master` is a force push:
+# ls-remote matches nothing, the code takes the first-push path, never fetches,
+# and the divergence check never runs. The source-grep guard cannot see this,
+# because `--force` never appears in it. Assert on the remote's tip instead.
+FORCEREPO="$WORK/forcerepo"; FORCEREMOTE="$WORK/forceremote.git"
+git init -q --bare "$FORCEREMOTE"
+export CB_GIT_DIR="$FORCEREPO" CB_GIT_REMOTE="$FORCEREMOTE" CB_GIT_PUSH=1 CB_GIT_BRANCH=master
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" 111122223333
+git clone -q -b master "$FORCEREMOTE" "$WORK/forceother"
+git -C "$WORK/forceother" -c user.name=o -c user.email=o@e commit -q --allow-empty -m "another writer"
+git -C "$WORK/forceother" push -q origin master
+tip_before=$(git -C "$FORCEREMOTE" rev-parse master)
+
+CB_GIT_BRANCH='+master'
+printf 'hotplug: disk\n' >> "$gstage/pve/qemu-server/100.conf"
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" 444455556666 2>/dev/null || true
+[[ $(git -C "$FORCEREMOTE" rev-parse master) == "$tip_before" ]] \
+    || fail "a '+branch' name force-pushed and destroyed the remote's history"
+CB_GIT_BRANCH=master
+pass "a branch name cannot smuggle in a force push"
 
 # The token must not end up persisted anywhere in the repository.
 grep -rq 'ghp_TESTTOKENVALUE' "$CB_GIT_DIR/.git/config" 2>/dev/null \

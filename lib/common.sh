@@ -353,6 +353,11 @@ Type=oneshot
 ExecStart=$exec
 Nice=10
 IOSchedulingClass=idle
+# Anything a module writes without an explicit mode inherits this. Without it
+# the default is 0022, so files land 0644 - which for a module that keeps a
+# copy of the host's configuration means directory permissions are the only
+# thing standing between that and every local user.
+UMask=0077
 TimeoutStartSec=900
 StandardOutput=journal
 StandardError=journal
