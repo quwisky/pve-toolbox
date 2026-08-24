@@ -84,12 +84,18 @@ CB_GIT_SSH_KEY="${CB_GIT_SSH_KEY:-}"
 CB_GIT_TOKEN_FILE="${CB_GIT_TOKEN_FILE:-}"
 CB_GIT_AUTHOR_NAME="${CB_GIT_AUTHOR_NAME:-pve-toolbox}"
 CB_GIT_AUTHOR_EMAIL="${CB_GIT_AUTHOR_EMAIL:-}"
-# user.cfg is where PVE records API tokens, as `token:root@pam!name:0:0::...`.
-# That is a record type, not a credential - the token secret lives in
-# priv/token.cfg, which is dropped before the scan ever runs. Without this the
-# scan aborts every run on any host with a Grafana, Terraform or PBS
-# integration, which is to say most of them.
-CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-pve/user.cfg}"
+# Two machine-generated files whose format we know, both of which the broad
+# credential pattern legitimately matches:
+#
+#   pve/user.cfg              PVE records API tokens as `token:root@pam!name:`.
+#                             A record type, not a credential - the secret
+#                             lives in priv/token.cfg, dropped before the scan.
+#   derived/dpkg-selections   multiarch dpkg emits `passwd:arm64  install`, so
+#                             the package named passwd reads as `passwd:<value>`.
+#
+# Allow-listing two known files is the right trade against narrowing the
+# pattern, which cost `password:secret` and every value under eight characters.
+CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-pve/user.cfg derived/dpkg-selections.txt}"
 DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"
 
 CB_STAGE=""

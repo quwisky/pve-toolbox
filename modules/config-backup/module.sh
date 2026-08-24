@@ -137,7 +137,7 @@ _cb_defaults() {
     # unconditionally, and the runner sources the conf after its own default -
     # so an empty value here silently disabled the allow-list on every
     # installed host, leaving user.cfg protected by nothing.
-    : "${CB_SECRET_ALLOW:=pve/user.cfg}"
+    : "${CB_SECRET_ALLOW:=pve/user.cfg derived/dpkg-selections.txt}"
     : "${CB_RUN_NOW:=n}"
     : "${CB_TEST_NOTIFY:=y}"
     : "${CB_LOCAL_ENABLED:=y}"
