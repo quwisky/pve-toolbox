@@ -55,7 +55,10 @@ set -Eeuo pipefail
 
 CB_CONF="${CB_CONF:-/etc/pve-toolbox/config-backup.conf}"
 CB_STATE_FILE="${CB_STATE_FILE:-/var/lib/pve-toolbox/config-backup.state}"
-CB_LOCK_DIR="${CB_LOCK_DIR:-/run/lock}"
+# Not /run/lock: it is world-writable (drwxrwxrwt), so any local user could
+# create the lock file and hold an flock - and every capture would then exit 0
+# with "already running", write no archive and no state, and never report it.
+CB_LOCK_DIR="${CB_LOCK_DIR:-/run/pve-toolbox}"
 
 # Every collected path is routed through one of these two prefixes, so the
 # collector can be pointed at a fixture tree and exercised off a PVE host -
@@ -95,7 +98,7 @@ CB_GIT_AUTHOR_EMAIL="${CB_GIT_AUTHOR_EMAIL:-}"
 #
 # Allow-listing two known files is the right trade against narrowing the
 # pattern, which cost `password:secret` and every value under eight characters.
-CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-pve/user.cfg derived/dpkg-selections.txt}"
+CB_SECRET_ALLOW="${CB_SECRET_ALLOW:-pve/user.cfg:credential derived/dpkg-selections.txt:credential}"
 DISCORD_WEBHOOK="${DISCORD_WEBHOOK:-}"
 
 CB_STAGE=""
@@ -119,7 +122,11 @@ _cb_load_lib() {
     local dir="${PVE_TOOLBOX_LIB:-/usr/local/lib/pve-toolbox}"
     # shellcheck source=../../lib/discord.sh
     source "$dir/discord.sh" 2>/dev/null \
-        || { printf 'error: cannot source %s/discord.sh\n' "$dir" >&2; exit 1; }
+        || { printf 'error: cannot source %s/discord.sh\n' "$dir" >&2
+             _cb_state_set LAST_RUN "$(date -Is)" 2>/dev/null || true
+             [[ ${CB_IN_CAPTURE:-0} -eq 1 ]] \
+                 && { _cb_state_set LAST_RESULT failed 2>/dev/null || true; }
+             exit 1; }
 }
 
 # Both of these report before they exit, so a failed capture is never silent.
@@ -545,21 +552,28 @@ _cb_encrypt_secrets() {
 # most important check in the list silently never runs.
 CB_SECRET_PATTERNS=(
     "private-key:-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    "credential:(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]"
+    "credential:(^|[^A-Za-z])(password|passwd|secret|token|api[_-]?key)[[:space:]]*[:=][[:space:]]*[^[:space:]]"
     "bearer:Bearer [A-Za-z0-9._~+/-]{20,}"
     "webhook:https://(discord|discordapp)\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]{20,}"
 )
 
-_cb_allowed() { # _cb_allowed <relative-path>
-    local glob
+# <glob> exempts every pattern; <glob>:<pattern> exempts only that one. The
+# shipped defaults are per-pattern, because exempting a file wholesale for the
+# one record shape it is known to contain also switched off the private-key,
+# bearer and webhook checks on a file carrying operator free text.
+_cb_allowed() { # _cb_allowed <relative-path> <pattern-name>
+    local glob want
     # set -f: the word splitting is wanted, the pathname expansion is not - an
     # entry like `pve/*.cfg` would otherwise expand against whatever directory
     # the runner was started from, allowing different files each time.
     set -f
     for glob in $CB_SECRET_ALLOW; do
+        want=""
+        [[ $glob == *:* ]] && { want=${glob##*:}; glob=${glob%:*}; }
         # shellcheck disable=SC2053
-        # shellcheck disable=SC2053
-        [[ $1 == $glob ]] && { set +f; return 0; }
+        if [[ $1 == $glob ]] && [[ -z $want || $want == "$2" ]]; then
+            set +f; return 0
+        fi
     done
     set +f
     return 1
@@ -580,7 +594,12 @@ _cb_secret_scan() {
         # -a, not -I: -I skips any file containing a NUL byte, so a key
         # hidden in one was never scanned at all. A gate that declines to open
         # a file cannot be said to have checked it.
-        grep -raEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
+        # -i, and anchored on a non-letter: unanchored and case-sensitive it
+        # matched cloud-init's `cipassword:` - refusing the entire capture on a
+        # very ordinary guest - while missing every RESTIC_PASSWORD= and
+        # API_TOKEN=, which is the form these two trees actually contain. The
+        # anchor still treats _ as a separator so RESTIC_PASSWORD is caught.
+        grep -raiEl -e "$pat" "$CB_STAGE" >"$hitfile" 2>/dev/null
         rc=$?
         set -e
         # 0 matched, 1 matched nothing; anything else is a broken scan and must
@@ -590,7 +609,7 @@ _cb_secret_scan() {
         for f in "${found[@]:-}"; do
             [[ -n $f ]] || continue
             rel=${f#"$CB_STAGE"/}
-            _cb_allowed "$rel" && continue
+            _cb_allowed "$rel" "$name" && continue
             printf '%s %s\n' "$rel" "$name"
             hits=$((hits + 1))
         done
@@ -627,6 +646,10 @@ _cb_hash_of() { # _cb_hash_of <manifest>
 # archive but out of anything that decides whether something changed.
 _cb_volatile_regex() {
     local p out=""
+    # set -f for the same reason as _cb_allowed: the split is wanted, the
+    # pathname expansion is not - and without it the escaping below is dead
+    # code, because the shell eats the glob first.
+    set -f
     for p in $CB_VOLATILE_SECTIONS; do
         [[ -n $p ]] || continue
         # Doubled, because a dynamic regex is a string first: awk consumes
@@ -634,6 +657,7 @@ _cb_volatile_regex() {
         # plain .` on every single run.
         out+="${out:+|}^$(printf '%s' "$p" | sed 's/[.[\*^$(){}?+|]/\\\\&/g')"
     done
+    set +f
     printf '%s' "$out"
 }
 
@@ -760,6 +784,10 @@ _cb_archive_bytes() {
 # prints remote URLs on error, and a URL can carry an embedded credential.
 
 _cb_git() { # _cb_git <args...>
+    # umask here, not only UMask= on the unit: a manual run inherits the
+    # caller's, and root's default 022 leaves .git objects world-readable -
+    # so containment would rest entirely on two directory modes.
+    umask 077
     local -a ssh=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
                   -o ConnectTimeout=10)
     [[ -n $CB_GIT_SSH_KEY ]] && ssh+=(-i "$CB_GIT_SSH_KEY" -o IdentitiesOnly=yes)
@@ -770,8 +798,16 @@ _cb_git() { # _cb_git <args...>
     for w in "${ssh[@]}"; do sshcmd+="${sshcmd:+ }$(printf '%q' "$w")"; done
     local -a pre=(env "GIT_TERMINAL_PROMPT=0" "GIT_SSH_COMMAND=$sshcmd")
     local -a cred=()
-    if [[ -n $CB_GIT_TOKEN_FILE ]]; then
-        cred=(-c "credential.helper=$(_cb_git_credential_helper)")
+    if [[ -n $CB_GIT_TOKEN_FILE && -n $CB_GIT_REMOTE ]]; then
+        # Scoped to this remote, and the inherited chain reset first: `-c
+        # credential.helper=X` appends rather than replaces, so a root with
+        # `store` configured would have git persist this token in cleartext
+        # under ~/.git-credentials - keyed to whichever host it just spoke to,
+        # including a redirect target. followRedirects=false because git's
+        # default follows exactly the request that carries the credential.
+        cred=(-c "credential.helper="
+              -c "credential.${CB_GIT_REMOTE}.helper=$(_cb_git_credential_helper)"
+              -c "http.followRedirects=false")
     fi
     timeout 300 "${pre[@]}" git -C "$CB_GIT_DIR" "${cred[@]}" "$@"
 }
@@ -781,11 +817,16 @@ _cb_git() { # _cb_git <args...>
 # or falls through to prompting for a username. The token's *path* is what
 # ends up in the process table; the value is read when the helper runs.
 _cb_git_credential_helper() {
-    # %q, because the path is interpolated into a string git runs with sh -c.
-    # Unquoted, a path containing a space silently breaks auth forever while
-    # install's readability check still passes, and a crafted path executes.
-    printf '!f() { echo username=x-access-token; echo "password=$(cat %q)"; }; f' \
-        "$CB_GIT_TOKEN_FILE"
+    local host=${CB_GIT_REMOTE#*://}; host=${host%%/*}; host=${host#*@}
+    # Reads its input and answers only for the configured host. A helper that
+    # ignores stdin hands the token to whatever git asks about - which after a
+    # redirect is the redirect target.
+    #
+    # %q on the path, because this is interpolated into a string git runs with
+    # sh -c: unquoted, a path with a space breaks auth while install's
+    # readability check still passes, and a crafted path executes.
+    printf '!f() { local h=""; while IFS== read -r k v; do [ "$k" = host ] && h=$v; done; [ "$h" = %q ] || exit 0; echo username=x-access-token; echo "password=$(cat %q)"; }; f' \
+        "$host" "$CB_GIT_TOKEN_FILE"
 }
 
 # A remote that already carries a credential defeats CB_GIT_TOKEN_FILE: git
@@ -850,6 +891,9 @@ _cb_git_sync() { # _cb_git_sync <stage> <manifest> <hash>
     _cb_git_init
 
     include=$(mktemp)
+    # Newline-separated, because rsync --files-from reads it that way unless
+    # given --from0. git wants NUL, so the list is converted for git alone
+    # below - one format change here silently broke the other consumer.
     _cb_git_include "$manifest" > "$include"
 
     # --delete against a live work tree has none of the staging the tar path
@@ -862,7 +906,6 @@ _cb_git_sync() { # _cb_git_sync <stage> <manifest> <hash>
         rm -f "$include"
         fail "rsync into the git work tree failed - nothing was committed"
     fi
-    rm -f "$include"
 
     # --files-from does not delete what is no longer listed, so prune anything
     # tracked that the include list no longer covers.
@@ -872,9 +915,29 @@ _cb_git_sync() { # _cb_git_sync <stage> <manifest> <hash>
     # tree, so anything that already lived in CB_GIT_DIR - never seen by the
     # secret scan, which only ever walks the stage - was committed on the
     # first sync and is permanent once pushed.
-    if ! _cb_git add -A -- . 2>/dev/null; then
-        fail "git add failed"
+    # Staged from the include list, never from the tree. `git add -A` - with or
+    # without `-- .`, which is a no-op because _cb_git runs -C at the work-tree
+    # root - stages whatever already lives in CB_GIT_DIR. That content never
+    # passed the secret scan, which only ever walks $CB_STAGE, and a pushed
+    # blob is permanent. Unpacking an archive there to look at it was enough.
+    # Only paths that actually landed: git add errors on a pathspec matching
+    # nothing, and rsync skips a source file that vanished mid-run. Removals
+    # are staged by _cb_git_prune_removed with git rm, not here.
+    local present; present=$(mktemp)
+    while IFS= read -r rel; do
+        [[ -n $rel ]] || continue
+        [[ -e $CB_GIT_DIR/$rel ]] && printf '%s\0' "$rel"
+    done < "$include" > "$present"
+    rm -f "$include"
+
+    local add_err
+    if [[ -s $present ]]; then
+        if ! add_err=$(_cb_git add -A --pathspec-from-file="$present" --pathspec-file-nul 2>&1); then
+            rm -f "$present"
+            fail "git add failed: $add_err"
+        fi
     fi
+    rm -f "$present"
     # Exits 1 exactly when there is something to commit, which is the common
     # case here - a bare call would take the ERR trap every real change.
     if _cb_git diff --cached --quiet; then
@@ -899,10 +962,16 @@ _cb_git_prune_removed() { # _cb_git_prune_removed <manifest>
     _cb_git rev-parse --verify HEAD >/dev/null 2>&1 || return 0
     keep=$(mktemp); tracked=$(mktemp)
     _cb_git_include "$1" | LC_ALL=C sort > "$keep"
-    _cb_git ls-files | LC_ALL=C sort > "$tracked"
+    # -c core.quotePath=false and -z: ls-files otherwise quotes a non-ASCII
+    # path, so comm saw a string that never matches and the rm below targeted
+    # a file that does not exist - leaving it tracked and committed forever.
+    _cb_git -c core.quotePath=false ls-files | LC_ALL=C sort > "$tracked"
     while IFS= read -r f; do
         [[ -n $f ]] || continue
         rm -f "$CB_GIT_DIR/$f"
+        # --cached and --ignore-unmatch: the file is already gone from the work
+        # tree, and git add no longer stages removals for us.
+        _cb_git rm -q --cached --ignore-unmatch -- "$f" >/dev/null 2>&1 || true
     done < <(comm -23 "$tracked" "$keep")
     rm -f "$keep" "$tracked"
     return 0
@@ -1620,6 +1689,7 @@ _cb_diff() { # _cb_diff <source> [selector]
 _cb_take_lock() {
     local dir=$CB_LOCK_DIR
     mkdir -p "$dir" 2>/dev/null || dir=/tmp
+    chmod 0700 "$dir" 2>/dev/null || true
     exec 9>"$dir/pve-config-backup.lock"
     flock -n 9
 }
@@ -1693,6 +1763,16 @@ _cb_capture_once() {
         return 0
     fi
 
+    # The archive the hash stands for has to still be there. Comparing hashes
+    # alone meant an emptied archive directory - or a repointed CB_ARCHIVE_DIR,
+    # or an NFS mount absent at boot - reported "unchanged", exited 0, and left
+    # module_status showing a healthy archive count with nothing on disk.
+    local last_archive; last_archive=$(_cb_state_get LAST_ARCHIVE)
+    if [[ $hash == "$previous" && $CB_FORCE -eq 0 && -n $last_archive \
+          && ! -r $CB_ARCHIVE_DIR/$last_archive ]]; then
+        log "the last archive ($last_archive) is gone - writing a new one"
+        previous=""
+    fi
     if [[ $hash == "$previous" && $CB_FORCE -eq 0 ]]; then
         log "configuration unchanged ($hash) - no new archive"
         _cb_state_set LAST_RUN "$(date -Is)"
@@ -1857,8 +1937,18 @@ _cb_read_conf() {
     [[ $CB_GIT_ENABLED   =~ ^[01]$ ]] || CB_GIT_ENABLED=0
     [[ $CB_GIT_PUSH      =~ ^[01]$ ]] || CB_GIT_PUSH=0
     [[ -n $CB_GIT_BRANCH ]] || CB_GIT_BRANCH=master
-    git check-ref-format --branch "$CB_GIT_BRANCH" >/dev/null 2>&1 \
-        || fail "invalid git branch name: $CB_GIT_BRANCH"
+    # Only when the git backend is on. Unguarded this ran on every install,
+    # including local-archive-only ones that never pkg_ensure git - so on a
+    # host without it every timer firing aborted before collecting anything,
+    # wrote no archive, and alerted about a branch name nobody set.
+    if [[ $CB_GIT_ENABLED -eq 1 ]]; then
+        command -v git >/dev/null 2>&1 \
+            || fail "git not found but the git backend is enabled"
+        command -v rsync >/dev/null 2>&1 \
+            || fail "rsync not found but the git backend is enabled"
+        git check-ref-format --branch "$CB_GIT_BRANCH" >/dev/null 2>&1 \
+            || fail "invalid git branch name: $CB_GIT_BRANCH"
+    fi
     [[ -n $CB_GIT_AUTHOR_EMAIL ]] || CB_GIT_AUTHOR_EMAIL="pve-toolbox@$HOST_SHORT"
     # Refusing both leaves a timer that captures and then throws it away.
     [[ $CB_LOCAL_ENABLED -eq 1 || $CB_GIT_ENABLED -eq 1 ]] \
@@ -1925,10 +2015,7 @@ main() {
     command -v curl >/dev/null 2>&1 || fail "curl not found"
     command -v jq   >/dev/null 2>&1 || fail "jq not found"
     command -v tar  >/dev/null 2>&1 || fail "tar not found"
-    if [[ $CB_GIT_ENABLED -eq 1 ]]; then
-        command -v git   >/dev/null 2>&1 || fail "git not found but the git backend is enabled"
-        command -v rsync >/dev/null 2>&1 || fail "rsync not found but the git backend is enabled"
-    fi
+    command -v gzip >/dev/null 2>&1 || fail "gzip not found"
 
     _cb_read_conf
 

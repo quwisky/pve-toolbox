@@ -170,7 +170,7 @@ hits=$(_cb_secret_scan) && fail "the secret scan passed a bearer token"
 [[ $hits == *"host/etc/cron.d/leak bearer"* ]] || fail "the bearer pattern did not fire: $hits"
 
 # An allow-listed path is the operator saying "I looked, it is fine".
-CB_SECRET_ALLOW='pve/user.cfg pve/sdn/leaked.conf host/etc/cron.d/leak'
+CB_SECRET_ALLOW='pve/user.cfg:credential pve/sdn/leaked.conf host/etc/cron.d/leak'
 _cb_secret_scan >/dev/null || fail "the allow-list did not suppress a known hit"
 CB_SECRET_ALLOW=''
 pass "secret scan"
@@ -234,10 +234,27 @@ pass "content hash"
 # dropped before the scan runs. Matching it aborted every run on any host with
 # a Grafana, Terraform or PBS integration: the module wrote no backups at all.
 stage_fixture; _cb_drop_secrets
-CB_SECRET_ALLOW='pve/user.cfg derived/dpkg-selections.txt'   # the shipped default
+CB_SECRET_ALLOW='pve/user.cfg:credential derived/dpkg-selections.txt:credential'   # the shipped default
 _cb_secret_scan >/dev/null \
     || fail "a user.cfg with an API token aborted the scan"
 pass "an API token in user.cfg is not a credential"
+
+# cloud-init writes `cipassword:` into a guest config. Unanchored, the pattern
+# matched it and refused the entire capture - so a very ordinary guest meant no
+# backups at all. Anchored on a non-letter it drops out, while RESTIC_PASSWORD=
+# and API_TOKEN=, the form these trees actually contain, are now caught for the
+# first time.
+stage_fixture; _cb_drop_secrets
+printf 'cipassword: $5$rounds=5000$abcdef\nname: web\n' > "$CB_STAGE/pve/qemu-server/101.conf"
+_cb_secret_scan >/dev/null || fail "a cloud-init guest config aborted the scan"
+pass "cloud-init cipassword is not a credential"
+
+stage_fixture; _cb_drop_secrets
+mkdir -p "$CB_STAGE/host/etc/systemd/system"
+printf 'Environment=RESTIC_PASSWORD=hunter2trustno1\n' > "$CB_STAGE/host/etc/systemd/system/backup.service"
+hits=$(_cb_secret_scan) && fail "an uppercase credential was archived verbatim"
+[[ $hits == *"backup.service credential"* ]] || fail "the uppercase form was not named: $hits"
+pass "uppercase credentials are caught"
 
 # Multiarch dpkg emits `passwd:arm64  install`, so the package named passwd
 # reads as `passwd:<value>` to the credential pattern. This is a file the
@@ -245,7 +262,7 @@ pass "an API token in user.cfg is not a credential"
 stage_fixture; _cb_drop_secrets
 mkdir -p "$CB_STAGE/derived"
 printf 'passwd:arm64\t\tinstall\nlibc6:arm64\t\tinstall\n' > "$CB_STAGE/derived/dpkg-selections.txt"
-CB_SECRET_ALLOW='pve/user.cfg derived/dpkg-selections.txt'
+CB_SECRET_ALLOW='pve/user.cfg:credential derived/dpkg-selections.txt:credential'
 _cb_secret_scan >/dev/null || fail "a multiarch dpkg selections list aborted the scan"
 pass "a multiarch package list is not a credential"
 
@@ -263,7 +280,7 @@ hits=$(_cb_secret_scan) && fail "a key inside a binary file was not scanned"
 pass "the scan reads binary files too"
 
 # pve-ha-lrm and pve-ha-crm rewrite these with a timestamp on their watchdog
-# interval. Classified pmxcfs they sат inside the hash, so any host running HA
+# interval. Classified pmxcfs they sat inside the hash, so any host running HA
 # wrote a fresh archive every single run and the retention floor filled with
 # identical snapshots.
 class_is "pve/ha/manager_status"      reference
@@ -316,6 +333,8 @@ for gate_dep in curl jq tar gzip; do
     command -v "$gate_dep" >/dev/null 2>&1 || gate_missing="$gate_missing $gate_dep"
 done
 if [[ -n $gate_missing ]]; then
+    [[ ${CB_GATE_TESTS_REQUIRED:-0} -eq 1 ]] \
+        && fail "the gate tests are required here but these are missing:$gate_missing"
     printf 'skip the end-to-end gate tests, missing:%s\n' "$gate_missing"
 else
 gate_fixture
@@ -336,7 +355,9 @@ gate_run run >/dev/null 2>&1 && fail "a capture with no nodes/ was accepted"
     || fail "an archive was written despite the nodes/ gate"
 pass "an empty /etc/pve is refused"
 
-if [[ $EUID -ne 0 ]]; then
+if [[ $EUID -eq 0 ]]; then
+    printf 'skip the unreadable-unit gate, chmod 000 does not deny root\n'
+else
     gate_fixture
     mkdir -p "$GDIR/root/etc/systemd/system"
     printf '[Unit]\n' > "$GDIR/root/etc/systemd/system/critical.service"
@@ -371,16 +392,65 @@ else
 fi
 
 # ...but --dry-run must no more write state than it writes an archive.
+# Removing the file rather than chmod 000: root ignores the mode, so as root
+# the dry run succeeded and the assertion passed against unfixed code too.
 gate_fixture
 gate_run run >/dev/null 2>&1
 before=$(grep '^LAST_RESULT=' "$GDIR/state")
-chmod 000 "$GDIR/pve/datacenter.cfg" 2>/dev/null || true
+rm -rf "${GDIR:?}/pve/nodes"
 ( gate_run run --dry-run ) >/dev/null 2>&1 || true
-chmod 644 "$GDIR/pve/datacenter.cfg" 2>/dev/null || true
+mkdir -p "$GDIR/pve/nodes/pve1"
 [[ $(grep '^LAST_RESULT=' "$GDIR/state") == "$before" ]] \
     || fail "--dry-run overwrote the recorded result of a real capture"
 pass "--dry-run writes no state"
 fi
+
+# --- 3c. module.sh ---------------------------------------------------------
+#
+# Nothing tested module.sh at all, and the invariant a commit called
+# load-bearing - that its default matches the runner's - was exactly what
+# broke. Read both rather than hardcoding the string.
+
+( export TOOLBOX_CONF_DIR="$WORK/mconf" TOOLBOX_STATE_DIR="$WORK/mstate" \
+         TOOLBOX_SYSTEMD_DIR="$WORK/msys" TOOLBOX_BIN_DIR="$WORK/mbin" \
+         TOOLBOX_LIB_DIR="$WORK/mlib"
+  mkdir -p "$TOOLBOX_CONF_DIR" "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+  # shellcheck source=lib/common.sh
+  source "$ROOT/lib/common.sh"
+  # shellcheck source=modules/config-backup/module.sh
+  source "$ROOT/modules/config-backup/module.sh"
+
+  # _cb_defaults uses := so an inherited value wins; the earlier scan tests set
+  # this, and the point here is the shipped default.
+  unset CB_SECRET_ALLOW
+  _cb_defaults
+  runner_default=$(sed -n 's/^CB_SECRET_ALLOW="\${CB_SECRET_ALLOW:-\(.*\)}"$/\1/p' "$RUNNER")
+  [[ -n $runner_default ]] || fail "could not read the runner's CB_SECRET_ALLOW default"
+  [[ $CB_SECRET_ALLOW == "$runner_default" ]] \
+      || fail "module and runner disagree on the CB_SECRET_ALLOW default: [$CB_SECRET_ALLOW] vs [$runner_default]"
+
+  # A key an operator deliberately emptied must not read as missing, or update
+  # silently resets it - re-widening a security control they had narrowed.
+  CB_WEBHOOK=x _cb_write_conf >/dev/null 2>&1
+  conf_set config-backup CB_SECRET_ALLOW ""
+  _cb_missing_conf_keys
+  for k in "${CB_MISSING[@]:-}"; do
+      [[ $k == CB_SECRET_ALLOW ]] && fail "an intentionally emptied key read as missing"
+  done
+
+  # ...and a genuinely absent key must still be reported.
+  conf_clear config-backup
+  CB_WEBHOOK=x _cb_write_conf >/dev/null 2>&1
+  sed -i '/^CB_AGE_RECIPIENT=/d' "$(conf_file config-backup)"
+  _cb_missing_conf_keys
+  printf '%s\n' "${CB_MISSING[@]:-}" | grep -qx CB_AGE_RECIPIENT \
+      || fail "an absent key was not reported as missing"
+
+  # module_status must print exactly this and nothing else when absent.
+  st=$(module_status) && fail "module_status returned 0 when not installed"
+  [[ $st == "not installed" ]] || fail "module_status printed [$st]"
+) || exit 1
+pass "module.sh defaults and conf accounting"
 
 # --- 4. retention: count is a floor, not a cap --------------------------
 
@@ -478,16 +548,27 @@ pass "remote credential detection"
 # timer with no stdin is a hang, not an error.
 TOKFILE="$WORK/token"; printf 'ghp_TESTTOKENVALUE\n' > "$TOKFILE"; chmod 600 "$TOKFILE"
 CB_GIT_TOKEN_FILE="$TOKFILE"
+CB_GIT_REMOTE='https://github.com/a/b.git'
 helper=$(_cb_git_credential_helper)
 [[ $helper != *ghp_TESTTOKENVALUE* ]] \
     || fail "the token value is in the helper string, so it would show up in ps"
 [[ $helper == *"$TOKFILE"* ]] || fail "the helper does not reference the token file"
-out=$(eval "${helper#!}" <<<'protocol=https
-host=github.com
-' 2>/dev/null || true)
+
+# sh -c, not eval under bash: git runs the helper with sh, which on Debian is
+# dash, and a bash-only construct would work here and fail in production.
+ask_helper() { printf 'protocol=https\nhost=%s\n' "$1" | sh -c "${helper#!}" 2>/dev/null; }
+
+out=$(ask_helper github.com)
 [[ $out == *"username="* ]] || fail "the helper emits no username= line: $out"
 [[ $out == *"password=ghp_TESTTOKENVALUE"* ]] || fail "the helper emits no password= line: $out"
-CB_GIT_TOKEN_FILE=""
+
+# And only for the configured host. A helper that ignores its input hands the
+# token to whatever git asks about - which after a redirect is the redirect
+# target, not the remote the operator configured.
+out=$(ask_helper evil.example)
+[[ $out != *ghp_TESTTOKENVALUE* ]] \
+    || fail "the helper gave the token to a host that is not the configured remote"
+CB_GIT_TOKEN_FILE=""; CB_GIT_REMOTE=""
 pass "credential helper speaks the git protocol"
 
 # What reaches git: not the regenerated dumps, not the secrets, not whatever
@@ -505,6 +586,26 @@ grep -q 'firewall-live/'     <<<"$inc" && fail "live firewall state reached the 
 grep -q 'secrets/'           <<<"$inc" && fail "an encrypted secret reached the git tree"
 grep -q 'resolved/'          <<<"$inc" && fail "a resolved guest view reached the git tree"
 pass "git include set"
+
+# Anything already sitting in CB_GIT_DIR never passed the secret scan, which
+# only walks the stage - and a pushed blob is permanent. Unpacking an archive
+# there to look at it was enough to publish it.
+export CB_GIT_DIR="$WORK/preexisting"
+mkdir -p "$CB_GIT_DIR"
+printf 'TOKENTOKENTOKENTOKEN\n' > "$CB_GIT_DIR/.env"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\n' > "$CB_GIT_DIR/id_deploy"
+export CB_GIT_REMOTE="" CB_GIT_PUSH=0
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" cafecafecafe
+git -C "$CB_GIT_DIR" grep -q TOKENTOKENTOKENTOKEN HEAD 2>/dev/null \
+    && fail "a file already in CB_GIT_DIR was committed without ever being scanned"
+git -C "$CB_GIT_DIR" grep -q 'PRIVATE KEY' HEAD 2>/dev/null \
+    && fail "a key already in CB_GIT_DIR was committed"
+git -C "$CB_GIT_DIR" ls-files | grep -q '^pve/' \
+    || fail "the staged configuration was not committed"
+pass "only the manifest reaches a commit"
+
+export CB_GIT_DIR="$WORK/repo"
 
 # Commit only on change, and a change confined to a reference path is not one.
 export CB_GIT_DIR="$WORK/repo"
