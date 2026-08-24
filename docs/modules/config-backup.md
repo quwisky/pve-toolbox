@@ -92,7 +92,10 @@ CB_SECRET_ALLOW='host/etc/cron.d/backup-job pve/sdn/controllers.cfg'
 ```
 
 Entries are globs against the path *inside the archive*, which is what the
-error message prints.
+error message prints. A bare glob exempts a file from every pattern; a
+`<glob>:<pattern>` pair exempts only that one — so allowing `user.cfg` for its
+`token:` records leaves the private-key, bearer and webhook checks on it
+intact.
 
 To archive the secrets rather than drop them, set `CB_INCLUDE_SECRETS=1` and
 give an age recipient. Each file is then encrypted to `secrets/<path>.age` and
@@ -185,7 +188,7 @@ CB_NOTIFY_ON_CHANGE='0'
 CB_INCLUDE_SECRETS='0'
 CB_AGE_RECIPIENT=''
 CB_VOLATILE_SECTIONS='firewall-live/'
-CB_SECRET_ALLOW='pve/user.cfg derived/dpkg-selections.txt'
+CB_SECRET_ALLOW='pve/user.cfg:credential derived/dpkg-selections.txt:credential'
 ```
 
 A failed capture always reports. `CB_NOTIFY_ON_CHANGE=1` additionally reports
@@ -204,7 +207,7 @@ routine and a channel that pings on every edit stops being read.
 | `CB_NOTIFY_ON_CHANGE` | `n` | Also report when the configuration changed |
 | `CB_INCLUDE_SECRETS` | `n` | Archive secrets, encrypted. Needs `CB_AGE_RECIPIENT` |
 | `CB_AGE_RECIPIENT` | — | age recipient (`age1...`) for encrypted secrets |
-| `CB_SECRET_ALLOW` | `pve/user.cfg derived/dpkg-selections.txt` | Space-separated path globs the secret scan may ignore |
+| `CB_SECRET_ALLOW` | `pve/user.cfg:credential derived/dpkg-selections.txt:credential` | Space-separated path globs the secret scan may ignore |
 | `CB_RUN_NOW` | `n` | Take the first snapshot at the end of the install |
 | `CB_TEST_NOTIFY` | `y` | Send a test notification during install |
 

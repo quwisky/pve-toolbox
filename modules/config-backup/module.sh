@@ -112,6 +112,18 @@ _cb_webhook_shown() {
     printf '%s/****%s' "${url%/*}" "${url: -4}"
 }
 
+# Newest first by mtime, matching the runner. A name sort puts a same-second
+# -N suffix below the plain name, so list and status read backwards inside any
+# colliding second - which is exactly why the runner uses sub-second mtime.
+_cb_by_age() { # _cb_by_age <dir> <host>
+    local f
+    while IFS= read -r f; do
+        printf '%s\t%s\n' "$(stat -c '%.9Y' "$f" 2>/dev/null || stat -c '%Y' "$f")" "$f"
+    done < <(find "$1" -maxdepth 1 -name "pve-config_$2_*.tar.gz" -type f 2>/dev/null) \
+        | LC_ALL=C sort -rn -k1,1 | cut -f2-
+    return 0
+}
+
 _cb_human() { # _cb_human <bytes>
     local b=${1:-0}
     if   [[ $b -ge 1073741824 ]]; then awk -v b="$b" 'BEGIN{printf "%.1f GiB", b/1073741824}'
@@ -137,7 +149,7 @@ _cb_defaults() {
     # unconditionally, and the runner sources the conf after its own default -
     # so an empty value here silently disabled the allow-list on every
     # installed host, leaving user.cfg protected by nothing.
-    : "${CB_SECRET_ALLOW:=pve/user.cfg derived/dpkg-selections.txt}"
+    : "${CB_SECRET_ALLOW:=pve/user.cfg:credential derived/dpkg-selections.txt:credential}"
     : "${CB_RUN_NOW:=n}"
     : "${CB_TEST_NOTIFY:=y}"
 }
@@ -147,8 +159,12 @@ _cb_defaults() {
 _cb_seed_from_conf() {
     conf_exists "$MODULE_NAME" || return 0
     local k v
+    # CB_SECRET_ALLOW is deliberately not re-seeded: it carries a shipped
+    # default that grows as new machine-generated files are found, and seeding
+    # it from the conf meant an existing host could never receive one. An
+    # operator's own value still survives update, which rewrites nothing.
     for k in CB_ARCHIVE_DIR CB_RETENTION_COUNT CB_RETENTION_DAYS \
-             CB_AGE_RECIPIENT CB_VOLATILE_SECTIONS CB_SECRET_ALLOW; do
+             CB_AGE_RECIPIENT CB_VOLATILE_SECTIONS; do
         v=$(conf_get "$MODULE_NAME" "$k")
         [[ -n $v ]] && printf -v "$k" '%s' "$v"
     done
@@ -187,11 +203,20 @@ _cb_write_conf() {
 # Defaults for keys added after this host was installed. conf_set only rewrites
 # a line that already matches ^KEY=, so anything the operator added by hand
 # survives untouched.
+# Absent, not empty. Testing emptiness meant a key an operator deliberately
+# cleared - CB_SECRET_ALLOW='' to harden the scan - read as missing and was
+# silently reset to the shipped default on the next update, contradicting the
+# docs' promise that hand-edited keys are left alone. It also meant
+# CB_AGE_RECIPIENT, legitimately empty on every default install, kept the
+# up-to-date guard from ever firing: `check` always claimed an update and every
+# update rewrote the unit.
 _cb_missing_conf_keys() {
     CB_MISSING=()
-    local k
+    local k f
+    f=$(conf_file "$MODULE_NAME")
+    [[ -r $f ]] || { CB_MISSING=("${CB_CONF_KEYS[@]}"); return 0; }
     for k in "${CB_CONF_KEYS[@]}"; do
-        [[ -n $(conf_get "$MODULE_NAME" "$k") ]] || CB_MISSING+=("$k")
+        grep -q "^$k=" "$f" || CB_MISSING+=("$k")
     done
     return 0
 }
@@ -429,8 +454,8 @@ module_status_long() {
         done < <(find "$dir" -maxdepth 1 -name "pve-config_${HOST_SHORT:-*}_*.tar.gz" -type f 2>/dev/null)
         printf '  %s archive(s), %s\n' "$(printf '%s' "$count" | tr -d ' ')" "$(_cb_human "$bytes")"
         local newest oldest
-        newest=$(find "$dir" -maxdepth 1 -name "pve-config_${HOST_SHORT:-*}_*.tar.gz" -type f 2>/dev/null | LC_ALL=C sort | tail -n1)
-        oldest=$(find "$dir" -maxdepth 1 -name "pve-config_${HOST_SHORT:-*}_*.tar.gz" -type f 2>/dev/null | LC_ALL=C sort | awk 'NR == 1 { v = $0 } END { print v }')
+        newest=$(_cb_by_age "$dir" "$HOST_SHORT" | head -n1)
+        oldest=$(_cb_by_age "$dir" "$HOST_SHORT" | awk '{ v = $0 } END { print v }')
         [[ -n $newest ]] && printf '  newest     %s\n' "$(basename "$newest")"
         [[ -n $oldest ]] && printf '  oldest     %s\n' "$(basename "$oldest")"
     else

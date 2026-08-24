@@ -168,7 +168,7 @@ hits=$(_cb_secret_scan) && fail "the secret scan passed a bearer token"
 [[ $hits == *"host/etc/cron.d/leak bearer"* ]] || fail "the bearer pattern did not fire: $hits"
 
 # An allow-listed path is the operator saying "I looked, it is fine".
-CB_SECRET_ALLOW='pve/user.cfg pve/sdn/leaked.conf host/etc/cron.d/leak'
+CB_SECRET_ALLOW='pve/user.cfg:credential pve/sdn/leaked.conf host/etc/cron.d/leak'
 _cb_secret_scan >/dev/null || fail "the allow-list did not suppress a known hit"
 CB_SECRET_ALLOW=''
 pass "secret scan"
@@ -232,7 +232,7 @@ pass "content hash"
 # dropped before the scan runs. Matching it aborted every run on any host with
 # a Grafana, Terraform or PBS integration: the module wrote no backups at all.
 stage_fixture; _cb_drop_secrets
-CB_SECRET_ALLOW='pve/user.cfg derived/dpkg-selections.txt'   # the shipped default
+CB_SECRET_ALLOW='pve/user.cfg:credential derived/dpkg-selections.txt:credential'   # the shipped default
 _cb_secret_scan >/dev/null \
     || fail "a user.cfg with an API token aborted the scan"
 pass "an API token in user.cfg is not a credential"
@@ -260,7 +260,7 @@ pass "uppercase credentials are caught"
 stage_fixture; _cb_drop_secrets
 mkdir -p "$CB_STAGE/derived"
 printf 'passwd:arm64\t\tinstall\nlibc6:arm64\t\tinstall\n' > "$CB_STAGE/derived/dpkg-selections.txt"
-CB_SECRET_ALLOW='pve/user.cfg derived/dpkg-selections.txt'
+CB_SECRET_ALLOW='pve/user.cfg:credential derived/dpkg-selections.txt:credential'
 _cb_secret_scan >/dev/null || fail "a multiarch dpkg selections list aborted the scan"
 pass "a multiarch package list is not a credential"
 
@@ -331,6 +331,8 @@ for gate_dep in curl jq tar gzip; do
     command -v "$gate_dep" >/dev/null 2>&1 || gate_missing="$gate_missing $gate_dep"
 done
 if [[ -n $gate_missing ]]; then
+    [[ ${CB_GATE_TESTS_REQUIRED:-0} -eq 1 ]] \
+        && fail "the gate tests are required here but these are missing:$gate_missing"
     printf 'skip the end-to-end gate tests, missing:%s\n' "$gate_missing"
 else
 gate_fixture
@@ -351,7 +353,9 @@ gate_run run >/dev/null 2>&1 && fail "a capture with no nodes/ was accepted"
     || fail "an archive was written despite the nodes/ gate"
 pass "an empty /etc/pve is refused"
 
-if [[ $EUID -ne 0 ]]; then
+if [[ $EUID -eq 0 ]]; then
+    printf 'skip the unreadable-unit gate, chmod 000 does not deny root\n'
+else
     gate_fixture
     mkdir -p "$GDIR/root/etc/systemd/system"
     printf '[Unit]\n' > "$GDIR/root/etc/systemd/system/critical.service"
@@ -386,16 +390,65 @@ else
 fi
 
 # ...but --dry-run must no more write state than it writes an archive.
+# Removing the file rather than chmod 000: root ignores the mode, so as root
+# the dry run succeeded and the assertion passed against unfixed code too.
 gate_fixture
 gate_run run >/dev/null 2>&1
 before=$(grep '^LAST_RESULT=' "$GDIR/state")
-chmod 000 "$GDIR/pve/datacenter.cfg" 2>/dev/null || true
+rm -rf "${GDIR:?}/pve/nodes"
 ( gate_run run --dry-run ) >/dev/null 2>&1 || true
-chmod 644 "$GDIR/pve/datacenter.cfg" 2>/dev/null || true
+mkdir -p "$GDIR/pve/nodes/pve1"
 [[ $(grep '^LAST_RESULT=' "$GDIR/state") == "$before" ]] \
     || fail "--dry-run overwrote the recorded result of a real capture"
 pass "--dry-run writes no state"
 fi
+
+# --- 3c. module.sh ---------------------------------------------------------
+#
+# Nothing tested module.sh at all, and the invariant a commit called
+# load-bearing - that its default matches the runner's - was exactly what
+# broke. Read both rather than hardcoding the string.
+
+( export TOOLBOX_CONF_DIR="$WORK/mconf" TOOLBOX_STATE_DIR="$WORK/mstate" \
+         TOOLBOX_SYSTEMD_DIR="$WORK/msys" TOOLBOX_BIN_DIR="$WORK/mbin" \
+         TOOLBOX_LIB_DIR="$WORK/mlib"
+  mkdir -p "$TOOLBOX_CONF_DIR" "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+  # shellcheck source=lib/common.sh
+  source "$ROOT/lib/common.sh"
+  # shellcheck source=modules/config-backup/module.sh
+  source "$ROOT/modules/config-backup/module.sh"
+
+  # _cb_defaults uses := so an inherited value wins; the earlier scan tests set
+  # this, and the point here is the shipped default.
+  unset CB_SECRET_ALLOW
+  _cb_defaults
+  runner_default=$(sed -n 's/^CB_SECRET_ALLOW="\${CB_SECRET_ALLOW:-\(.*\)}"$/\1/p' "$RUNNER")
+  [[ -n $runner_default ]] || fail "could not read the runner's CB_SECRET_ALLOW default"
+  [[ $CB_SECRET_ALLOW == "$runner_default" ]] \
+      || fail "module and runner disagree on the CB_SECRET_ALLOW default: [$CB_SECRET_ALLOW] vs [$runner_default]"
+
+  # A key an operator deliberately emptied must not read as missing, or update
+  # silently resets it - re-widening a security control they had narrowed.
+  CB_WEBHOOK=x _cb_write_conf >/dev/null 2>&1
+  conf_set config-backup CB_SECRET_ALLOW ""
+  _cb_missing_conf_keys
+  for k in "${CB_MISSING[@]:-}"; do
+      [[ $k == CB_SECRET_ALLOW ]] && fail "an intentionally emptied key read as missing"
+  done
+
+  # ...and a genuinely absent key must still be reported.
+  conf_clear config-backup
+  CB_WEBHOOK=x _cb_write_conf >/dev/null 2>&1
+  sed -i '/^CB_AGE_RECIPIENT=/d' "$(conf_file config-backup)"
+  _cb_missing_conf_keys
+  printf '%s\n' "${CB_MISSING[@]:-}" | grep -qx CB_AGE_RECIPIENT \
+      || fail "an absent key was not reported as missing"
+
+  # module_status must print exactly this and nothing else when absent.
+  st=$(module_status) && fail "module_status returned 0 when not installed"
+  [[ $st == "not installed" ]] || fail "module_status printed [$st]"
+) || exit 1
+pass "module.sh defaults and conf accounting"
 
 # --- 4. retention: count is a floor, not a cap --------------------------
 
