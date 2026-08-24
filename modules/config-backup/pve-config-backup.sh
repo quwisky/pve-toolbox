@@ -784,10 +784,6 @@ _cb_archive_bytes() {
 # prints remote URLs on error, and a URL can carry an embedded credential.
 
 _cb_git() { # _cb_git <args...>
-    # umask here, not only UMask= on the unit: a manual run inherits the
-    # caller's, and root's default 022 leaves .git objects world-readable -
-    # so containment would rest entirely on two directory modes.
-    umask 077
     local -a ssh=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new
                   -o ConnectTimeout=10)
     [[ -n $CB_GIT_SSH_KEY ]] && ssh+=(-i "$CB_GIT_SSH_KEY" -o IdentitiesOnly=yes)
@@ -809,7 +805,12 @@ _cb_git() { # _cb_git <args...>
               -c "credential.${CB_GIT_REMOTE}.helper=$(_cb_git_credential_helper)"
               -c "http.followRedirects=false")
     fi
-    timeout 300 "${pre[@]}" git -C "$CB_GIT_DIR" "${cred[@]}" "$@"
+    # The umask goes in a subshell: it is not function-scoped, so setting it
+    # in the function body leaked to the whole process and every later write -
+    # restored config files included - landed 0600 instead of its own mode.
+    # Needed beyond UMask= on the unit because a manual run inherits root's
+    # 022, which leaves .git objects world-readable.
+    ( umask 077; timeout 300 "${pre[@]}" git -C "$CB_GIT_DIR" "${cred[@]}" "$@" )
 }
 
 # The git-credential protocol, not a bare cat: git needs username= and
@@ -878,7 +879,13 @@ _cb_git_init() {
 # manifest means one filter, not a second glob list to keep in sync.
 _cb_git_include() { # _cb_git_include <manifest>
     local vol; vol=$(_cb_volatile_regex)
+    # meta/capture.txt is kept despite being reference-class: it is the only
+    # record of which node an archive came from, and without it in the tree a
+    # git source cannot answer the same-node check - which blocked every git
+    # ref and left a git-only install with no way to restore at all. Its
+    # contents are static, so it never causes a commit of its own.
     awk -F'\t' -v vol="$vol" '
+        $1 == "meta/capture.txt" { print $1; next }
         $2 == "reference" { next }
         $1 ~ /^secrets\// { next }
         vol != "" && $1 ~ vol { next }
@@ -1080,13 +1087,10 @@ _cb_source_prepare() { # _cb_source_prepare <source>
         _cb_git archive --format=tar "$src" | tar -C "$CB_SRC_DIR" -xf - \
             || fail "could not extract the git ref $src"
         CB_SRC_HASH=$(_cb_git log -1 --format=%H "$src" 2>/dev/null || printf 'unknown')
-        # Not $HOST_SHORT. meta/capture.txt is reference-class, so the git
-        # backend never commits it and there is nothing here to read a node
-        # from - claiming this host made the same-node gate structurally inert,
-        # and with a shared remote another node's branch restored with no check
-        # at all. Left empty, the unknown-node BLOCK catches it and
-        # --target-node is how you say what you mean.
-        CB_SRC_NODE=""
+        # Read from the commit, never assumed. The git backend keeps
+        # meta/capture.txt precisely so this works; claiming $HOST_SHORT made
+        # the same-node gate inert, and leaving it empty blocked every git ref.
+        CB_SRC_NODE=$(sed -n 's/^node=//p' "$CB_SRC_DIR/meta/capture.txt" 2>/dev/null | head -n1) || true
         log "source: git $src"
         return 0
     fi
