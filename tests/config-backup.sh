@@ -18,6 +18,8 @@ RUNNER="$ROOT/modules/config-backup/pve-config-backup.sh"
 trap 'rm -rf "$WORK"' EXIT
 
 pass() { printf 'ok  %s\n' "$1"; }
+# GNU stat on the target, BSD stat on the machine this is often written on.
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 
 # Nothing may reach the host: these are every path the runner writes to.
@@ -497,3 +499,604 @@ out=$(PVE_TOOLBOX_LIB=/nonexistent "$ROOT/modules/config-backup/pve-config-backu
 [[ $out == *"pve-config-backup run"* ]] || fail "--help printed no usage: $out"
 [[ $out != *"#"* ]] || fail "--help leaked the comment markers"
 pass "--help without the lib"
+
+# --- 7. the git backend --------------------------------------------------
+
+# The one assertion that does not need git installed: no force-push, ever.
+# A behavioural test proves nothing here - stock `git push` already refuses a
+# non-fast-forward, so an outcome test passes with zero divergence logic in the
+# runner, and keeps passing if someone later reaches for --force-with-lease to
+# silence a complaint. Grepping the source fails on the code change itself.
+RUNNER="$ROOT/modules/config-backup/pve-config-backup.sh"
+if grep -nE 'git[^|]*push' "$RUNNER" | grep -qE '\-\-force|--force-with-lease|[[:space:]]-f[[:space:]]'; then
+    fail "the runner force-pushes: a rejected push is the correct outcome when someone else wrote to the branch"
+fi
+pass "no force-push in the source"
+
+if ! command -v git >/dev/null 2>&1 || ! command -v rsync >/dev/null 2>&1; then
+    printf 'skip git backend tests, no git or rsync\n'
+    exit 0
+fi
+
+export CB_GIT_ENABLED=1
+export CB_GIT_BRANCH=master
+export CB_GIT_AUTHOR_NAME=test
+export CB_GIT_AUTHOR_EMAIL=test@example.invalid
+
+# An embedded credential defeats the whole point of CB_GIT_TOKEN_FILE: git
+# writes it into .git/config and puts it in every argv.
+cred_is() { # cred_is <url> <yes|no>
+    local got=no
+    _cb_git_remote_has_credential "$1" && got=yes
+    [[ $got == "$2" ]] || fail "_cb_git_remote_has_credential '$1' returned $got, wanted $2"
+}
+cred_is 'https://tok:x@github.com/a/b.git'  yes
+cred_is 'https://user:pass@example.com/r'   yes
+# The colon-requiring form missed these - and a bare token is how GitHub and
+# GitLab document embedding a PAT, i.e. the exact case the docs claimed was
+# refused. It lands verbatim in .git/config and is re-applied every run.
+cred_is 'https://ghp_AAAABBBBCCCCDDDD@github.com/a/b.git' yes
+cred_is 'https://glpat-XXXXXXXXXXXX@gitlab.com/a/b.git'   yes
+cred_is 'https://github.com/a/b.git'        no
+cred_is 'git@github.com:a/b.git'            no
+cred_is 'ssh://git@host/repo.git'           no
+pass "remote credential detection"
+
+# The helper has to speak the git-credential protocol. One that merely cats the
+# file is not a helper: git wants username= and password= lines back, and
+# without them either fails auth or falls through to prompting - which on a
+# timer with no stdin is a hang, not an error.
+TOKFILE="$WORK/token"; printf 'ghp_TESTTOKENVALUE\n' > "$TOKFILE"; chmod 600 "$TOKFILE"
+CB_GIT_TOKEN_FILE="$TOKFILE"
+CB_GIT_REMOTE='https://github.com/a/b.git'
+helper=$(_cb_git_credential_helper)
+[[ $helper != *ghp_TESTTOKENVALUE* ]] \
+    || fail "the token value is in the helper string, so it would show up in ps"
+[[ $helper == *"$TOKFILE"* ]] || fail "the helper does not reference the token file"
+
+# sh -c, not eval under bash: git runs the helper with sh, which on Debian is
+# dash, and a bash-only construct would work here and fail in production.
+ask_helper() { printf 'protocol=https\nhost=%s\n' "$1" | sh -c "${helper#!}" 2>/dev/null; }
+
+out=$(ask_helper github.com)
+[[ $out == *"username="* ]] || fail "the helper emits no username= line: $out"
+[[ $out == *"password=ghp_TESTTOKENVALUE"* ]] || fail "the helper emits no password= line: $out"
+
+# And only for the configured host. A helper that ignores its input hands the
+# token to whatever git asks about - which after a redirect is the redirect
+# target, not the remote the operator configured.
+out=$(ask_helper evil.example)
+[[ $out != *ghp_TESTTOKENVALUE* ]] \
+    || fail "the helper gave the token to a host that is not the configured remote"
+CB_GIT_TOKEN_FILE=""; CB_GIT_REMOTE=""
+pass "credential helper speaks the git protocol"
+
+# What reaches git: not the regenerated dumps, not the secrets, not whatever
+# the operator declared volatile.
+stage_fixture; gstage=$CB_STAGE; _cb_drop_secrets
+mkdir -p "$gstage/derived" "$gstage/firewall-live" "$gstage/secrets"
+printf 'pve 9.2\n'  > "$gstage/derived/pveversion.txt"
+printf 'live\n'     > "$gstage/firewall-live/iptables.rules"
+printf 'enc\n'      > "$gstage/secrets/leaked.age"
+gman="$WORK/gman"; _cb_manifest "$gstage" "$gman"
+inc=$(_cb_git_include "$gman")
+grep -q '^pve/storage.cfg$'  <<<"$inc" || fail "git include dropped a real config path"
+grep -q 'derived/'           <<<"$inc" && fail "a reference dump reached the git tree"
+grep -q 'firewall-live/'     <<<"$inc" && fail "live firewall state reached the git tree"
+grep -q 'secrets/'           <<<"$inc" && fail "an encrypted secret reached the git tree"
+grep -q 'resolved/'          <<<"$inc" && fail "a resolved guest view reached the git tree"
+pass "git include set"
+
+# Anything already sitting in CB_GIT_DIR never passed the secret scan, which
+# only walks the stage - and a pushed blob is permanent. Unpacking an archive
+# there to look at it was enough to publish it.
+export CB_GIT_DIR="$WORK/preexisting"
+mkdir -p "$CB_GIT_DIR"
+printf 'TOKENTOKENTOKENTOKEN\n' > "$CB_GIT_DIR/.env"
+printf -- '-----BEGIN OPENSSH PRIVATE KEY-----\n' > "$CB_GIT_DIR/id_deploy"
+export CB_GIT_REMOTE="" CB_GIT_PUSH=0
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" cafecafecafe
+git -C "$CB_GIT_DIR" grep -q TOKENTOKENTOKENTOKEN HEAD 2>/dev/null \
+    && fail "a file already in CB_GIT_DIR was committed without ever being scanned"
+git -C "$CB_GIT_DIR" grep -q 'PRIVATE KEY' HEAD 2>/dev/null \
+    && fail "a key already in CB_GIT_DIR was committed"
+git -C "$CB_GIT_DIR" ls-files | grep -q '^pve/' \
+    || fail "the staged configuration was not committed"
+pass "only the manifest reaches a commit"
+
+export CB_GIT_DIR="$WORK/repo"
+
+# Commit only on change, and a change confined to a reference path is not one.
+export CB_GIT_DIR="$WORK/repo"
+export CB_GIT_REMOTE="" CB_GIT_PUSH=0
+_cb_git_sync "$gstage" "$gman" deadbeefcafe
+[[ -d $CB_GIT_DIR/.git ]] || fail "no repository was created"
+count_commits() { git -C "$CB_GIT_DIR" rev-list --count HEAD 2>/dev/null || printf '0'; }
+[[ $(count_commits) == 1 ]] || fail "the first sync did not commit"
+
+_cb_git_sync "$gstage" "$gman" deadbeefcafe
+[[ $(count_commits) == 1 ]] || fail "an unchanged tree committed a second time"
+
+# A reference path moving must not produce a commit - this is the case that
+# distinguishes "excluded because reference" from "excluded because volatile",
+# which the firewall-live case alone cannot.
+printf 'pve 9.3\n' > "$gstage/derived/pveversion.txt"
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" deadbeefcafe
+[[ $(count_commits) == 1 ]] || fail "a reference-only change produced a commit"
+
+printf 'balloon: 0\n' >> "$gstage/pve/qemu-server/100.conf"
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" feedfacefeed
+[[ $(count_commits) == 2 ]] || fail "a real config change did not commit"
+pass "commit only on change"
+
+# rsync --delete runs against a directory that holds the repository, and the
+# attributes file is not in the staged tree - so if it were tracked rather than
+# under .git/, the first sync would delete it and the -diff rule would quietly
+# stop applying.
+[[ -d $CB_GIT_DIR/.git ]] || fail ".git did not survive the syncs"
+[[ -f $CB_GIT_DIR/.git/info/attributes ]] || fail ".git/info/attributes did not survive the syncs"
+pass "repository survives --delete"
+
+# The work tree holds the same configuration as the 0600 archives. rsync -a
+# would otherwise carry the source's own modes straight through.
+[[ $(mode_of "$CB_GIT_DIR") == 700 ]] || fail "the git dir is $(mode_of "$CB_GIT_DIR"), wanted 700"
+while IFS= read -r f; do
+    m=$(mode_of "$f")
+    [[ $m == 600 ]] || fail "$f is mode $m, wanted 600"
+done < <(find "$CB_GIT_DIR" -path "$CB_GIT_DIR/.git" -prune -o -type f -print)
+pass "git work tree permissions"
+
+# A repository with no commits is a real state, and every git call that reports
+# it exits non-zero - which the ERR trap would turn into a spurious failure
+# alert if any of them were called bare.
+export CB_GIT_DIR="$WORK/empty"
+install -d -m 0700 "$CB_GIT_DIR"
+git init -q -b master "$CB_GIT_DIR"
+( set -Eeuo pipefail; _cb_git_state ) || fail "_cb_git_state tripped on a zero-commit repo"
+[[ $(_cb_state_get GIT_COMMITS) == 0 ]] || fail "a zero-commit repo did not report 0 commits"
+pass "zero-commit repository"
+
+# Divergence: commit locally, leave the remote exactly as it was.
+export CB_GIT_DIR="$WORK/pushrepo"
+REMOTE="$WORK/remote.git"; git init -q --bare "$REMOTE"
+export CB_GIT_REMOTE="$REMOTE" CB_GIT_PUSH=1
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" aaaabbbbcccc
+[[ $(git -C "$REMOTE" rev-list --count master) == 1 ]] || fail "the first push did not land"
+
+git clone -q -b master "$REMOTE" "$WORK/other"
+git -C "$WORK/other" -c user.name=o -c user.email=o@e commit -q --allow-empty -m "another writer"
+git -C "$WORK/other" push -q origin master
+before=$(git -C "$REMOTE" rev-parse master)
+
+printf 'onboot: 1\n' >> "$gstage/pve/qemu-server/100.conf"
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" ddddeeeeffff
+after=$(git -C "$REMOTE" rev-parse master)
+[[ $before == "$after" ]] || fail "a diverged remote was overwritten"
+[[ $(_cb_state_get GIT_PUSH_STATE) == diverged ]] \
+    || fail "divergence was not recorded: $(_cb_state_get GIT_PUSH_STATE)"
+[[ $(git -C "$CB_GIT_DIR" rev-list --count HEAD) == 2 ]] \
+    || fail "the local commit was lost when the push was refused"
+pass "diverged remote is left alone"
+
+# A branch name is passed to git as a *refspec*, so `+master` is a force push:
+# ls-remote matches nothing, the code takes the first-push path, never fetches,
+# and the divergence check never runs. The source-grep guard cannot see this,
+# because `--force` never appears in it. Assert on the remote's tip instead.
+FORCEREPO="$WORK/forcerepo"; FORCEREMOTE="$WORK/forceremote.git"
+git init -q --bare "$FORCEREMOTE"
+export CB_GIT_DIR="$FORCEREPO" CB_GIT_REMOTE="$FORCEREMOTE" CB_GIT_PUSH=1 CB_GIT_BRANCH=master
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" 111122223333
+git clone -q -b master "$FORCEREMOTE" "$WORK/forceother"
+git -C "$WORK/forceother" -c user.name=o -c user.email=o@e commit -q --allow-empty -m "another writer"
+git -C "$WORK/forceother" push -q origin master
+tip_before=$(git -C "$FORCEREMOTE" rev-parse master)
+
+CB_GIT_BRANCH='+master'
+printf 'hotplug: disk\n' >> "$gstage/pve/qemu-server/100.conf"
+_cb_manifest "$gstage" "$gman"
+_cb_git_sync "$gstage" "$gman" 444455556666 2>/dev/null || true
+[[ $(git -C "$FORCEREMOTE" rev-parse master) == "$tip_before" ]] \
+    || fail "a '+branch' name force-pushed and destroyed the remote's history"
+CB_GIT_BRANCH=master
+pass "a branch name cannot smuggle in a force push"
+
+# The token must not end up persisted anywhere in the repository.
+grep -rq 'ghp_TESTTOKENVALUE' "$CB_GIT_DIR/.git/config" 2>/dev/null \
+    && fail "a token was written into .git/config"
+pass "no credential in .git/config"
+
+# --- 8. restore ------------------------------------------------------------
+
+# A live tree to restore onto, separate from the capture fixture so a mistake
+# here cannot quietly pass by restoring a file onto itself.
+LIVE=$(mktemp -d "$WORK/liveXXXXXX")
+cp -a "$FIX/." "$LIVE/"
+export CB_PVE_DIR="$LIVE/pve" CB_ROOT_DIR="$LIVE/root"
+export CB_ARCHIVE_DIR="$WORK/rar" CB_STATE_FILE="$WORK/rstate"
+export CB_GIT_ENABLED=0
+CB_CONFIRM=0; CB_SELECTOR=""
+
+tree_hash() { # tree_hash <dir> -> everything, including modes and absences
+    ( cd "$1" && find . \( -type f -o -type l \) ! -name '*.bak.*' -printf '%m %p\n' \
+        | LC_ALL=C sort
+      cd "$1" && find . -type f ! -name '*.bak.*' -print0 | LC_ALL=C sort -z | xargs -0 -r sha256sum
+    ) | sha256sum | awk '{print $1}'
+}
+
+_cb_capture_once >/dev/null
+BASE=$(_cb_state_get LAST_ARCHIVE)
+[[ -n $BASE ]] || fail "no baseline archive was produced"
+
+# Mutate the live host so a restore has something to do.
+printf 'MUTATED\n' >> "$LIVE/pve/qemu-server/100.conf"
+rm -f "$LIVE/pve/datacenter.cfg"
+MUTATED=$(tree_hash "$LIVE")
+
+# A dry run is the default, and it has to write nothing at all.
+CB_CONFIRM=0
+_cb_restore "$BASE" >/dev/null
+[[ $(tree_hash "$LIVE") == "$MUTATED" ]] || fail "a dry run modified the host"
+pass "restore is dry-run by default"
+
+# Apply, then check both directions of the change landed.
+CB_CONFIRM=1
+_cb_restore "$BASE" >/dev/null
+grep -q MUTATED "$LIVE/pve/qemu-server/100.conf" && fail "a differing file was not restored"
+[[ -f $LIVE/pve/datacenter.cfg ]] || fail "a missing file was not created"
+[[ -n $(_cb_state_get ROLLBACK_ARCHIVE) ]] || fail "no rollback point was recorded"
+[[ -z $(_cb_state_get RESTORE_IN_PROGRESS) ]] || fail "the in-progress marker was left set"
+pass "restore applies"
+
+# Non-pmxcfs writes leave a backup beside them; pmxcfs ones must not, because
+# those replicate to every node and count against the cluster's own quota.
+find "$LIVE/pve" -name '*.bak.*' | grep -q . && fail "a .bak file was written inside pmxcfs"
+pass "no backup sidecars inside pmxcfs"
+
+# Rollback is a sync: it has to undo the write AND delete what restore created.
+CB_CONFIRM=0
+_cb_rollback >/dev/null
+[[ -f $LIVE/pve/datacenter.cfg ]] || fail "a rollback dry run deleted a file"
+CB_CONFIRM=1
+_cb_rollback >/dev/null
+grep -q MUTATED "$LIVE/pve/qemu-server/100.conf" || fail "rollback did not restore the pre-restore content"
+[[ -e $LIVE/pve/datacenter.cfg ]] && fail "rollback left behind a file the restore created"
+[[ $(tree_hash "$LIVE") == "$MUTATED" ]] || fail "rollback did not reproduce the pre-restore tree exactly"
+pass "rollback is a faithful inverse"
+
+# These three replace tests that passed against the *unfixed* runner: one used
+# a path already in the archive (so never the live-only case), one asserted on
+# a file the fixture never created (so both asserts were vacuous), and one only
+# exercised the happy path in a scratch directory.
+
+# C1: a path genuinely absent from the snapshot, because the capture could not
+# read it - which rollback used to read as "the restore created this".
+if [[ $EUID -ne 0 ]]; then
+    secretfile="$LIVE/root/etc/cron.d/unreadable-job"
+    mkdir -p "$LIVE/root/etc/cron.d"
+    printf '0 * * * * root /bin/true\n' > "$secretfile"; chmod 000 "$secretfile"
+    # A subshell, because the runner's fail() calls exit - and this file
+    # sources the runner, so an unguarded call would end the test run.
+    ( _cb_capture_once ) >/dev/null 2>&1 && fail "a capture that could not read a file still succeeded"
+    chmod 644 "$secretfile"
+    ( _cb_capture_once ) >/dev/null 2>&1 || fail "a clean capture was refused"
+    pass "an unreadable file fails the capture rather than vanishing"
+fi
+
+# C2: the archive must actually contain the path for this to mean anything -
+# the previous version asserted on /etc/hosts, which the fixture never created.
+printf '127.0.0.1 localhost\n' > "$LIVE/root/etc/hosts"
+CB_TAKE_ERRORS=0; _cb_capture_once >/dev/null 2>&1
+SYMBASE=$(_cb_state_get LAST_ARCHIVE)
+[[ -n $SYMBASE ]] || fail "no archive for the symlink case"
+rm -f "$LIVE/root/etc/hosts"
+printf '127.0.0.1 localhost\n' > "$LIVE/root/etc/hosts.real"
+ln -sfn hosts.real "$LIVE/root/etc/hosts"
+CB_CONFIRM=1; CB_SELECTOR=""
+_cb_restore "$SYMBASE" >/dev/null 2>&1 || true
+[[ -L $LIVE/root/etc/hosts ]] \
+    || fail "a live symlink was replaced by a regular file - /etc/resolv.conf is this case on a real host"
+pass "a live symlink is not severed by a restore"
+
+# The temp file must not be traversable: cp -f follows a symlink planted at a
+# predictable name, writing the restored content through it.
+wtmp=$(mktemp -d "$WORK/wXXXXXX"); mkdir -p "$wtmp/d"
+printf 'ORIGINAL\n' > "$wtmp/sentinel"; printf 'NEW\n' > "$wtmp/src"
+for n in "$wtmp/d/f.pve-toolbox.$$" "$wtmp/d/f.pve-toolbox.1"; do ln -sfn "$wtmp/sentinel" "$n"; done
+_cb_write_file "$wtmp/src" "$wtmp/d/f" 0600 || fail "_cb_write_file failed"
+[[ $(cat "$wtmp/sentinel") == ORIGINAL ]] \
+    || fail "the write followed a planted symlink into an unrelated file"
+[[ ! -L $wtmp/d/f ]] || fail "the destination was left as a symlink"
+[[ $(cat "$wtmp/d/f") == NEW ]] || fail "the write did not land"
+[[ $(mode_of "$wtmp/d/f") == 600 ]] || fail "the mode was not applied"
+# The planted decoys are expected to remain; what must not remain is a temp
+# file of our own making.
+[[ -z $(find "$wtmp/d" -name 'f.??????' -type f) ]] || fail "a temp file was left behind"
+pass "writes are atomic and not traversable"
+
+# The selector must not match on a bare prefix: it scopes what rollback
+# deletes as well as what a restore writes.
+CB_SELECTOR="pve/f"
+_cb_selected "pve/firewall/cluster.fw" && fail "a truncated selector matched a longer path"
+CB_SELECTOR="pve/firewall"
+_cb_selected "pve/firewall/cluster.fw" || fail "the selector did not match its own subtree"
+_cb_selected "pve/firewall-extra.cfg" && fail "the selector matched a sibling by prefix"
+CB_SELECTOR=""
+pass "the selector matches path components, not prefixes"
+
+[[ $(grep -c . "$CB_ARCHIVE_DIR/restore.log") -ge 3 ]] || fail "the restore log has no record"
+grep -q 'rollback' "$CB_ARCHIVE_DIR/restore.log" || fail "the rollback was not logged"
+pass "restore log"
+
+# An unverifiable source is refused rather than warned about: restoring from a
+# corrupt archive is how a bad day becomes a worse one.
+CB_CONFIRM=1
+BAD="$CB_ARCHIVE_DIR/pve-config_${HOST_SHORT}_19700101T000000.tar.gz"
+cp "$CB_ARCHIVE_DIR/$BASE" "$BAD"
+printf 'corrupt' >> "$BAD"
+cp "$CB_ARCHIVE_DIR/$BASE.sha256" "$BAD.sha256"
+sed -i "s|$BASE|$(basename "$BAD")|" "$BAD.sha256"
+before=$(tree_hash "$LIVE")
+( _cb_restore "$(basename "$BAD")" ) >/dev/null 2>&1 && fail "a corrupt archive was accepted"
+[[ $(tree_hash "$LIVE") == "$before" ]] || fail "a refused restore still wrote something"
+rm -f "$BAD" "$BAD.sha256"
+
+NOSUM="$CB_ARCHIVE_DIR/pve-config_${HOST_SHORT}_19700102T000000.tar.gz"
+cp "$CB_ARCHIVE_DIR/$BASE" "$NOSUM"
+( _cb_restore "$(basename "$NOSUM")" ) >/dev/null 2>&1 && fail "an archive with no .sha256 was accepted"
+rm -f "$NOSUM"
+pass "unverifiable sources are refused"
+
+# No partial application: a hard pre-flight failure leaves the tree untouched.
+before=$(tree_hash "$LIVE")
+_cb_state_set RESTORE_IN_PROGRESS "$(date -Is)"
+( _cb_restore "$BASE" ) >/dev/null 2>&1 && fail "a restore started with one already in progress"
+[[ $(tree_hash "$LIVE") == "$before" ]] || fail "a refused restore wrote to the host"
+_cb_state_set RESTORE_IN_PROGRESS ""
+pass "a stale in-progress marker blocks a restore"
+
+# The node check is the stated safety gate for same-node restore.
+before=$(tree_hash "$LIVE")
+OTHER=$(mktemp -d "$WORK/otherXXXXXX")
+tar -C "$OTHER" -xzf "$CB_ARCHIVE_DIR/$BASE"
+printf 'node=some-other-host\n' > "$OTHER/meta/capture.txt"
+( CB_SRC_DIR=$OTHER CB_SRC_NODE=some-other-host
+  plan=$(mktemp); _cb_restore_plan "$plan"
+  _cb_restore_preflight "$plan" ) >/dev/null 2>&1 \
+    && fail "a restore from another node was allowed without --target-node"
+[[ $(tree_hash "$LIVE") == "$before" ]] || fail "a refused cross-node restore wrote something"
+pass "cross-node restore is blocked"
+
+# never-class paths are hard-blocked, and --force does not lift it.
+CB_FORCE=1
+( CB_SRC_DIR=$(mktemp -d "$WORK/nevXXXXXX")
+  mkdir -p "$CB_SRC_DIR/pve"
+  printf 'tampered\n' > "$CB_SRC_DIR/pve/corosync.conf"
+  plan=$(mktemp); _cb_restore_plan "$plan"
+  grep -q '^skip	pve/corosync.conf' "$plan" || exit 1 ) \
+    || fail "corosync.conf was not skipped, even with --force"
+CB_FORCE=0
+pass "never-class survives --force"
+
+# The class comes from the current table, not from the archive's manifest, so
+# a path reclassified since cannot be resurrected by an old archive.
+( CB_SRC_DIR=$(mktemp -d "$WORK/oldXXXXXX")
+  mkdir -p "$CB_SRC_DIR/pve/priv"
+  printf 'key\n' > "$CB_SRC_DIR/pve/priv/authkey.key"
+  plan=$(mktemp); _cb_restore_plan "$plan"
+  grep -q '^skip	pve/priv/authkey.key	never' "$plan" || exit 1 ) \
+    || fail "class was taken from the archive rather than re-derived"
+pass "class is re-derived, not trusted"
+
+# A held lock must stop a restore loudly. Exiting 0 there would tell an
+# operator who ran --confirm that it worked when nothing happened.
+flock -n "$CB_LOCK_DIR/pve-config-backup.lock" sleep 5 &
+holder=$!
+sleep 0.3
+( _cb_take_lock ) && fail "the lock was handed out twice"
+kill "$holder" 2>/dev/null || true
+wait "$holder" 2>/dev/null || true
+pass "the lock is exclusive"
+
+# --- 9. cross-node transform ----------------------------------------------
+
+# A pmxcfs-shaped fixture: the real collector never produces the flat
+# pve/qemu-server layout, because those are symlinks into nodes/<local>/.
+xn_fixture() { # xn_fixture -> sets XSRC to a fresh staged tree
+    XSRC=$(mktemp -d "$WORK/xnXXXXXX")
+    mkdir -p "$XSRC/pve/nodes/pve1/qemu-server" "$XSRC/pve/nodes/pve1/lxc" \
+             "$XSRC/meta" "$XSRC/host/etc/network"
+    cat > "$XSRC/pve/nodes/pve1/qemu-server/100.conf" <<'CONF'
+cores: 4
+memory: 100
+name: web01
+net0: virtio=AA:BB:CC:11:22:33,bridge=vmbr0,firewall=1,tag=100
+net1: e1000-82545em=AA:BB:CC:11:22:34,bridge=vmbr1,mtu=9000
+scsi0: local-lvm:vm-100-disk-0,size=32G
+scsi1: local:100/vm-100-disk-1.qcow2,size=100G
+efidisk0: local-lvm:vm-100-disk-2,efitype=4m,size=1M
+unused0: local-lvm:vm-100-disk-9
+vmstate: local-lvm:vm-100-state-snap
+
+[snap]
+memory: 100
+net0: virtio=AA:BB:CC:11:22:33,bridge=vmbr0
+scsi0: local-lvm:vm-100-disk-0,size=32G
+CONF
+    # Real pct syntax. The old fixture wrote `net0: veth=<mac>,...`, which pct
+    # never emits - so the MAC assertion was validating the implementation
+    # against itself while --regenerate-macs did nothing to any container.
+    cat > "$XSRC/pve/nodes/pve1/lxc/200.conf" <<'CONF'
+arch: amd64
+rootfs: local-lvm:subvol-200-disk-0,size=8G
+mp0: local:200/vm-200-disk-1.raw,mp=/data
+net0: name=eth0,bridge=vmbr0,firewall=1,hwaddr=BC:24:11:11:22:33,ip=dhcp,type=veth
+net1: name=eth1,bridge=vmbr0,hwaddr=BC:24:11:44:55:66,ip=10.0.0.5/24,type=veth
+CONF
+    printf 'name: gpu\nhostpci0: 0000:01:00.0,pcie=1\n' > "$XSRC/pve/nodes/pve1/qemu-server/300.conf"
+    printf 'dir: local\n\tnodes pve1,pve2\n' > "$XSRC/pve/storage.cfg"
+    printf 'auto vmbr0\n' > "$XSRC/host/etc/network/interfaces"
+    printf 'node=pve1\n' > "$XSRC/meta/capture.txt"
+}
+
+XLIVE=$(mktemp -d "$WORK/xliveXXXXXX"); mkdir -p "$XLIVE/pve/nodes/pve2"
+# HOST_SHORT is what the guard compares --target-node against, so the fixture
+# has to pretend to be pve2 rather than whatever machine runs the tests.
+xn_run() {
+    CB_SRC_DIR=$XSRC CB_SRC_NODE=pve1 CB_PVE_DIR="$XLIVE/pve" HOST_SHORT=pve2 \
+    _cb_transform >/dev/null 2>&1
+}
+
+# /etc/pve is a cluster filesystem: nodes/ holds a directory per member and
+# the collector takes it whole, so more than one is the normal case on any
+# clustered host. Refusing it made cross-node restore impossible from exactly
+# the topology the feature exists for - and the fixture only ever built one
+# node, so nothing in the suite could see it.
+xn_fixture
+mkdir -p "$XSRC/pve/nodes/pve7/qemu-server" "$XSRC/pve/nodes/pve8/qemu-server"
+printf 'name: other7\n' > "$XSRC/pve/nodes/pve7/qemu-server/700.conf"
+printf 'name: other8\n' > "$XSRC/pve/nodes/pve8/qemu-server/800.conf"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run ) \
+    || fail "a clustered archive was refused"
+[[ -f $XSRC/pve/nodes/pve2/qemu-server/100.conf ]] \
+    || fail "the source node's guest did not reach the target"
+[[ -e $XSRC/pve/nodes/pve7 || -e $XSRC/pve/nodes/pve8 ]] \
+    && fail "another node's guests survived the transform"
+pass "a clustered archive transforms, and other nodes are dropped"
+
+# cp -a resolves through a symlinked node directory, materialising files from
+# outside the archive as regular files before the restore plan can apply its
+# own symlink guard.
+xn_fixture
+outside=$(mktemp -d "$WORK/outsideXXXXXX"); mkdir -p "$outside/qemu-server"
+printf 'name: evil\n' > "$outside/qemu-server/999.conf"
+rm -rf "$XSRC/pve/nodes/pve1"; ln -s "$outside" "$XSRC/pve/nodes/pve1"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run ) \
+    && fail "a symlinked node directory was transformed"
+[[ -e $XSRC/pve/nodes/pve2/qemu-server/999.conf ]] \
+    && fail "a file from outside the archive was staged"
+pass "a symlinked node directory is refused"
+
+# A guest's own <vmid>.fw is not cluster-shared - dropping it brings the guest
+# up on the target with no firewall at all.
+xn_fixture
+mkdir -p "$XSRC/pve/firewall"
+printf '[OPTIONS]\npolicy_in: DROP\n' > "$XSRC/pve/firewall/100.fw"
+printf '[OPTIONS]\n' > "$XSRC/pve/firewall/cluster.fw"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run )
+[[ -e $XSRC/pve/firewall/100.fw ]] || fail "a guest's own firewall rules were dropped as cluster-wide"
+[[ -e $XSRC/pve/firewall/cluster.fw ]] && fail "cluster.fw was not blocked"
+pass "guest firewall rules survive, cluster.fw does not"
+
+# A typo in dr mode used to reach the per-guest check and drop that guest with
+# a line in the report, rather than refusing before anything ran.
+xn_fixture
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1
+  CB_MAP_VMID=([100]=1O0); xn_run ) && fail "a non-numeric --map-vmid was accepted in dr mode"
+pass "--map-vmid is validated in both modes"
+
+# A storage ID may contain a dot, which is a wildcard in the ERE the mapping
+# is interpolated into.
+xn_fixture
+printf 'name: x\nscsi9: localXssd:vm-100-disk-9\n' >> "$XSRC/pve/nodes/pve1/qemu-server/100.conf"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1
+  CB_MAP_STORAGE=([local.ssd]=nas); xn_run )
+grep -q 'localXssd:' "$XSRC/pve/nodes/pve2/qemu-server/100.conf" \
+    || fail "a dot in a storage map key matched any character"
+pass "map keys are escaped before they reach sed"
+
+# --target-node has to name this host. Writing another node's sshd_config or
+# cron.d through a shared /etc/pve would land on the wrong machine, and the
+# rollback point would be recorded on the wrong machine too.
+xn_fixture
+( CB_TARGET_NODE=somewhere-else CB_XN_MODE=dr CB_XN_SOURCE_GONE=1
+  CB_SRC_DIR=$XSRC CB_SRC_NODE=pve1 CB_PVE_DIR="$XLIVE/pve" HOST_SHORT=pve2
+  _cb_transform ) >/dev/null 2>&1 && fail "--target-node accepted a node that is not this host"
+pass "cross-node writes only to this host"
+
+# dr mode reuses the source's identities, and the tool cannot tell a dead node
+# from a partitioned one.
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=0
+  CB_SRC_DIR=$XSRC CB_SRC_NODE=pve1 CB_PVE_DIR="$XLIVE/pve" HOST_SHORT=pve2
+  _cb_transform ) >/dev/null 2>&1 && fail "dr mode ran without acknowledging the source is gone"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=clone CB_XN_VMID_OFFSET=0
+  CB_SRC_DIR=$XSRC CB_SRC_NODE=pve1 CB_PVE_DIR="$XLIVE/pve" HOST_SHORT=pve2
+  _cb_transform ) >/dev/null 2>&1 && fail "clone mode ran without a VMID remap"
+pass "the modes demand what they need"
+
+# The whole transform, with every mapping on.
+xn_fixture
+( CB_TARGET_NODE=pve2 CB_XN_MODE=clone CB_XN_VMID_OFFSET=1000 CB_XN_REGEN_MACS=1
+  CB_MAP_STORAGE=([local]=nas) CB_MAP_BRIDGE=([vmbr0]=vmbr9)
+  xn_run )
+Q="$XSRC/pve/nodes/pve2/qemu-server/1100.conf"
+L="$XSRC/pve/nodes/pve2/lxc/1200.conf"
+[[ -f $Q ]] || fail "the qemu config was not moved to the target node and renamed"
+[[ -f $L ]] || fail "the lxc config was not moved to the target node and renamed"
+[[ -d $XSRC/pve/nodes/pve1 ]] && fail "the source node directory survived"
+pass "node path and VMID rename"
+
+# A bare numeric substitution would have destroyed both of these.
+grep -q '^memory: 100$' "$Q" || fail "memory: 100 was rewritten by the VMID remap"
+grep -q 'tag=100' "$Q"      || fail "the VLAN tag 100 was rewritten by the VMID remap"
+# Every volume-bearing key, including the ones that are easy to forget.
+grep -q 'vm-1100-disk-0' "$Q"      || fail "scsi0 volume not rewritten"
+grep -q 'nas:1100/vm-1100-disk-1' "$Q" || fail "the vmid in the directory prefix was not rewritten"
+grep -q 'efidisk0: local-lvm:vm-1100-disk-2' "$Q" || fail "efidisk not rewritten"
+grep -q 'unused0: local-lvm:vm-1100-disk-9'  "$Q" || fail "unused disk not rewritten"
+grep -q 'vmstate: local-lvm:vm-1100-state'   "$Q" || fail "vmstate not rewritten"
+grep -q 'subvol-1200-disk-0' "$L"  || fail "the lxc rootfs subvol was not rewritten"
+grep -q 'nas:1200/vm-1200-disk-1' "$L" || fail "the lxc mount point was not rewritten"
+# The snapshot stanza carries its own copy of every disk line.
+awk '/^\[snap\]/{s=1} s' "$Q" | grep -q 'vm-1100-disk-0' \
+    || fail "the snapshot section was not rewritten"
+pass "volume tokens only"
+
+# Anchored on the field, so a storage whose name merely contains the mapped one
+# is left alone.
+grep -q '^scsi0: local-lvm:' "$Q" || fail "local-lvm was clobbered by the 'local' mapping"
+grep -q '^scsi1: nas:'       "$Q" || fail "the 'local' storage was not mapped"
+pass "storage mapping is anchored"
+
+# The MAC is the value of the model key; everything after it survives.
+grep -qE '^net0: virtio=BC:24:11:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2},bridge=vmbr9,firewall=1,tag=100$' "$Q" \
+    || fail "the regenerated net0 line lost its model or its options: $(grep '^net0:' "$Q")"
+grep -qE '^net0: name=eth0,bridge=vmbr9,firewall=1,hwaddr=BC:24:11:[0-9A-F]{2}:[0-9A-F]{2}:[0-9A-F]{2},ip=dhcp,type=veth$' "$L" \
+    || fail "the lxc hwaddr was not regenerated, or the rest of the line moved: $(grep '^net0:' "$L")"
+grep -qE '^net1: e1000-82545em=BC:24:11:' "$Q" \
+    || fail "a hyphenated NIC model was skipped: $(grep '^net1:' "$Q")"
+pass "MAC regeneration keeps the rest of the line"
+
+# Hardware and identity that did not move with the config.
+[[ -e $XSRC/host/etc/network/interfaces ]] && fail "interfaces survived a cross-node restore"
+# Shared by the whole cluster: installing the source's copy would delete every
+# entry this cluster has that the source lacked.
+[[ -e $XSRC/pve/storage.cfg ]] && fail "storage.cfg was not blocked on a cross-node restore"
+pass "auto-exclusions and cluster-wide blocks"
+
+# hostpci names a PCI address on the source machine.
+[[ -e $XSRC/pve/nodes/pve2/qemu-server/1300.conf ]] && fail "a hostpci guest was not blocked"
+pass "hostpci guests are blocked"
+
+# A VMID already live on another node is a collision; one under the source
+# node's own tree is not, because a dead node's tree survives and dr mode
+# exists to reuse exactly that VMID.
+xn_fixture
+mkdir -p "$XLIVE/pve/nodes/pve3/qemu-server"
+printf 'name: existing\n' > "$XLIVE/pve/nodes/pve3/qemu-server/100.conf"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run )
+[[ -e $XSRC/pve/nodes/pve2/qemu-server/100.conf ]] \
+    && fail "a VMID live on another node was not treated as a collision"
+mkdir -p "$XLIVE/pve/nodes/pve1/qemu-server"
+printf 'name: stale\n' > "$XLIVE/pve/nodes/pve1/qemu-server/200.conf"
+xn_fixture
+( CB_TARGET_NODE=pve2 CB_XN_MODE=dr CB_XN_SOURCE_GONE=1; xn_run )
+[[ -e $XSRC/pve/nodes/pve2/lxc/200.conf ]] \
+    || fail "a stale entry under the dead source node was treated as a collision"
+rm -rf "$XLIVE/pve/nodes/pve3" "$XLIVE/pve/nodes/pve1"
+pass "VMID collisions distinguish live from stale"

@@ -14,16 +14,29 @@ Module      config-backup
 Helper      /usr/local/bin/pve-config-backup
 Config      /etc/pve-toolbox/config-backup.conf      (0600)
 Archives    /var/lib/pve-toolbox/config-backup/      (0700 dir, 0600 per file)
+Git repo    /var/lib/pve-toolbox/config-backup.git/  (0700, optional)
 State       /var/lib/pve-toolbox/config-backup.state (0644)
 Unit        pve-toolbox-config-backup.{service,timer}
 ```
 
-!!! warning "This release captures; it does not restore"
+## Two backends
 
-    Every archived path already carries a restore class, written from the same
-    table the restore side will read back. The writer that acts on those
-    classes lands in a later release. Until then the archives are read with
-    `tar -xzf`, by hand, deliberately.
+| | `local` | `git` |
+| --- | --- | --- |
+| Produces | one `tar.gz` per change, with `.sha256` and `.manifest` | one commit per change |
+| Answers | "give me the whole host as it was on the 4th" | "what changed, and when" |
+| Retention | `CB_RETENTION_COUNT` / `CB_RETENTION_DAYS` | none — history is the point |
+| Holds | everything captured | configuration only |
+
+Either can be turned off, but not both. They share one capture: the tree is
+collected, classified, scanned and hashed once, and only then handed to
+whichever backends are enabled.
+
+!!! warning "A cross-node restore has to be asked for explicitly"
+
+    A source whose recorded node does not match this host is blocked until you
+    say `--target-node` and pick a mode. Nothing is inferred, because the two
+    modes have opposite consequences.
 
 ## What is captured
 
@@ -153,6 +166,220 @@ ran into a comment on every dump, JSON is re-serialised through `jq -S`, and
     the hash, on top of everything already classified reference-only. Reach for
     it when something under `pve/` or `host/` turns out to churn on its own.
 
+## Git history
+
+`CB_GIT_ENABLED=1` maintains a working clone whose history *is* the
+configuration's history. A commit happens only when the content hash moved, so
+`git log` is a list of real changes rather than a list of times the timer
+fired.
+
+**The git tree holds configuration only.** Everything classified reference-only
+— `derived/`, `resolved/`, `firewall-live/`, `meta/` — is excluded. Those are
+regenerated dumps, and `resolved/` in particular is a *recomputed* view: a PVE
+upgrade can change a resolved default with no operator edit behind it, and
+committing that makes the history a worse answer to "what changed" than no
+history at all. They stay in the archives, which is where the diagnostic value
+was always meant to live.
+
+`CB_VOLATILE_SECTIONS` widens that exclusion for anything under `pve/` or
+`host/` that turns out to churn on a particular host.
+
+!!! danger "`secrets/*` never reaches git"
+
+    The local backend prunes; git has no retention, and a pushed blob is
+    permanent — scrubbing one means rewriting remote history. Encrypted or not,
+    that is not a decision to make on an operator's behalf. Secrets stay in the
+    archives, under `CB_RETENTION_*`.
+
+### Pushing
+
+Set `CB_GIT_REMOTE` and `CB_GIT_PUSH=1`. Two rules:
+
+- **Never a force push.** If the remote branch has commits this host does not,
+  the snapshot is still committed locally, the remote is left exactly as it
+  was, and a warning goes to Discord. Reconcile by hand — an automated
+  reconciliation of two divergent configuration histories is a way to lose one
+  of them.
+- **Nothing can block.** Every git call runs with `GIT_TERMINAL_PROMPT=0` and
+  ssh `BatchMode=yes`, under a `timeout`. A passphrase-protected deploy key
+  fails fast instead of hanging a timer forever.
+
+For SSH, point `CB_GIT_SSH_KEY` at a deploy key. For HTTPS, put the token in a
+file and set `CB_GIT_TOKEN_FILE` — it is read through a credential helper when
+git asks, so the value never reaches `.git/config`, the process table or the
+journal.
+
+!!! warning "Do not put a credential in the remote URL"
+
+    `https://<token>@host/repo.git` is the habitual way to configure a remote,
+    and install refuses it — along with any other userinfo, and any `http://`
+    remote, which would send both the token and the whole host configuration in
+    cleartext. Git would otherwise write the credential verbatim into
+    `.git/config`, re-apply it on every run, and print it in `status --long`.
+
+```bash
+pve-config-backup log          # commit history
+git -C /var/lib/pve-toolbox/config-backup.git log -p --follow pve/storage.cfg
+```
+
+## Restoring
+
+Four stages, and you have to pass through them in order:
+
+```bash
+pve-config-backup inspect latest              # what does this source hold
+pve-config-backup diff    latest              # what would change
+pve-config-backup restore latest              # dry run - shows the plan
+pve-config-backup restore latest --confirm    # actually write
+pve-config-backup rollback --confirm          # undo it
+```
+
+`restore` and `rollback` are **dry runs unless you say `--confirm`**. A second
+argument narrows the operation to a path prefix:
+
+```bash
+pve-config-backup restore latest pve/firewall --confirm
+```
+
+### Nothing is written until everything checks out
+
+Every pre-flight check runs before the first byte. A restore that fails half
+way through is worse than one that never started, so a hard failure aborts with
+the host untouched:
+
+| Check | |
+| --- | --- |
+| The source verifies against its `.sha256` | hard — no sidecar is also a refusal |
+| The source's node matches this host | hard |
+| Nothing selected is class `never` | hard, and `--force` does not lift it |
+| pmxcfs is mounted and writable | hard, when any `pmxcfs`/`guest` path is selected |
+| The target's parent directory exists | hard — a missing parent usually means the subsystem is gone, and creating a path nothing reads gives false confidence |
+| No earlier restore left an in-progress marker | hard |
+| A selected guest is running | warning — the live process keeps its own device set |
+| The target is a symlink | warning — it would be replaced by a regular file |
+
+The restore class is re-derived from the current table, never read out of the
+archive's manifest. An archive written before a path was reclassified must not
+be able to resurrect it.
+
+### The rollback point
+
+A **full snapshot is taken first, unconditionally**, before anything is
+written, and its name is recorded. If that snapshot fails, the restore does
+not happen — a restore with no way back is not one worth having.
+
+`rollback` is a *sync*, not a replay. It restores what changed **and deletes
+what the restore created**: a file that did not exist beforehand is by
+definition absent from the snapshot, so replaying the snapshot alone would
+leave it behind forever. It also reuses the selector the restore ran with, so
+rolling back a scoped restore does not revert unrelated edits made since.
+
+### Nothing is reloaded
+
+Writing a file is reversible. Applying a bad network configuration to a host
+you reach over that network is not. So the summary prints the commands and
+leaves them to you:
+
+```
+Nothing was reloaded. Run these yourself when you are ready:
+  ifreload -a   # or: systemctl restart networking
+  systemctl reload ssh
+```
+
+It also says when a reboot is warranted — `modprobe.d/`, the kernel command
+line, GRUB, `fstab` and `crypttab` only take effect at boot.
+
+`pmxcfs` writes are re-read afterwards, because that is the one place PVE
+parses on our behalf and so the one place a write can be confirmed rather than
+assumed.
+
+Every restore appends to `/var/lib/pve-toolbox/config-backup/restore.log`
+(0600) — when, from which source, at which hash, with which rollback point, and
+how it ended. The marker is written *before* the first write, so an interrupted
+restore leaves evidence rather than looking like it never happened.
+
+!!! warning "Known limits of the same-node check"
+
+    The node check compares `hostname -s`. A rebuilt machine that kept its name
+    passes it, even though its disks and storage are entirely different.
+    `storage.cfg` is not reconciled against the live LVM or ZFS backends, and
+    `fstab` UUIDs are not checked against `blkid` — a stale UUID surfaces at the
+    next boot. Read the `diff` before you `--confirm`.
+
+## Restoring onto a different node
+
+Between extracting the source and planning the restore, a **transform layer**
+rewrites the staged tree to describe the target instead of the source, and
+prints a full report before anything is written.
+
+```bash
+# the source node is gone; keep its identities
+pve-config-backup restore latest --target-node pve2 \
+    --mode dr --source-node-gone --confirm
+
+# the source node is alive; everything must be regenerated
+pve-config-backup restore latest --target-node pve2 \
+    --mode clone --vmid-offset 1000 --regenerate-macs \
+    --map-storage local=nas --map-bridge vmbr0=vmbr9 --confirm
+```
+
+| Transform | What moves |
+| --- | --- |
+| node path | `nodes/<src>/` → `nodes/<tgt>/`, with the source node read from the staged tree rather than trusted from metadata |
+| `--map-storage A=B` | anchored on the field (`^key: A:`), so mapping `local` leaves `local-lvm` and `my-local` alone |
+| `--map-bridge A=B` | `bridge=A` in a `netN:` line; the model, MAC, tag and firewall options survive byte for byte |
+| `--vmid-offset N`, `--map-vmid A=B` | the filename and the `vm-<id>-`, `subvol-<id>-` and `<id>/` tokens — never a bare number, which would rewrite `memory: 100` and `tag=100` |
+| `--regenerate-macs` | the MAC in both serialisations — qemu's `net0: <model>=<mac>,…` and LXC's `hwaddr=<mac>`. One new address per old one, so an interface keeps the same MAC in the running config and in every snapshot stanza |
+
+Covers qemu (`scsiN`, `ideN`, `virtioN`, `sataN`, `efidiskN`, `tpmstateN`,
+`unusedN`, `vmstate`) and LXC (`rootfs`, `mpN`), and reaches inside `[snapshot]`
+and `[PENDING]` sections, which carry their own copies of every disk line.
+
+### What it refuses to do
+
+Refusing beats a transform that is right most of the time.
+
+- **`--target-node` must name this host.** A cross-node restore still writes
+  host-level files — `sshd_config`, `cron.d`, custom units — through *this*
+  machine's filesystem, and records its rollback point in *this* machine's
+  state. Naming a different node would put both on the wrong box. SSH to the
+  target and run it there.
+- **Cluster-shared files are blocked, and `--force` does not lift it.**
+  `storage.cfg`, `datacenter.cfg`, `user.cfg`, `jobs.cfg`, `firewall/cluster.fw`,
+  `sdn/` and `ha/` are one file for the whole cluster. A guest's own
+  `firewall/<vmid>.fw` is not, and travels with it. A restore installs a whole
+  file, so restoring another node's copy would delete every entry this cluster
+  has that the source lacked — instantly, on every node. Doing it correctly
+  needs per-entry merge semantics this tool does not have.
+- **A VMID-remapped guest is `degraded`, never `restorable`.** The config is
+  rewritten; the volumes are not, because nothing here touches storage. A guest
+  renamed 100 → 1100 refers to `vm-1100-disk-0` while the volume is still
+  called `vm-100-disk-0`. Move the volumes first; the report names them.
+- **An archive from a cluster keeps only its own node.** `/etc/pve/nodes/`
+  holds a directory per member, so an archive taken on a cluster contains every
+  node's guests. The transform keeps the source node's and drops the rest —
+  they belong to a live machine and must never be written here. An archive that
+  does not record which node it came from is refused rather than guessed at, as
+  is one whose `nodes/` entry is a symlink.
+- **`--mode dr` requires `--source-node-gone`.** DR mode deliberately reuses
+  the source's VMIDs, MACs and IPs. This tool cannot tell a dead node from a
+  partitioned one, and guessing wrong puts a second guest with a duplicate
+  identity on the same network, possibly writing to the same shared storage.
+
+### Dropped automatically
+
+Whatever the flags say, because they describe hardware or identity that did not
+move: `interfaces` and `interfaces.d/` (NIC naming), `fstab` and `crypttab`
+(UUIDs), `modprobe.d/`, `modules-load.d/`, GRUB and the kernel command line
+(PCI addresses), `hostname`, `hosts`, and SSH host keys.
+
+A guest with any `hostpci*` line is **blocked** — the PCI address it names is a
+fact about the source machine.
+
+A VMID already live on *another* node is a collision and blocks that guest. One
+found under the source node's own directory is not: a dead node's tree survives
+in pmxcfs, and reusing that VMID is exactly what DR mode is for.
+
 ## Retention
 
 ```
@@ -210,6 +437,14 @@ routine and a channel that pings on every edit stops being read.
 | `CB_SECRET_ALLOW` | `pve/user.cfg:credential derived/dpkg-selections.txt:credential` | Space-separated path globs the secret scan may ignore |
 | `CB_RUN_NOW` | `n` | Take the first snapshot at the end of the install |
 | `CB_TEST_NOTIFY` | `y` | Send a test notification during install |
+| `CB_LOCAL_ENABLED` | `y` | Keep `tar.gz` archives |
+| `CB_GIT_ENABLED` | `n` | Keep a git history |
+| `CB_GIT_DIR` | `/var/lib/pve-toolbox/config-backup.git` | Working clone |
+| `CB_GIT_REMOTE` | — | Push target; must not embed a credential |
+| `CB_GIT_BRANCH` | `master` | Branch to commit on |
+| `CB_GIT_PUSH` | `n` | Push after each commit |
+| `CB_GIT_SSH_KEY` | — | Deploy key for an ssh remote |
+| `CB_GIT_TOKEN_FILE` | — | File holding a token, for an https remote |
 
 ```bash
 CB_WEBHOOK='https://discord.com/api/webhooks/123/abc' \
@@ -231,6 +466,9 @@ pve-config-backup run              # capture now
 pve-config-backup run --dry-run    # classify and hash, write nothing
 pve-config-backup run --force      # archive even if nothing changed
 pve-config-backup list             # archives newest first
+pve-config-backup log              # commit history, when git is enabled
+pve-config-backup inspect latest   # what a source holds
+pve-config-backup diff latest      # what restoring it would change
 pve-config-backup --test           # send a test notification
 ```
 
