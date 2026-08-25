@@ -153,8 +153,8 @@ list=$(launch ./pve-toolbox list)
 while read -r mod; do
     [[ $list == *"$mod"* ]] || fail "list did not mention $mod"
 done < <(launch ./pve-toolbox _complete modules)
-[[ $(launch ./pve-toolbox list | grep -c 'status: not installed') -eq 3 ]] \
-    || fail "expected three uninstalled modules in list"
+[[ $(launch ./pve-toolbox list | grep -c 'status: not installed') -eq 4 ]] \
+    || fail "expected four uninstalled modules in list"
 [[ -z $(launch ./pve-toolbox _complete installed) ]] \
     || fail "_complete installed named a module in a bare checkout"
 pass "nothing reads as installed in a checkout"

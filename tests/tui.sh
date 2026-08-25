@@ -58,7 +58,7 @@ fi
 # every module's title, so matching one proves nothing. Assert the ordering
 # here, where it is cheap and fails before anything is driven, rather than
 # finding out by answering a prompt belonging to another module.
-want=3
+want=4
 got=$(./pve-toolbox _complete modules | grep -nx 'zfs-scrub' | cut -d: -f1)
 if [[ $got != "$want" ]]; then
     printf 'FAIL tui.exp expects zfs-scrub at row %s of the module list, found %s\n' \

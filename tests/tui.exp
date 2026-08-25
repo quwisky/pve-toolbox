@@ -100,7 +100,7 @@ if {[info exists env(TUI_TEST_ROOT)] && $env(TUI_TEST_ROOT) == 1} {
     need {Install or reconfigure modules} "menu, for the prompt case"
     send -- "\r"
     need {Space toggles} "install checklist"
-    send -- "\033\[B\033\[B"
+    send -- "\033\[B\033\[B\033\[B"
     send -- " "
     send -- "\r"
     need {continue anyway} "a module prompt reaches the terminal"
