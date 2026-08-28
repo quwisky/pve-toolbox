@@ -1,6 +1,27 @@
 # Getting started
 
-## Install
+## Install on PVE 9
+
+The signed APT repository supports PVE 9 / Debian 13 (`trixie`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/quwisky/pve-toolbox/master/scripts/install-apt.sh | bash
+pve-toolbox
+```
+
+The bootstrap installs a key at `/etc/apt/keyrings/pve-toolbox.gpg`, writes a
+deb822 source at `/etc/apt/sources.list.d/pve-toolbox.sources`, and installs the
+package. Normal `apt upgrade` runs then keep it current. See
+[APT repository](apt-repository.md) for the manual setup and package layout.
+
+If `/usr/local/bin/pve-toolbox` still points to an older checkout, it precedes
+`/usr/bin` in the default root `PATH`. Package installation warns about that
+symlink but never removes it automatically; verify the packaged command and
+remove the old symlink yourself.
+
+## Git checkout
+
+PVE 8 hosts use the checkout path, which remains fully supported:
 
 ```bash
 git clone https://github.com/quwisky/pve-toolbox.git /opt/pve-toolbox
@@ -23,20 +44,23 @@ pve-toolbox update [mod]...    update (all installed if none given)
 pve-toolbox check [mod]...     report available updates, change nothing
 pve-toolbox status [mod]       detailed status
 pve-toolbox uninstall <mod>...
-pve-toolbox self-update        git pull this checkout
+pve-toolbox self-update        git pull this checkout (git installs only)
+pve-toolbox --version          print the installed version
 ```
 
 Flags: `-y` non-interactive (modules read their env vars instead of
-prompting), `-f` force, `-h` help.
+prompting), `-f` force, `-V` version, `-h` help.
 
 ## Shell completion
 
-`pve-toolbox link` also symlinks completions for bash and zsh into
+The Debian package installs completions directly. For a checkout,
+`pve-toolbox link` symlinks completions for bash and zsh into
 `/usr/share/bash-completion/completions/` and
 `/usr/share/zsh/vendor-completions/`. A directory that is not there is skipped
 rather than created, so if you install zsh later, run `link` again. They are
 symlinks into the checkout, so `self-update` refreshes them with everything
-else.
+else. Packaged installs refuse `link` and `self-update` because those commands
+would overwrite dpkg-owned paths; use `apt upgrade pve-toolbox` instead.
 
 Open a new shell, then:
 

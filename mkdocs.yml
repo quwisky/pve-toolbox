@@ -61,6 +61,7 @@ plugins:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - APT repository: apt-repository.md
   - Modules:
       - Overview: modules/index.md
       - config-backup: modules/config-backup.md

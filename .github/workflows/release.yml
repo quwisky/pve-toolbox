@@ -1,0 +1,135 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build package and publish APT repository
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential debhelper devscripts reprepro shellcheck python3-pip rsync
+          pip install -r docs/requirements.txt
+
+      - name: Resolve release version
+        run: |
+          package_version=$(cat VERSION)
+          test "$package_version" = "$(dpkg-parsechangelog -S Version)"
+
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$GITHUB_REF" != refs/heads/master ]; then
+              echo "manual releases must run from master" >&2
+              exit 1
+            fi
+            release_tag="v$package_version"
+            if git ls-remote --exit-code --tags origin "refs/tags/$release_tag" \
+              >/dev/null 2>&1; then
+              echo "release tag already exists: $release_tag" >&2
+              exit 1
+            fi
+          else
+            release_tag=$GITHUB_REF_NAME
+            test "${release_tag#v}" = "$package_version"
+          fi
+
+          echo "PACKAGE_VERSION=$package_version" >> "$GITHUB_ENV"
+          echo "RELEASE_TAG=$release_tag" >> "$GITHUB_ENV"
+
+      - name: Test and build
+        run: |
+          make lint
+          PACKAGING_TEST_REQUIRED=1 REPOSITORY_TEST_REQUIRED=1 make test
+          mkdocs build --strict
+          dpkg-buildpackage --build=binary --no-sign
+          mkdir -p dist
+          cp "../pve-toolbox_${PACKAGE_VERSION}_all.deb" dist/
+          (cd dist && sha256sum ./*.deb > SHA256SUMS)
+
+      - name: Import repository signing key
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          test -n "$APT_SIGNING_KEY"
+          printf '%s' "$APT_SIGNING_KEY" | gpg --batch --import
+          fingerprint=$(gpg --batch --with-colons --list-secret-keys \
+            | awk -F: '$1 == "fpr" { print $10; exit }')
+          test -n "$fingerprint"
+          echo "APT_SIGNING_FINGERPRINT=$fingerprint" >> "$GITHUB_ENV"
+
+      - name: Check out repository history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git ls-remote --exit-code --heads origin apt >/dev/null 2>&1; then
+            git clone --depth 1 --branch apt \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apt-repo
+          else
+            mkdir apt-repo
+            git -C apt-repo init
+            git -C apt-repo remote add origin \
+              "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          fi
+
+      - name: Publish signed repository
+        run: |
+          ./scripts/publish-apt-repo.sh \
+            apt-repo "dist/pve-toolbox_${PACKAGE_VERSION}_all.deb" \
+            "$APT_SIGNING_FINGERPRINT" keys/pve-toolbox.asc
+          git -C apt-repo config user.name github-actions[bot]
+          git -C apt-repo config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git -C apt-repo add --all
+          git -C apt-repo commit -m "chore(repo): publish ${RELEASE_TAG}" \
+            || { echo "release is already published"; exit 1; }
+          git -C apt-repo push origin HEAD:apt
+
+      - name: Attach package to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+              echo "GitHub release already exists: $RELEASE_TAG" >&2
+              exit 1
+            fi
+            gh release upload "$RELEASE_TAG" dist/* --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              --target "$GITHUB_SHA" \
+              --title "$RELEASE_TAG" \
+              --generate-notes \
+              dist/*
+          fi
+
+      - name: Combine docs and APT repository
+        run: |
+          mkdir -p site/apt
+          rsync -a --exclude .git apt-repo/ site/apt/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

@@ -118,7 +118,7 @@ has "$got" zfs-scrub || fail "a flag before the command broke it, got: $got"
 pass "bash finds the command past a flag"
 
 got=$(complete_words 1 ./pve-toolbox "-")
-for flag in -y --yes -f --force -h --help; do
+for flag in -y --yes -f --force -V --version -h --help; do
     has "$got" "$flag" || fail "flags missing $flag, got: $got"
 done
 got=$(complete_words 1 ./pve-toolbox "--f")
@@ -142,6 +142,17 @@ help=$(launch ./pve-toolbox --help)
 [[ $help != *"set -euo"* ]]               || fail "--help leaked shell code"
 [[ $help != *"#"* ]]                      || fail "--help leaked a comment marker"
 pass "usage stops at the end of the header"
+
+# The package launcher lives separately from its modules and libraries. An
+# explicit root exercises that layout without writing into /usr during tests.
+expected_version=$(<VERSION)
+[[ $(PVE_TOOLBOX_ROOT="$ROOT" launch ./pve-toolbox --version) == "pve-toolbox $expected_version" ]] \
+    || fail "--version did not read the packaged version file"
+for verb in link self-update; do
+    res=$(PVE_TOOLBOX_ROOT="$ROOT" launch ./pve-toolbox "$verb" 2>&1 || true)
+    [[ $res == *"managed by apt"* ]] || fail "packaged $verb was not refused: $res"
+done
+pass "packaged installs report their version and defer to apt"
 
 # --- installed detection -----------------------------------------------------
 
