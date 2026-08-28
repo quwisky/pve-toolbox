@@ -21,7 +21,9 @@ Units       scrutiny-collector-<kind>.{service,timer}
 | `performance` | `Sun *-*-* 02:00:00` | fio-based, adds real disk load, off by default |
 
 Install asks which ones you want, and skips the ZFS collector entirely when
-there is no `zpool` binary.
+there is no `zpool` binary. Every selected release asset is downloaded and
+verified before any binary is installed; a missing asset leaves the existing
+collector set untouched.
 
 ## Updates are the interesting part
 
@@ -41,7 +43,8 @@ rolled back, state stays at the old version and the run says which ones. A
 missing asset, failed download or bad checksum is detected before timers are
 paused or installed binaries are touched.
 
-Release assets are checksum-verified when the release ships a checksum file.
+Every release must provide a checksum file with an exact entry for each
+selected asset. Installation and update refuse assets that cannot be verified.
 
 ### What `check` reports
 

@@ -158,7 +158,9 @@ _sc_stage_binary() { # _sc_stage_binary <asset-fragment> <arch> <output>
 
 _sc_install_staged() { # _sc_install_staged <staged-file> <target-name>
     local staged=$1 target="$TOOLBOX_BIN_DIR/$2"
-    cp -a "$target" "$target.prev" || return 1
+    if [[ -e $target ]]; then
+        cp -a "$target" "$target.prev" || return 1
+    fi
     install -m 0755 "$staged" "$target"
 }
 
@@ -221,12 +223,48 @@ module_install() {
     gh_fetch_checksums
     mkdir -p "$CONFIG_DIR"
 
-    local got=()
+    # Initial installs get the same all-or-nothing download guarantee as
+    # updates. Otherwise one missing asset silently omitted a collector the
+    # operator explicitly selected while the module still announced success.
+    SC_UPDATE_STAGE=$(mktemp -d)
+    SC_UPDATE_TIMERS_PAUSED=0
+    trap '_sc_update_cleanup' EXIT
+    local s
     for s in "${want[@]}"; do
-        install_release_binary "${SC_ASSET[$s]}" "$arch" "${SC_BIN[$s]}" && got+=("$s")
+        if ! _sc_stage_binary "${SC_ASSET[$s]}" "$arch" "$SC_UPDATE_STAGE/${SC_BIN[$s]}"; then
+            trap - EXIT
+            _sc_update_cleanup
+            die "could not stage every selected collector for $GH_TAG; nothing was installed"
+        fi
     done
-    [[ -n ${CHECKSUM_FILE:-} ]] && rm -f "$CHECKSUM_FILE"
-    [[ ${#got[@]} -eq 0 ]] && die "no matching release assets found in $GH_TAG"
+
+    local got=() failed=""
+    declare -A had_previous=()
+    for s in "${want[@]}"; do
+        [[ -e "$TOOLBOX_BIN_DIR/${SC_BIN[$s]}" ]] && had_previous[$s]=1
+        if _sc_install_staged "$SC_UPDATE_STAGE/${SC_BIN[$s]}" "${SC_BIN[$s]}"; then
+            got+=("$s")
+        else
+            failed=$s
+            break
+        fi
+    done
+    if [[ -n $failed ]]; then
+        local restore
+        for restore in "${got[@]}" "$failed"; do
+            if [[ ${had_previous[$restore]:-0} -eq 1 ]]; then
+                [[ -f "$TOOLBOX_BIN_DIR/${SC_BIN[$restore]}.prev" ]] \
+                    && rollback_binary "${SC_BIN[$restore]}" || true
+            else
+                rm -f -- "$TOOLBOX_BIN_DIR/${SC_BIN[$restore]}"
+            fi
+        done
+        trap - EXIT
+        _sc_update_cleanup
+        die "could not install $failed; restored the previous collector set"
+    fi
+    trap - EXIT
+    _sc_update_cleanup
 
     step "Config and systemd units"
     for s in "${got[@]}"; do
