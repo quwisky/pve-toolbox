@@ -199,6 +199,28 @@ res=$(launch ./pve-toolbox status zfs-scrub 2>&1) || fail "status <module> exite
 [[ $res != *"failed"* ]] || fail "status called a not-installed module failed: $res"
 pass "status names an uninstalled module without calling it a failure"
 
+# Per-module commands may continue after one module fails, but their final exit
+# status must still tell automation that the requested operation was incomplete.
+failure_root=$(tmp)
+mkdir -p "$failure_root/lib" "$failure_root/modules/failing"
+cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$failure_root/lib/"
+printf '%s\n' \
+    'MODULE_NAME="failing"' \
+    'MODULE_TITLE="Failing fixture"' \
+    'MODULE_DESC="returns a deliberate error"' \
+    'MODULE_TAGS="test"' \
+    'module_status() { printf installed; }' \
+    'module_status_long() { printf installed; }' \
+    'module_install() { return 42; }' \
+    'module_update() { return 42; }' \
+    'module_uninstall() { return 42; }' \
+    > "$failure_root/modules/failing/module.sh"
+for verb in install update check uninstall; do
+    PVE_TOOLBOX_ROOT="$failure_root" launch ./pve-toolbox "$verb" failing \
+        >/dev/null 2>&1 && fail "$verb hid a module failure behind exit 0"
+done
+pass "per-module command failures reach the launcher exit status"
+
 launch ./pve-toolbox status definitely-not-a-module >/dev/null 2>&1 \
     && fail "an unknown module should have failed"
 res=$(launch ./pve-toolbox status definitely-not-a-module 2>&1 || true)
