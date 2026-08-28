@@ -168,23 +168,42 @@ gh_checksums() {
         <<<"$GH_JSON" | head -n1
 }
 
-# gh_fetch_checksums -> sets CHECKSUM_FILE (may be empty)
+# gh_fetch_checksums -> sets CHECKSUM_FILE, fails if one cannot be loaded
 gh_fetch_checksums() {
     local url
     CHECKSUM_FILE=""
     url=$(gh_checksums)
-    [[ -z $url ]] && { warn "release has no checksum file"; return 0; }
+    [[ -n $url ]] || { warn "release has no checksum file - refusing unverified assets"; return 1; }
     CHECKSUM_FILE=$(mktemp)
-    curl -fsSL -o "$CHECKSUM_FILE" "$url" || CHECKSUM_FILE=""
+    if ! curl -fsSL --retry 3 -o "$CHECKSUM_FILE" "$url"; then
+        rm -f -- "$CHECKSUM_FILE"
+        CHECKSUM_FILE=""
+        warn "could not download release checksums - refusing unverified assets"
+        return 1
+    fi
+    [[ -s $CHECKSUM_FILE ]] || {
+        rm -f -- "$CHECKSUM_FILE"
+        CHECKSUM_FILE=""
+        warn "release checksum file is empty - refusing unverified assets"
+        return 1
+    }
 }
 
 verify_checksum() { # verify_checksum <file> <asset-name>
-    [[ -n ${CHECKSUM_FILE:-} && -s ${CHECKSUM_FILE:-} ]] || return 0
+    [[ -n ${CHECKSUM_FILE:-} && -s ${CHECKSUM_FILE:-} ]] || {
+        warn "no release checksums loaded for $2"
+        return 1
+    }
     local expected actual
-    expected=$(awk -v n="$2" 'index($2, n) || index($2, "*"n) {print $1}' "$CHECKSUM_FILE" | head -n1)
-    [[ -z $expected ]] && { warn "no checksum entry for $2"; return 0; }
+    expected=$(awk -v n="$2" '
+        $2 == n || $2 == "*" n || $2 == "./" n || $2 == "*./" n { print $1; exit }
+    ' "$CHECKSUM_FILE")
+    [[ $expected =~ ^[0-9A-Fa-f]{64}$ ]] || {
+        warn "no valid checksum entry for $2"
+        return 1
+    }
     actual=$(sha256sum "$1" | awk '{print $1}')
-    [[ $expected == "$actual" ]] || return 1
+    [[ ${expected,,} == "$actual" ]] || return 1
     ok "checksum verified"
 }
 

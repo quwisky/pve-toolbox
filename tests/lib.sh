@@ -189,6 +189,25 @@ backup_file "$WORK/does-not-exist" >/dev/null || fail "backup_file failed on a m
 [[ ! -e $WORK/does-not-exist ]] || fail "backup_file created the missing file"
 pass "backup_file is a no-op on a missing file"
 
+# Release binaries execute as root. Missing or incomplete checksum metadata is
+# therefore an error, not an optional warning.
+checksum_payload="$WORK/release-asset"
+checksum_list="$WORK/SHA256SUMS"
+printf 'collector build\n' > "$checksum_payload"
+CHECKSUM_FILE=""
+verify_checksum "$checksum_payload" collector-linux-amd64 \
+    && fail "verify_checksum accepted an absent checksum file"
+printf '%s  %s\n' "$(sha256sum "$checksum_payload" | awk '{print $1}')" other-asset \
+    > "$checksum_list"
+CHECKSUM_FILE=$checksum_list
+verify_checksum "$checksum_payload" collector-linux-amd64 \
+    && fail "verify_checksum accepted a missing asset entry"
+printf '%s  *%s\n' "$(sha256sum "$checksum_payload" | awk '{print $1}')" collector-linux-amd64 \
+    > "$checksum_list"
+verify_checksum "$checksum_payload" collector-linux-amd64 >/dev/null \
+    || fail "verify_checksum rejected an exact asset entry"
+pass "release checksums fail closed"
+
 # --- the scrutiny update decision --------------------------------------------
 
 # Module logic rather than lib, but pure, and it shares the version helpers

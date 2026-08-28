@@ -5,8 +5,9 @@ should keep using the [git checkout](getting-started.md#git-checkout).
 
 ## Bootstrap
 
-The installer verifies the host suite before making changes, downloads the
-repository key, writes a deb822 source, and installs the package:
+The installer verifies the host suite before making changes, checks the
+downloaded repository key against the fingerprint pinned in the script, writes
+a deb822 source, and installs the package:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/quwisky/pve-toolbox/master/scripts/install-apt.sh | bash
@@ -20,11 +21,16 @@ operator-managed keyring directory:
 
 ```bash
 apt-get update
-apt-get install -y ca-certificates curl
+apt-get install -y ca-certificates curl gnupg
 install -d -m 0755 /etc/apt/keyrings
 curl -fsSL https://quwisky.github.io/pve-toolbox/apt/pve-toolbox.gpg \
   -o /etc/apt/keyrings/pve-toolbox.gpg
 chmod 0644 /etc/apt/keyrings/pve-toolbox.gpg
+
+expected=C3548BC52A3D537557DB2A7F84A43B72AE0434F2
+actual=$(gpg --batch --with-colons --show-keys \
+  /etc/apt/keyrings/pve-toolbox.gpg | awk -F: '$1 == "fpr" { print $10; exit }')
+test "$actual" = "$expected"
 ```
 
 Create `/etc/apt/sources.list.d/pve-toolbox.sources` with this deb822 source:
@@ -119,12 +125,20 @@ release workflow can run from that tag, or be started manually from `master`.
 A manual run derives the tag from `VERSION` and refuses any other branch or an
 existing tag.
 
-The workflow runs the full tests, builds the `.deb`, imports the dedicated
+The workflow requires every test group, including the terminal UI, both shell
+completions, config-backup gates, package lifecycle, and signed repository
+tests. It then builds the `.deb`, imports the dedicated
 signing subkey from the `APT_SIGNING_KEY` Actions secret, and verifies that it
 matches the public certificate committed at `keys/pve-toolbox.asc`. It updates
 the signed `trixie/main` repository on the `apt` branch, publishes both public
 key formats, then creates a GitHub Release with generated changelog notes and
 attaches the package plus its SHA-256 manifest.
+
+Rerunning the same failed workflow is safe: an identical package already
+present in the APT repository is kept and later release or Pages steps
+continue. A different package with the same version is refused. A new manual
+run still refuses an existing tag or GitHub Release; only a retry attempt of
+the original run may resume it, and its tag must target the same commit.
 
 Pages is assembled from the MkDocs site and the `apt` branch. The docs and
 release workflows share one deployment concurrency group so neither can erase

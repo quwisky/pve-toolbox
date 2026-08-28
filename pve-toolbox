@@ -224,6 +224,7 @@ cmd_list() {
 cmd_each() { # cmd_each <function> [--check] <modules...>
     local fn=$1; shift
     local extra=""
+    local failed=0
     [[ ${1:-} == --check ]] && { extra=--check; shift; }
     discover
     local list=("$@") m
@@ -242,11 +243,18 @@ cmd_each() { # cmd_each <function> [--check] <modules...>
             # installed is a legitimate thing to do; it is not a failure.
             run_module "$m" "$fn" || true
         elif [[ -n $extra ]]; then
-            run_module "$m" "$fn" "$extra" || warn "$m failed"
+            if ! run_module "$m" "$fn" "$extra"; then
+                warn "$m failed"
+                failed=1
+            fi
         else
-            run_module "$m" "$fn" || warn "$m failed"
+            if ! run_module "$m" "$fn"; then
+                warn "$m failed"
+                failed=1
+            fi
         fi
     done
+    return "$failed"
 }
 
 # ------------------------------------------------------------------- ui --

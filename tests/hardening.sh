@@ -195,7 +195,46 @@ pass "zfs-replication locks and fixups fail closed"
 ) || exit 1
 pass "zfs-scrub rejects schedule collisions and timer failures"
 
-# --- scrutiny collector update transaction ---------------------------------
+# --- scrutiny collector install and update transactions --------------------
+
+(
+    export TOOLBOX_BIN_DIR="$WORK/sc-new-bin" TOOLBOX_LIB_DIR="$WORK/sc-new-lib"
+    export TOOLBOX_CONF_DIR="$WORK/sc-new-conf" TOOLBOX_STATE_DIR="$WORK/sc-new-state"
+    export TOOLBOX_SYSTEMD_DIR="$WORK/sc-new-systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    CONFIG_DIR="$WORK/sc-new-config"
+    SCRUTINY_API_ENDPOINT=https://example.invalid
+    require_root() { :; }
+    require_pve() { :; }
+    pkg_ensure() { :; }
+    detect_arch() { printf 'amd64'; }
+    curl() { :; }
+    ask() { :; }
+    ask_secret() { :; }
+    ask_yn() { :; }
+    have_zfs() { return 0; }
+    have_mdadm() { return 1; }
+    zpool() { printf 'tank\n'; }
+    gh_release() { GH_TAG=v2.0.0; }
+    gh_fetch_checksums() { CHECKSUM_FILE=""; }
+    _sc_stage_binary() {
+        [[ $1 == collector-zfs ]] && return 1
+        printf 'new metrics\n' > "$3"
+    }
+
+    if ( module_install ) >/dev/null 2>&1; then
+        fail "a collector install with a missing selected asset succeeded"
+    fi
+    [[ ! -e "$TOOLBOX_BIN_DIR/${SC_BIN[metrics]}" ]] \
+        || fail "a failed collector install left a partial binary set"
+) || exit 1
+pass "scrutiny installs require every selected release asset"
 
 (
     export TOOLBOX_BIN_DIR="$WORK/sc-bin" TOOLBOX_LIB_DIR="$WORK/sc-lib"

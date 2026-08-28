@@ -87,11 +87,13 @@ See [State versus config](../writing-a-module.md#state-versus-config).
 : Sets `GH_JSON` and `GH_TAG`.
 
 `gh_fetch_checksums`
-: Sets `CHECKSUM_FILE`, empty when the release ships none.
+: Sets `CHECKSUM_FILE`. Fails when the release has no checksum file or it cannot
+  be downloaded intact.
 
 `install_release_binary <asset-fragment> <arch-fragment> <target>`
-: Downloads, verifies the checksum when there is one, keeps the old build as
-  `<target>.prev`. Returns 1 when no asset matches.
+: Downloads, requires an exact checksum entry, keeps the old build as
+  `<target>.prev`, and refuses unverified assets. Returns 1 when no asset
+  matches.
 
 `rollback_binary <target>`
 : Restores `<target>.prev`.

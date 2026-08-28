@@ -17,6 +17,12 @@ if [[ $(dpkg --print-architecture) != amd64 ]]; then
 fi
 
 repo_url="${PVE_TOOLBOX_APT_URL:-https://quwisky.github.io/pve-toolbox/apt}"
+expected_fingerprint="${PVE_TOOLBOX_APT_FINGERPRINT:-C3548BC52A3D537557DB2A7F84A43B72AE0434F2}"
+expected_fingerprint=${expected_fingerprint//[[:space:]]/}
+[[ $expected_fingerprint =~ ^[0-9A-Fa-f]{40}$ ]] || {
+    echo "error: PVE_TOOLBOX_APT_FINGERPRINT must be a 40-character fingerprint" >&2
+    exit 1
+}
 keyring=/etc/apt/keyrings/pve-toolbox.gpg
 source_file=/etc/apt/sources.list.d/pve-toolbox.sources
 tmp_key=$(mktemp)
@@ -24,10 +30,18 @@ tmp_source=$(mktemp)
 trap 'rm -f "$tmp_key" "$tmp_source"' EXIT
 
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ca-certificates curl gnupg
 
 curl -fsSL --retry 3 "$repo_url/pve-toolbox.gpg" -o "$tmp_key"
 [[ -s $tmp_key ]] || { echo "error: downloaded repository key is empty" >&2; exit 1; }
+downloaded_fingerprint=$(gpg --batch --with-colons --show-keys "$tmp_key" \
+    | awk -F: '$1 == "fpr" { print $10; exit }')
+[[ ${downloaded_fingerprint^^} == "${expected_fingerprint^^}" ]] || {
+    echo "error: repository key fingerprint does not match the trusted fingerprint" >&2
+    echo "expected: ${expected_fingerprint^^}" >&2
+    echo "received: ${downloaded_fingerprint:-none}" >&2
+    exit 1
+}
 
 cat > "$tmp_source" <<EOF
 Types: deb

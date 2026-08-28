@@ -40,6 +40,14 @@ fingerprint=$(gpg --batch --with-colons --list-secret-keys \
 public_key="$WORK/test-signing-key.asc"
 gpg --batch --armor --export "$fingerprint" > "$public_key"
 
+trusted_fingerprint=$(sed -n \
+    's/^expected_fingerprint="${PVE_TOOLBOX_APT_FINGERPRINT:-\([0-9A-Fa-f]*\)}"$/\1/p' \
+    scripts/install-apt.sh)
+committed_fingerprint=$(gpg --batch --with-colons --show-keys keys/pve-toolbox.asc \
+    | awk -F: '$1 == "fpr" { print $10; exit }')
+[[ -n $trusted_fingerprint && ${trusted_fingerprint^^} == "${committed_fingerprint^^}" ]] \
+    || fail "APT installer fingerprint does not match the committed public key"
+
 mismatch_repo="$WORK/mismatch-repository"
 if ./scripts/publish-apt-repo.sh \
     "$mismatch_repo" "$deb" "$fingerprint" keys/pve-toolbox.asc \
@@ -50,6 +58,21 @@ fi
 repo="$WORK/repository"
 ./scripts/publish-apt-repo.sh \
     "$repo" "$deb" "$fingerprint" "$public_key" >/dev/null
+# A workflow retry after the APT branch was pushed must be a no-op, not a
+# blocker that prevents the GitHub Release or Pages steps from running.
+./scripts/publish-apt-repo.sh \
+    "$repo" "$deb" "$fingerprint" "$public_key" >/dev/null \
+    || fail "repository publisher rejected an identical retry"
+mkdir -p "$WORK/conflicting-package"
+dpkg-deb --raw-extract "$deb" "$WORK/conflicting-package"
+mkdir -p "$WORK/conflicting-package/usr/share/pve-toolbox"
+printf 'different build\n' > "$WORK/conflicting-package/usr/share/pve-toolbox/retry-conflict"
+conflicting_deb="$WORK/conflicting.deb"
+dpkg-deb --build "$WORK/conflicting-package" "$conflicting_deb" >/dev/null
+if ./scripts/publish-apt-repo.sh \
+    "$repo" "$conflicting_deb" "$fingerprint" "$public_key" >/dev/null 2>&1; then
+    fail "repository publisher replaced an existing version with different bytes"
+fi
 expected="trixie|main|amd64: pve-toolbox $(<VERSION)"
 [[ $(reprepro --basedir "$repo" list trixie) == "$expected" ]] \
     || fail "repository index did not contain the package"
