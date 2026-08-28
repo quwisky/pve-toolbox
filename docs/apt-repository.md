@@ -12,7 +12,22 @@ repository key, writes a deb822 source, and installs the package:
 curl -fsSL https://raw.githubusercontent.com/quwisky/pve-toolbox/master/scripts/install-apt.sh | bash
 ```
 
-The equivalent source is:
+## Manual setup
+
+Run these commands as `root` on a PVE 9 / Debian 13 (`trixie`) `amd64` host.
+First install the HTTPS prerequisites and add the repository signing key to the
+operator-managed keyring directory:
+
+```bash
+apt-get update
+apt-get install -y ca-certificates curl
+install -d -m 0755 /etc/apt/keyrings
+curl -fsSL https://quwisky.github.io/pve-toolbox/apt/pve-toolbox.gpg \
+  -o /etc/apt/keyrings/pve-toolbox.gpg
+chmod 0644 /etc/apt/keyrings/pve-toolbox.gpg
+```
+
+Create `/etc/apt/sources.list.d/pve-toolbox.sources` with this deb822 source:
 
 ```text
 Types: deb
@@ -21,6 +36,29 @@ Suites: trixie
 Components: main
 Architectures: amd64
 Signed-By: /etc/apt/keyrings/pve-toolbox.gpg
+```
+
+For example:
+
+```bash
+cat > /etc/apt/sources.list.d/pve-toolbox.sources <<'EOF'
+Types: deb
+URIs: https://quwisky.github.io/pve-toolbox/apt/
+Suites: trixie
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/pve-toolbox.gpg
+EOF
+
+apt-get update
+apt-get install -y pve-toolbox
+```
+
+APT now accepts packages from this repository only when its Release metadata
+is signed by the installed key. Confirm the configured package source with:
+
+```bash
+apt-cache policy pve-toolbox
 ```
 
 The binary keyring is published at
