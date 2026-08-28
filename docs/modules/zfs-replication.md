@@ -42,7 +42,10 @@ JOB_APPDATA_PATH=''                 # blank = the target's own mountpoint
 
 Job keys are the job name uppercased with anything non-alphanumeric turned
 into `_`. Job names must match `^[A-Za-z][A-Za-z0-9_.:-]*$`, because they
-become systemd instance names.
+become systemd instance names. The normalized key must also be unique:
+`app-data` and `app_data` cannot coexist because both would become
+`JOB_APP_DATA_*`. Install, update, status and the runner all reject that
+configuration instead of choosing one silently.
 
 ## What the report says
 
@@ -63,17 +66,26 @@ code and the last 25 log lines in a code block.
 
 **`flock` per job.** A run that overruns its schedule will not have a second
 copy started on top of it — the next trigger sees the lock, logs, and exits 0.
+Locks live under root-owned, mode `0700` `/run/pve-toolbox`, are opened without
+truncation, and fail closed if the directory or lock cannot be verified.
 
 **Logs are not in `/tmp`.** Each run writes `/var/log/pve-toolbox/<job>.log`
 at `0640`, keeping the previous run as `.log.prev`.
 
 **Ownership fixups are reported, not assumed.** If `chown`/`chmod` was
-requested but the target has no mountpoint, or the path is not a directory,
-the run finishes **yellow** and says so, instead of reporting a clean success.
+requested but the target has no local mountpoint, the path is not a directory,
+or either command fails, the run records a degraded result, finishes yellow,
+and exits non-zero instead of reporting a clean success.
 
 **The target path is derived.** With `JOB_*_PATH` blank the fixup applies to
 the target dataset's own `mountpoint`, so there is no hardcoded `/mnt/...` to
-go stale.
+go stale. An explicit path must resolve to that mountpoint or one of its
+children. Broad roots such as `/`, `/etc`, `/var` and `/mnt` are always
+refused before a recursive permission change.
+
+Every schedule is validated with `systemd-analyze calendar` before its timer is
+written. A timer that systemd cannot enable fails installation or update rather
+than being counted as a working job.
 
 !!! tip "Why the payload is built with `jq`"
 
@@ -125,5 +137,6 @@ schedule, and the outcome of its last run.
 
 `update` re-syncs the installed runner and the unit files with the checkout,
 offers to remove timers for jobs no longer in `JOBS`, and prompts for the
-settings of jobs that are configured but have no timer. `check` reports that
+settings of jobs that are configured but have no timer. Invalid schedules are
+reported and rewritten through the same validated prompt. `check` reports that
 without changing anything.

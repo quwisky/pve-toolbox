@@ -27,14 +27,19 @@ there is no `zpool` binary.
 
 `update` does more than swap binaries:
 
-1. Pauses the timers and waits for any in-flight collection to finish.
-2. Replaces each binary, keeping the old one as `.prev`.
-3. Smoke-tests each collector by running its unit once.
-4. Rolls back the ones that failed, and re-tests them on the previous build.
-5. Resumes the timers.
+1. Downloads and checksum-verifies every required binary while the installed
+   release and timers remain operational.
+2. Pauses the timers and waits for any in-flight collection to finish.
+3. Replaces every binary, keeping the old ones as `.prev`.
+4. Smoke-tests each collector by running its unit once.
+5. Rolls back the whole release if any collector fails, avoiding mixed
+   versions, and re-tests the previous build.
+6. Resumes every timer, including on replacement or smoke-test failure.
 
 The recorded version only advances if **every** collector passed. If any
-rolled back, state stays at the old version and the run says which ones.
+rolled back, state stays at the old version and the run says which ones. A
+missing asset, failed download or bad checksum is detected before timers are
+paused or installed binaries are touched.
 
 Release assets are checksum-verified when the release ships a checksum file.
 

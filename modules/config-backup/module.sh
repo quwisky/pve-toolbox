@@ -102,6 +102,25 @@ _cb_archive_dir() {
     printf '%s' "${d:-/var/lib/pve-toolbox/config-backup}"
 }
 
+# Resolve a data directory before anything changes its mode or removes it.
+# Dedicated directories below these roots are fine; the roots themselves are
+# not. An operator typo such as CB_ARCHIVE_DIR=/ must never turn an install into
+# `chmod 0700 /` or an uninstall into `rm -rf /`.
+_cb_safe_data_dir() { # _cb_safe_data_dir <path> -> canonical path, or 1
+    local p
+    [[ ${1:-} == /* ]] || return 1
+    p=$(realpath -m -- "$1" 2>/dev/null) || return 1
+    case $p in
+        /|/bin|/boot|/dev|/etc|/etc/pve|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/usr/local|/var|/var/lib|/var/lib/pve-cluster|/var/lib/pve-toolbox|/var/lib/vz)
+            return 1 ;;
+    esac
+    case $p in
+        "$TOOLBOX_BIN_DIR"|"$TOOLBOX_CONF_DIR"|"$TOOLBOX_LIB_DIR"|"$TOOLBOX_STATE_DIR"|"$TOOLBOX_SYSTEMD_DIR")
+            return 1 ;;
+    esac
+    printf '%s' "$p"
+}
+
 _cb_webhook_shown() {
     local f url
     f=$(conf_file "$MODULE_NAME")
@@ -294,8 +313,8 @@ module_install() {
     require_pve
     _cb_defaults
     _cb_seed_from_conf
-    # git belongs to the git backend, which is a later release. curl and jq are
-    # what discord.sh needs; tar and gzip are essential and always present.
+    # curl and jq are what discord.sh needs; tar and gzip are essential and
+    # always present. Git and rsync are installed only when that backend is on.
     pkg_ensure curl:curl jq:jq util-linux:flock
 
     step "Discord webhook"
@@ -324,7 +343,8 @@ module_install() {
 
     step "Archives"
     ask CB_ARCHIVE_DIR "directory for the archives" "$CB_ARCHIVE_DIR"
-    [[ $CB_ARCHIVE_DIR == /* ]] || die "the archive directory has to be an absolute path"
+    CB_ARCHIVE_DIR=$(_cb_safe_data_dir "$CB_ARCHIVE_DIR") \
+        || die "refusing unsafe archive directory: $CB_ARCHIVE_DIR"
 
     ask CB_RETENTION_COUNT "keep at least this many archives, whatever their age" "$CB_RETENTION_COUNT"
     ask CB_RETENTION_DAYS  "beyond that, prune archives older than this many days" "$CB_RETENTION_DAYS"
@@ -357,7 +377,8 @@ module_install() {
         pkg_ensure git:git rsync:rsync
         ask CB_GIT_DIR    "working clone directory" "$CB_GIT_DIR"
         ask CB_GIT_BRANCH "branch"                  "$CB_GIT_BRANCH"
-        [[ $CB_GIT_DIR == /* ]] || die "the git directory has to be an absolute path"
+        CB_GIT_DIR=$(_cb_safe_data_dir "$CB_GIT_DIR") \
+            || die "refusing unsafe git directory: $CB_GIT_DIR"
         _cb_dirs_nested "$CB_GIT_DIR" "$CB_ARCHIVE_DIR" \
             && die "the git directory and the archive directory must not nest"
 
@@ -468,6 +489,13 @@ module_update() {
     [[ $new != "$cur" ]] && drift=1
 
     _cb_missing_conf_keys
+
+    _cb_safe_data_dir "$(_cb_archive_dir)" >/dev/null \
+        || die "refusing unsafe CB_ARCHIVE_DIR in $(conf_file "$MODULE_NAME")"
+    if [[ $(conf_get "$MODULE_NAME" CB_GIT_ENABLED) == 1 ]]; then
+        _cb_safe_data_dir "$(conf_get "$MODULE_NAME" CB_GIT_DIR)" >/dev/null \
+            || die "refusing unsafe CB_GIT_DIR in $(conf_file "$MODULE_NAME")"
+    fi
 
     local count
     count=$(state_get "$MODULE_NAME" ARCHIVE_COUNT)
@@ -653,8 +681,16 @@ module_status_long() {
 
 module_uninstall() {
     require_root
-    local dir
+    local dir gdir
     dir=$(_cb_archive_dir)
+    # Capture both paths before the default config-removal choice erases them.
+    gdir=$(conf_get "$MODULE_NAME" CB_GIT_DIR)
+    # Validate before removing even the units or config. Re-check immediately
+    # before each recursive delete below in case a path is replaced meanwhile.
+    [[ ! -d $dir ]] || _cb_safe_data_dir "$dir" >/dev/null \
+        || die "refusing unsafe archive directory: $dir"
+    [[ -z $gdir || ! -d $gdir ]] || _cb_safe_data_dir "$gdir" >/dev/null \
+        || die "refusing unsafe git directory: $gdir"
 
     systemd_remove "$CB_UNIT"
     rm -f "$TOOLBOX_BIN_DIR/$CB_BIN"
@@ -679,20 +715,25 @@ module_uninstall() {
         local drop_data=n
         ask_yn drop_data "also delete the archives in $dir" "n"
         if [[ $drop_data == y ]]; then
-            rm -rf "${dir:?}"
-            warn "deleted $dir"
+            local safe_dir
+            safe_dir=$(_cb_safe_data_dir "$dir") \
+                || die "refusing to delete unsafe archive directory: $dir"
+            rm -rf -- "${safe_dir:?}"
+            warn "deleted $safe_dir"
         else
             ok "archives left in place: $dir"
         fi
     fi
     # The git history is as much the point of the module as the archives are.
-    local gdir; gdir=$(conf_get "$MODULE_NAME" CB_GIT_DIR)
     if [[ -n $gdir && -d $gdir ]]; then
         local drop_git=n
         ask_yn drop_git "also delete the git history in $gdir" "n"
         if [[ $drop_git == y ]]; then
-            rm -rf "${gdir:?}"
-            warn "deleted $gdir"
+            local safe_gdir
+            safe_gdir=$(_cb_safe_data_dir "$gdir") \
+                || die "refusing to delete unsafe git directory: $gdir"
+            rm -rf -- "${safe_gdir:?}"
+            warn "deleted $safe_gdir"
         else
             ok "git history left in place: $gdir"
         fi

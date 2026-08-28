@@ -54,9 +54,9 @@ set -Eeuo pipefail
 #     CB_RETENTION_DAYS=90
 #     CB_NOTIFY_ON_CHANGE=0
 #
-# This release captures. It does not restore: every collected path already
-# carries a restore class in the manifest, and the writer that reads them back
-# lands in a later release.
+# Captures and restores use the same manifest classes. The restore path
+# re-derives each class from the current policy rather than trusting an older
+# archive's label.
 
 # ---------------------------------------------------------------- config --
 
@@ -1102,6 +1102,20 @@ CB_SRC_DIR=""
 CB_SRC_HASH=""
 CB_SRC_NODE=""
 CB_SELECTOR=""
+
+# Resolve operator-configured storage paths before any chmod, write, prune or
+# restore-side backup uses them. Dedicated children are allowed; broad system
+# roots are not.
+_cb_safe_data_dir() { # _cb_safe_data_dir <path> -> canonical path, or 1
+    local p
+    [[ ${1:-} == /* ]] || return 1
+    p=$(realpath -m -- "$1" 2>/dev/null) || return 1
+    case $p in
+        /|/bin|/boot|/dev|/etc|/etc/pve|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/usr/local|/var|/var/lib|/var/lib/pve-cluster|/var/lib/pve-toolbox|/var/lib/vz)
+            return 1 ;;
+    esac
+    printf '%s' "$p"
+}
 
 _cb_restore_log() { printf '%s/restore.log' "$CB_ARCHIVE_DIR"; }
 
@@ -2496,11 +2510,18 @@ _cb_read_conf() {
     [[ $CB_GIT_ENABLED   =~ ^[01]$ ]] || CB_GIT_ENABLED=0
     [[ $CB_GIT_PUSH      =~ ^[01]$ ]] || CB_GIT_PUSH=0
     [[ -n $CB_GIT_BRANCH ]] || CB_GIT_BRANCH=master
+    local safe_dir
+    safe_dir=$(_cb_safe_data_dir "$CB_ARCHIVE_DIR") \
+        || fail "refusing unsafe CB_ARCHIVE_DIR: $CB_ARCHIVE_DIR"
+    CB_ARCHIVE_DIR=$safe_dir
     # Only when the git backend is on. Unguarded this ran on every install,
     # including local-archive-only ones that never pkg_ensure git - so on a
     # host without it every timer firing aborted before collecting anything,
     # wrote no archive, and alerted about a branch name nobody set.
     if [[ $CB_GIT_ENABLED -eq 1 ]]; then
+        safe_dir=$(_cb_safe_data_dir "$CB_GIT_DIR") \
+            || fail "refusing unsafe CB_GIT_DIR: $CB_GIT_DIR"
+        CB_GIT_DIR=$safe_dir
         command -v git >/dev/null 2>&1 \
             || fail "git not found but the git backend is enabled"
         command -v rsync >/dev/null 2>&1 \

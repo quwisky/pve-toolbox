@@ -83,7 +83,13 @@ The webhook URL is the only credential Discord checks, so it goes through
 | `ZFS_SCRUB_SCHEDULE_<POOL>` | staggered | `OnCalendar` for that pool        |
 
 `<POOL>` is the pool name uppercased with anything non-alphanumeric turned
-into `_`, so `tank-ssd` reads `ZFS_SCRUB_SCHEDULE_TANK_SSD`.
+into `_`, so `tank-ssd` reads `ZFS_SCRUB_SCHEDULE_TANK_SSD`. Two selected pools
+must not normalize to the same variable: `tank-ssd` and `tank_ssd` are rejected
+instead of silently receiving one shared schedule.
+
+Schedules are validated with `systemd-analyze calendar` before timer files are
+written. A timer enable failure fails installation or update, and existing
+invalid timer schedules are surfaced by status and repaired through update.
 
 ## Conflicting timers
 
@@ -107,5 +113,5 @@ alone and exits 0.
 
 There is no upstream release to track. `update` re-syncs the installed watcher
 and the unit files with the checkout, removes timers for pools that no longer
-exist, and offers to schedule pools created since the last run. `check`
-reports all of that without changing anything.
+exist, offers to schedule pools created since the last run, and repairs invalid
+schedules. `check` reports all of that without changing anything.
