@@ -17,6 +17,7 @@ test: syntax
 	@./tests/lib.sh
 	@./tests/discord.sh
 	@./tests/config-backup.sh
+	@./tests/hardening.sh
 	@./tests/smoke.sh
 	@./tests/completion-zsh.sh
 	@./tests/tui.sh

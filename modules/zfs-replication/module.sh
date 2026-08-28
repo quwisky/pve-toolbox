@@ -41,8 +41,34 @@ _zr_key() { # _zr_key <job> <KEY>
     printf 'JOB_%s_%s' "${n^^}" "$2"
 }
 
+_zr_job_id() {
+    local n=${1//[^A-Za-z0-9]/_}
+    printf '%s' "${n^^}"
+}
+
+_zr_jobs_unique() { # _zr_jobs_unique <job>...
+    local job id
+    declare -A seen=()
+    ZR_COLLISION=""
+    for job in "$@"; do
+        id=$(_zr_job_id "$job")
+        if [[ -n ${seen[$id]+x} ]]; then
+            ZR_COLLISION="${seen[$id]} and $job"
+            return 1
+        fi
+        seen[$id]=$job
+    done
+    return 0
+}
+
 # Unit names carry the job name; refuse anything systemd would mangle.
 _zr_valid_job() { [[ $1 =~ ^[A-Za-z][A-Za-z0-9_.:-]*$ ]]; }
+
+_zr_valid_schedule() {
+    [[ -n ${1:-} ]] || return 1
+    command -v systemd-analyze >/dev/null 2>&1 || return 1
+    systemd-analyze calendar "$1" >/dev/null 2>&1
+}
 
 _zr_configured() { # -> ZR_JOBS from conf
     ZR_JOBS=()
@@ -117,6 +143,7 @@ EOF
 }
 
 _zr_write_timer() { # _zr_write_timer <job> <OnCalendar>
+    _zr_valid_schedule "$2" || die "invalid systemd OnCalendar for $1: $2"
     cat > "$TOOLBOX_SYSTEMD_DIR/$ZR_UNIT@$1.timer" <<EOF
 [Unit]
 Description=pve-toolbox ZFS replication job $1 (timer)
@@ -137,6 +164,7 @@ _zr_enable() {
         ok "enabled $ZR_UNIT@$1.timer  ($(_zr_schedule_of "$1"))"
     else
         warn "could not enable $ZR_UNIT@$1.timer"
+        return 1
     fi
 }
 
@@ -194,7 +222,13 @@ _zr_ask_job() { # _zr_ask_job <job>
     else
         own=""; mode=""; path=""
     fi
-    ask sched "  schedule (systemd OnCalendar)" "$sched"
+    while true; do
+        ask sched "  schedule (systemd OnCalendar)" "${sched:-$ZFS_REPL_SCHEDULE}"
+        _zr_valid_schedule "$sched" && break
+        [[ $ASSUME_YES -eq 1 ]] && die "invalid systemd OnCalendar for $job: $sched"
+        warn "invalid systemd OnCalendar: $sched"
+        sched=""
+    done
 
     conf_set "$MODULE_NAME" "$(_zr_key "$job" SRC)"   "$src"
     conf_set "$MODULE_NAME" "$(_zr_key "$job" DST)"   "$dst"
@@ -213,7 +247,7 @@ module_install() {
     require_pve
     have_zfs || die "no zfs binary - this module needs ZFS on the host"
     _zr_defaults
-    pkg_ensure curl:curl jq:jq syncoid:sanoid
+    pkg_ensure curl:curl jq:jq syncoid:sanoid util-linux:flock
 
     step "Discord webhook"
     if [[ -z $ZFS_REPL_WEBHOOK && $ASSUME_YES -eq 1 ]]; then
@@ -253,6 +287,8 @@ module_install() {
     for job in "${want[@]}"; do
         _zr_valid_job "$job" || die "job name '$job' cannot be used in a systemd unit name"
     done
+    _zr_jobs_unique "${want[@]}" \
+        || die "job names normalize to the same config key: $ZR_COLLISION"
 
     conf_set "$MODULE_NAME" DISCORD_WEBHOOK "$ZFS_REPL_WEBHOOK"
     conf_set "$MODULE_NAME" LOG_DIR "$ZR_LOG_DIR"
@@ -278,7 +314,9 @@ module_install() {
     chmod 0750 "$ZR_LOG_DIR"
     _zr_write_service
     systemctl daemon-reload
-    for job in "${kept[@]}"; do _zr_enable "$job"; done
+    for job in "${kept[@]}"; do
+        _zr_enable "$job" || die "could not enable the timer for $job"
+    done
 
     step "Verification"
     local t=y
@@ -320,6 +358,8 @@ module_update() {
     [[ ${1:-} == --check ]] && check_only=1
 
     _zr_configured
+    _zr_jobs_unique "${ZR_JOBS[@]}" \
+        || die "job names normalize to the same config key: $ZR_COLLISION"
     _zr_scheduled
     [[ ${#ZR_JOBS[@]} -eq 0 && ${#ZR_SCHEDULED[@]} -eq 0 ]] && die "not installed"
 
@@ -327,12 +367,16 @@ module_update() {
     src=$(_zr_src); dst="$TOOLBOX_BIN_DIR/$ZR_BIN"
     new=$(_zr_sum "$src"); cur=$(_zr_sum "$dst")
 
-    local missing=() stale=() j
+    local missing=() stale=() invalid=() j
     for j in "${ZR_JOBS[@]}"; do
         [[ " ${ZR_SCHEDULED[*]} " == *" $j "* ]] || missing+=("$j")
     done
     for j in "${ZR_SCHEDULED[@]}"; do
-        [[ " ${ZR_JOBS[*]} " == *" $j "* ]] || stale+=("$j")
+        if [[ " ${ZR_JOBS[*]} " == *" $j "* ]]; then
+            _zr_valid_schedule "$(_zr_schedule_of "$j")" || invalid+=("$j")
+        else
+            stale+=("$j")
+        fi
     done
 
     local drift=0
@@ -342,8 +386,9 @@ module_update() {
     printf '  jobs       %s\n' "${ZR_JOBS[*]:-none}"
     if [[ ${#missing[@]} -gt 0 ]]; then warn "configured but no timer: ${missing[*]}"; fi
     if [[ ${#stale[@]} -gt 0 ]];   then warn "timer but not configured: ${stale[*]}"; fi
+    if [[ ${#invalid[@]} -gt 0 ]]; then warn "invalid timer schedule: ${invalid[*]}"; fi
 
-    if [[ $drift -eq 0 && ${#missing[@]} -eq 0 && ${#stale[@]} -eq 0 && ${FORCE:-0} -eq 0 ]]; then
+    if [[ $drift -eq 0 && ${#missing[@]} -eq 0 && ${#stale[@]} -eq 0 && ${#invalid[@]} -eq 0 && ${FORCE:-0} -eq 0 ]]; then
         ok "up to date"
         return 0
     fi
@@ -369,16 +414,20 @@ module_update() {
             fi
         done
     fi
-    if [[ ${#missing[@]} -gt 0 ]]; then
-        step "Jobs with no timer"
-        for j in "${missing[@]}"; do
+    local repair=("${missing[@]}" "${invalid[@]}")
+    if [[ ${#repair[@]} -gt 0 ]]; then
+        step "Jobs needing a timer"
+        for j in "${repair[@]}"; do
+            [[ -n $j ]] || continue
             _zr_ask_job "$j" || continue
         done
     fi
 
     systemctl daemon-reload
     _zr_scheduled
-    for j in "${ZR_SCHEDULED[@]}"; do _zr_enable "$j"; done
+    for j in "${ZR_SCHEDULED[@]}"; do
+        _zr_enable "$j" || die "could not enable the timer for $j"
+    done
 
     state_set "$MODULE_NAME" JOBS "${ZR_SCHEDULED[*]}"
     state_set "$MODULE_NAME" SCRIPT_SUM "$new"
@@ -389,11 +438,23 @@ module_update() {
 # ---------------------------------------------------------------- status --
 
 module_status() {
+    _zr_configured
+    if ! _zr_jobs_unique "${ZR_JOBS[@]}"; then
+        printf 'invalid jobs  [%s]' "$ZR_COLLISION"
+        return 0
+    fi
     _zr_scheduled
     if [[ ${#ZR_SCHEDULED[@]} -eq 0 ]]; then
         printf 'not installed'
         return 1
     fi
+    local schedule_job
+    for schedule_job in "${ZR_SCHEDULED[@]}"; do
+        if ! _zr_valid_schedule "$(_zr_schedule_of "$schedule_job")"; then
+            printf 'invalid schedule  [%s]' "$schedule_job"
+            return 0
+        fi
+    done
     local running=() j
     for j in "${ZR_SCHEDULED[@]}"; do
         if systemctl is-active --quiet "$ZR_UNIT@$j.service" 2>/dev/null; then

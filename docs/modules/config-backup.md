@@ -427,6 +427,13 @@ A failed capture always reports. `CB_NOTIFY_ON_CHANGE=1` additionally reports
 when the configuration changed — off by default, because editing a guest is
 routine and a channel that pings on every edit stops being read.
 
+Archive and Git directories are canonicalized before installation, every
+runner invocation, and deletion. Filesystem roots and broad system locations
+such as `/`, `/etc`, `/etc/pve`, `/var/lib` and the toolbox's own shared
+directories are refused; use a dedicated child directory instead. The same
+check follows existing symlinks, so a harmless-looking path cannot redirect a
+recursive operation onto a protected root.
+
 ## Env vars for `-y`
 
 | Variable | Default | Meaning |
@@ -512,6 +519,6 @@ and the timer's `OnCalendar` is read back off disk and preserved.
 `check` reports whether the runner or the config is out of sync and changes
 nothing. `-f` forces the reinstall even when everything already matches.
 
-Uninstall removes the runner, the unit and the state, asks before removing the
-config, and asks separately before deleting the archives — defaulting to
-keeping them.
+Uninstall validates both data paths before removing anything, then removes the
+runner, unit and state. It asks independently before removing the config, the
+archives, and the Git history; both data stores default to being kept.

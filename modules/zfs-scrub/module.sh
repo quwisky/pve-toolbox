@@ -43,6 +43,27 @@ _zs_var() { # _zs_var <pool> -> ZFS_SCRUB_SCHEDULE_<POOL>
     printf 'ZFS_SCRUB_SCHEDULE_%s' "${p^^}"
 }
 
+_zs_pools_unique() { # _zs_pools_unique <pool>...
+    local pool var
+    declare -A seen=()
+    ZS_COLLISION=""
+    for pool in "$@"; do
+        var=$(_zs_var "$pool")
+        if [[ -n ${seen[$var]+x} ]]; then
+            ZS_COLLISION="${seen[$var]} and $pool"
+            return 1
+        fi
+        seen[$var]=$pool
+    done
+    return 0
+}
+
+_zs_valid_schedule() {
+    [[ -n ${1:-} ]] || return 1
+    command -v systemd-analyze >/dev/null 2>&1 || return 1
+    systemd-analyze calendar "$1" >/dev/null 2>&1
+}
+
 # Pools share spindles, so stagger them a week apart rather than scrubbing
 # everything on the same night.
 _zs_default_schedule() { # _zs_default_schedule <index>
@@ -117,6 +138,7 @@ EOF
 }
 
 _zs_write_timer() { # _zs_write_timer <pool> <OnCalendar>
+    _zs_valid_schedule "$2" || die "invalid systemd OnCalendar for $1: $2"
     cat > "$TOOLBOX_SYSTEMD_DIR/$ZS_UNIT@$1.timer" <<EOF
 [Unit]
 Description=pve-toolbox ZFS scrub of $1 (timer)
@@ -137,6 +159,7 @@ _zs_enable() { # _zs_enable <pool>
         ok "enabled $ZS_UNIT@$1.timer  ($(_zs_schedule_of "$1"))"
     else
         warn "could not enable $ZS_UNIT@$1.timer"
+        return 1
     fi
 }
 
@@ -217,6 +240,8 @@ module_install() {
     for p in "${want[@]}"; do
         _zs_valid_pool "$p" || die "pool name '$p' cannot be used in a systemd unit name"
     done
+    _zs_pools_unique "${want[@]}" \
+        || die "pool names normalize to the same schedule variable: $ZS_COLLISION"
 
     step "Schedules"
     dim "  staggered a week apart so the pools do not all scrub on the same night"
@@ -224,7 +249,13 @@ module_install() {
     for p in "${want[@]}"; do
         var=$(_zs_var "$p")
         [[ -z ${!var:-} ]] && printf -v "$var" '%s' "$(_zs_default_schedule "$i")"
-        ask "$var" "  $p (systemd OnCalendar)" "${!var}"
+        while true; do
+            ask "$var" "  $p (systemd OnCalendar)" "${!var}"
+            _zs_valid_schedule "${!var}" && break
+            [[ $ASSUME_YES -eq 1 ]] && die "invalid systemd OnCalendar for $p: ${!var}"
+            warn "invalid systemd OnCalendar: ${!var}"
+            printf -v "$var" '%s' "$(_zs_default_schedule "$i")"
+        done
         i=$((i + 1))
     done
     ask ZFS_SCRUB_INTERVAL "how often to check whether a scrub finished (seconds)" \
@@ -257,7 +288,9 @@ module_install() {
         _zs_write_timer "$p" "${!var}"
     done
     systemctl daemon-reload
-    for p in "${want[@]}"; do _zs_enable "$p"; done
+    for p in "${want[@]}"; do
+        _zs_enable "$p" || die "could not enable the timer for $p"
+    done
 
     step "Verification"
     local t=y
@@ -303,12 +336,14 @@ module_update() {
 
     _zs_scheduled
     [[ ${#ZS_SCHEDULED[@]} -eq 0 ]] && die "not installed"
+    _zs_pools_unique "${ZS_SCHEDULED[@]}" \
+        || die "pool names normalize to the same schedule variable: $ZS_COLLISION"
 
     local src dst new cur
     src=$(_zs_src); dst="$TOOLBOX_BIN_DIR/$ZS_BIN"
     new=$(_zs_sum "$src"); cur=$(_zs_sum "$dst")
 
-    local missing=() stale=() p
+    local missing=() stale=() invalid=() p
     if have_zfs; then
         # `done <` redirects stdin for the whole body, so nothing in here may
         # prompt - ask and confirm would read pool names instead of the
@@ -318,7 +353,11 @@ module_update() {
             [[ " ${ZS_SCHEDULED[*]} " == *" $p "* ]] || missing+=("$p")
         done < <(_zs_pools)
         for p in "${ZS_SCHEDULED[@]}"; do
-            zpool list -H -o name "$p" >/dev/null 2>&1 || stale+=("$p")
+            if zpool list -H -o name "$p" >/dev/null 2>&1; then
+                _zs_valid_schedule "$(_zs_schedule_of "$p")" || invalid+=("$p")
+            else
+                stale+=("$p")
+            fi
         done
     fi
 
@@ -329,8 +368,9 @@ module_update() {
     printf '  scheduled  %s\n' "${ZS_SCHEDULED[*]}"
     if [[ ${#missing[@]} -gt 0 ]]; then warn "pools with no scrub timer: ${missing[*]}"; fi
     if [[ ${#stale[@]} -gt 0 ]];   then warn "timers for pools that are gone: ${stale[*]}"; fi
+    if [[ ${#invalid[@]} -gt 0 ]]; then warn "invalid timer schedule: ${invalid[*]}"; fi
 
-    if [[ $drift -eq 0 && ${#missing[@]} -eq 0 && ${#stale[@]} -eq 0 && ${FORCE:-0} -eq 0 ]]; then
+    if [[ $drift -eq 0 && ${#missing[@]} -eq 0 && ${#stale[@]} -eq 0 && ${#invalid[@]} -eq 0 && ${FORCE:-0} -eq 0 ]]; then
         ok "up to date"
         return 0
     fi
@@ -370,16 +410,42 @@ module_update() {
             ask_yn add "  schedule scrubs for $p" "y"
             [[ $add == y ]] || continue
             sched=$(_zs_default_schedule "$i")
-            ask sched "  $p (systemd OnCalendar)" "$sched"
+            while true; do
+                ask sched "  $p (systemd OnCalendar)" "$sched"
+                _zs_valid_schedule "$sched" && break
+                [[ $ASSUME_YES -eq 1 ]] && die "invalid systemd OnCalendar for $p: $sched"
+                warn "invalid systemd OnCalendar: $sched"
+                sched=$(_zs_default_schedule "$i")
+            done
             _zs_write_timer "$p" "$sched"
             added+=("$p")
             i=$((i + 1))
         done
     fi
 
+    if [[ ${#invalid[@]} -gt 0 ]]; then
+        step "Pools with invalid schedules"
+        local repair_index=${#ZS_SCHEDULED[@]}
+        for p in "${invalid[@]}"; do
+            local repair_sched
+            repair_sched=$(_zs_default_schedule "$repair_index")
+            while true; do
+                ask repair_sched "  $p (systemd OnCalendar)" "$repair_sched"
+                _zs_valid_schedule "$repair_sched" && break
+                [[ $ASSUME_YES -eq 1 ]] && die "invalid systemd OnCalendar for $p: $repair_sched"
+                warn "invalid systemd OnCalendar: $repair_sched"
+                repair_sched=$(_zs_default_schedule "$repair_index")
+            done
+            _zs_write_timer "$p" "$repair_sched"
+            added+=("$p")
+            repair_index=$((repair_index + 1))
+        done
+    fi
+
     systemctl daemon-reload
     for p in "${added[@]:-}"; do
-        [[ -n $p ]] && _zs_enable "$p"
+        [[ -n $p ]] || continue
+        _zs_enable "$p" || die "could not enable the timer for $p"
     done
 
     _zs_scheduled
@@ -397,6 +463,17 @@ module_status() {
         printf 'not installed'
         return 1
     fi
+    if ! _zs_pools_unique "${ZS_SCHEDULED[@]}"; then
+        printf 'invalid pools  [%s]' "$ZS_COLLISION"
+        return 0
+    fi
+    local schedule_pool
+    for schedule_pool in "${ZS_SCHEDULED[@]}"; do
+        if ! _zs_valid_schedule "$(_zs_schedule_of "$schedule_pool")"; then
+            printf 'invalid schedule  [%s]' "$schedule_pool"
+            return 0
+        fi
+    done
     local running=() p
     if have_zfs; then
         for p in "${ZS_SCHEDULED[@]}"; do

@@ -115,6 +115,53 @@ _sc_schedule_for() {
     printf '%s' "${!var}"
 }
 
+SC_UPDATE_STAGE=""
+SC_UPDATE_TIMERS_PAUSED=0
+SC_UPDATE_TIMER_LIST=""
+
+_sc_resume_update_timers() {
+    local s rc=0
+    for s in $SC_UPDATE_TIMER_LIST; do
+        systemctl start "$UNIT_PREFIX-$s.timer" 2>/dev/null \
+            || { warn "could not restart $UNIT_PREFIX-$s.timer"; rc=1; }
+    done
+    return "$rc"
+}
+
+_sc_update_cleanup() {
+    if [[ $SC_UPDATE_TIMERS_PAUSED -eq 1 ]]; then
+        _sc_resume_update_timers || true
+    fi
+    if [[ -n $SC_UPDATE_STAGE && -d $SC_UPDATE_STAGE ]]; then
+        rm -f -- "$SC_UPDATE_STAGE"/*
+        rmdir -- "$SC_UPDATE_STAGE" 2>/dev/null || true
+    fi
+    [[ -n ${CHECKSUM_FILE:-} ]] && rm -f -- "$CHECKSUM_FILE"
+    SC_UPDATE_STAGE=""
+}
+
+_sc_stage_binary() { # _sc_stage_binary <asset-fragment> <arch> <output>
+    local frag=$1 arch=$2 output=$3 url name
+    url=$(gh_asset "$frag" "$arch")
+    if [[ -z $url ]]; then
+        warn "no asset matching '$frag' for $arch in $GH_TAG"
+        return 1
+    fi
+    name=$(basename "$url")
+    info "downloading $name"
+    curl -fsSL --retry 3 -o "$output" "$url" \
+        || { warn "download failed: $url"; return 1; }
+    verify_checksum "$output" "$name" \
+        || { warn "checksum mismatch for $name"; return 1; }
+    return 0
+}
+
+_sc_install_staged() { # _sc_install_staged <staged-file> <target-name>
+    local staged=$1 target="$TOOLBOX_BIN_DIR/$2"
+    cp -a "$target" "$target.prev" || return 1
+    install -m 0755 "$staged" "$target"
+}
+
 # --------------------------------------------------------------- install --
 
 module_install() {
@@ -255,23 +302,46 @@ module_update() {
 
     gh_fetch_checksums
 
-    step "Pausing timers"
+    # Fetch and verify the complete release while the old timers and binaries
+    # are still operational. Nothing below pauses monitoring until every asset
+    # is ready to install.
+    SC_UPDATE_STAGE=$(mktemp -d)
+    SC_UPDATE_TIMER_LIST="${SC_PRESENT[*]}"
+    SC_UPDATE_TIMERS_PAUSED=0
+    trap '_sc_update_cleanup' EXIT
     local s
+    for s in "${SC_PRESENT[@]}"; do
+        if ! _sc_stage_binary "${SC_ASSET[$s]}" "$arch" "$SC_UPDATE_STAGE/${SC_BIN[$s]}"; then
+            trap - EXIT
+            _sc_update_cleanup
+            die "could not stage every collector for $GH_TAG; existing timers and binaries were left untouched"
+        fi
+    done
+
+    step "Pausing timers"
+    SC_UPDATE_TIMERS_PAUSED=1
     for s in "${SC_PRESENT[@]}"; do
         systemctl stop "$UNIT_PREFIX-$s.timer" 2>/dev/null || true
         wait_for_idle "$UNIT_PREFIX-$s"
     done
 
     step "Replacing binaries"
-    local updated=()
+    local updated=() install_failed=""
     for s in "${SC_PRESENT[@]}"; do
-        install_release_binary "${SC_ASSET[$s]}" "$arch" "${SC_BIN[$s]}" && updated+=("$s")
+        if _sc_install_staged "$SC_UPDATE_STAGE/${SC_BIN[$s]}" "${SC_BIN[$s]}"; then
+            updated+=("$s")
+        else
+            install_failed=$s
+            break
+        fi
     done
-    [[ -n ${CHECKSUM_FILE:-} ]] && rm -f "$CHECKSUM_FILE"
-
-    if [[ ${#updated[@]} -eq 0 ]]; then
-        for s in "${SC_PRESENT[@]}"; do systemctl start "$UNIT_PREFIX-$s.timer" 2>/dev/null || true; done
-        die "no binaries replaced - no matching assets in $GH_TAG"
+    if [[ -n $install_failed ]]; then
+        for s in "${updated[@]:-}"; do
+            [[ -n $s ]] && rollback_binary "${SC_BIN[$s]}" || true
+        done
+        trap - EXIT
+        _sc_update_cleanup
+        die "could not replace $install_failed; restored previous binaries and timers"
     fi
 
     step "Smoke test"
@@ -283,17 +353,24 @@ module_update() {
 
     if [[ ${#broken[@]} -gt 0 ]]; then
         step "Rollback"
-        for s in "${broken[@]}"; do
+        # Roll back the whole release, not only the collector whose smoke test
+        # failed, so the installation never sits at mixed versions.
+        for s in "${updated[@]}"; do
             if rollback_binary "${SC_BIN[$s]}"; then
-                run_unit "$UNIT_PREFIX-$s" >/dev/null 2>&1 \
-                    && ok "$s healthy again on the previous build" \
-                    || warn "$s still failing after rollback - check its config"
+                if [[ $s == performance ]]; then
+                    ok "$s restored to the previous build"
+                else
+                    run_unit "$UNIT_PREFIX-$s" >/dev/null 2>&1 \
+                        && ok "$s healthy again on the previous build" \
+                        || warn "$s still failing after rollback - check its config"
+                fi
             fi
         done
     fi
 
     step "Resuming timers"
-    for s in "${SC_PRESENT[@]}"; do systemctl start "$UNIT_PREFIX-$s.timer" 2>/dev/null || true; done
+    _sc_resume_update_timers || die "one or more collector timers could not be restarted"
+    SC_UPDATE_TIMERS_PAUSED=0
 
     if [[ ${#broken[@]} -eq 0 ]]; then
         state_set "$MODULE_NAME" VERSION "$GH_TAG"
@@ -303,6 +380,8 @@ module_update() {
     else
         warn "state kept at $current because these rolled back: ${broken[*]}"
     fi
+    trap - EXIT
+    _sc_update_cleanup
 }
 
 # ---------------------------------------------------------------- status --

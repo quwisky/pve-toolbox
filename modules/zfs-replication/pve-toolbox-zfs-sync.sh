@@ -30,6 +30,7 @@ CONF="${SYNC_CONF:-/etc/pve-toolbox/zfs-replication.conf}"
 DISCORD_WEBHOOK=""
 JOBS=""
 LOG_DIR="/var/log/pve-toolbox"
+LOCK_DIR="/run/pve-toolbox"
 NOTIFY_START=0
 LOG_TAIL=25
 
@@ -70,6 +71,22 @@ _job_key() {
     printf 'JOB_%s_%s' "${n^^}" "$2"
 }
 
+_job_id() {
+    local n=${1//[^A-Za-z0-9]/_}
+    printf '%s' "${n^^}"
+}
+
+_jobs_unique() {
+    local job id
+    declare -A seen=()
+    for job in $JOBS; do
+        id=$(_job_id "$job")
+        [[ -z ${seen[$id]+x} ]] \
+            || fail "jobs '${seen[$id]}' and '$job' share the same config key"
+        seen[$id]=$job
+    done
+}
+
 _load_job() {
     local var
     var=$(_job_key "$JOB" SRC);   JOB_SRC=${!var:-}
@@ -83,15 +100,100 @@ _load_job() {
     [[ -n $JOB_DST ]] || fail "job '$JOB' has no target"
 }
 
-# Fall back to the target's own mountpoint rather than a hardcoded /mnt path.
-_target_path() {
-    if [[ -n $JOB_PATH ]]; then
-        printf '%s' "$JOB_PATH"
-        return 0
-    fi
-    local mp
+# Resolve a requested permission path beneath the target dataset's own local
+# mountpoint. This blocks both explicit JOB_PATH=/ and a target dataset mounted
+# over a broad system root.
+_resolve_fixup_path() {
+    local mp raw canon mount
+    FIXUP_PATH=""; FIXUP_ERROR=""
     mp=$(zfs get -H -o value mountpoint "$JOB_DST" 2>/dev/null || true)
-    [[ -n $mp && $mp != none && $mp != legacy && $mp != - ]] && printf '%s' "$mp"
+    if [[ -z $mp || $mp == none || $mp == legacy || $mp == - ]]; then
+        FIXUP_ERROR="$JOB_DST has no local mountpoint"
+        return 1
+    fi
+    raw=${JOB_PATH:-$mp}
+    canon=$(realpath -e -- "$raw" 2>/dev/null) \
+        || { FIXUP_ERROR="$raw cannot be resolved"; return 1; }
+    mount=$(realpath -e -- "$mp" 2>/dev/null) \
+        || { FIXUP_ERROR="$mp cannot be resolved"; return 1; }
+    [[ -d $canon ]] \
+        || { FIXUP_ERROR="$canon is not a directory"; return 1; }
+    case $mount in
+        /|/bin|/boot|/dev|/etc|/etc/pve|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/usr/local|/var|/var/lib|/var/lib/pve-toolbox|/var/lib/vz)
+            FIXUP_ERROR="$mount is a protected target mountpoint"
+            return 1 ;;
+    esac
+    case $canon in
+        /|/bin|/boot|/dev|/etc|/etc/pve|/home|/lib|/lib64|/media|/mnt|/opt|/proc|/root|/run|/sbin|/srv|/sys|/tmp|/usr|/usr/local|/var|/var/lib|/var/lib/pve-toolbox|/var/lib/vz)
+            FIXUP_ERROR="$canon is a protected system root"
+            return 1 ;;
+    esac
+    if [[ $canon != "$mount" && $canon != "$mount"/* ]]; then
+        FIXUP_ERROR="$canon is outside target mountpoint $mount"
+        return 1
+    fi
+    FIXUP_PATH=$canon
+    return 0
+}
+
+_take_lock() {
+    local dir parent parent_owner parent_mode owner mode lock
+    dir=$(realpath -m -- "$LOCK_DIR" 2>/dev/null) || return 2
+    parent=${dir%/*}; [[ -n $parent ]] || parent=/
+    parent_owner=$(stat -c '%u' "$parent" 2>/dev/null) || return 2
+    parent_mode=$(stat -c '%a' "$parent" 2>/dev/null) || return 2
+    [[ $parent_owner == "$EUID" ]] || return 2
+    (( (8#$parent_mode & 0022) == 0 )) || return 2
+    [[ ! -L $LOCK_DIR ]] || return 2
+    mkdir -p "$dir" 2>/dev/null || return 2
+    chmod 0700 "$dir" 2>/dev/null || return 2
+    owner=$(stat -c '%u' "$dir" 2>/dev/null) || return 2
+    mode=$(stat -c '%a' "$dir" 2>/dev/null) || return 2
+    [[ $owner == "$EUID" && $mode == 700 ]] || return 2
+    LOCK_DIR=$dir
+    lock="$dir/pve-toolbox-zfs-sync-$JOB.lock"
+    [[ ! -L $lock ]] || return 2
+    exec 9<>"$lock" || return 2
+    chmod 0600 "$lock" 2>/dev/null || return 2
+    flock -n 9
+}
+
+_apply_fixups() {
+    local path="" failed=0
+    FIXUP_PERMS="not requested"
+    [[ -n $JOB_CHOWN || -n $JOB_CHMOD ]] || return 0
+
+    if ! _resolve_fixup_path; then
+        FIXUP_PERMS="failed, $FIXUP_ERROR"
+        log "warning: $FIXUP_PERMS"
+        return 1
+    fi
+
+    path=$FIXUP_PATH
+    FIXUP_PERMS=""
+    if [[ -n $JOB_CHOWN ]]; then
+        if chown -R "$JOB_CHOWN" "$path"; then
+            FIXUP_PERMS="owner $JOB_CHOWN"
+        else
+            FIXUP_PERMS="owner $JOB_CHOWN failed"
+            failed=1
+        fi
+    fi
+    if [[ -n $JOB_CHMOD ]]; then
+        if chmod -R "$JOB_CHMOD" "$path"; then
+            FIXUP_PERMS="${FIXUP_PERMS:+$FIXUP_PERMS, }mode $JOB_CHMOD"
+        else
+            FIXUP_PERMS="${FIXUP_PERMS:+$FIXUP_PERMS, }mode $JOB_CHMOD failed"
+            failed=1
+        fi
+    fi
+    FIXUP_PERMS="${FIXUP_PERMS:-none} on $path"
+    if [[ $failed -eq 1 ]]; then
+        log "warning: permission fixup failed ($FIXUP_PERMS)"
+        return 1
+    fi
+    log "applied $FIXUP_PERMS"
+    return 0
 }
 
 # --------------------------------------------------------------- reports --
@@ -128,6 +230,7 @@ main() {
     else
         fail "cannot read $CONF"
     fi
+    _jobs_unique
 
     if [[ $mode == list ]]; then
         printf '%s\n' $JOBS
@@ -152,13 +255,16 @@ main() {
 
     command -v syncoid >/dev/null 2>&1 || fail "syncoid not found - apt install sanoid"
     command -v zfs     >/dev/null 2>&1 || fail "zfs not found"
+    command -v flock   >/dev/null 2>&1 || fail "flock not found - apt install util-linux"
 
     # A slow run must not have a second copy started on top of it.
-    local lock="/run/lock/pve-toolbox-zfs-sync-$JOB.lock"
-    exec 9>"$lock"
-    if ! flock -n 9; then
+    local lock_rc=0
+    _take_lock || lock_rc=$?
+    if [[ $lock_rc -eq 1 ]]; then
         log "job $JOB is already running - leaving it alone"
         exit 0
+    elif [[ $lock_rc -ne 0 ]]; then
+        fail "cannot establish a safe lock in $LOCK_DIR"
     fi
 
     _ds_exists "$JOB_SRC" || fail "source dataset does not exist: $JOB_SRC"
@@ -205,27 +311,9 @@ main() {
     fi
 
     # Ownership fixups, only where they were actually asked for.
-    local path perms="not requested"
-    path=$(_target_path)
-    if [[ -n $JOB_CHOWN || -n $JOB_CHMOD ]]; then
-        if [[ -z $path ]]; then
-            perms="skipped, $JOB_DST has no mountpoint"
-            log "warning: $perms"
-        elif [[ ! -d $path ]]; then
-            perms="skipped, $path is not a directory"
-            log "warning: $perms"
-        else
-            perms=""
-            if [[ -n $JOB_CHOWN ]]; then
-                chown -R "$JOB_CHOWN" "$path" && perms="owner $JOB_CHOWN"
-            fi
-            if [[ -n $JOB_CHMOD ]]; then
-                chmod -R "$JOB_CHMOD" "$path" && perms="${perms:+$perms, }mode $JOB_CHMOD"
-            fi
-            perms="${perms:-none} on $path"
-            log "applied $perms"
-        fi
-    fi
+    local perms fixup_failed=0
+    _apply_fixups || fixup_failed=1
+    perms=$FIXUP_PERMS
 
     local after_used after_snaps delta
     after_used=$(_used_bytes "$JOB_DST")
@@ -236,12 +324,16 @@ main() {
     # syncoid succeeded but a requested chown/chmod did not land: the original
     # script reported that as a clean success. Flag it instead.
     local color=$DISCORD_OK verdict="finished"
-    if [[ $perms == skipped* ]]; then
+    if [[ $fixup_failed -eq 1 ]]; then
         color=$DISCORD_WARN
         verdict="finished, permissions not applied"
     fi
 
-    _record ok "$elapsed"
+    if [[ $fixup_failed -eq 1 ]]; then
+        _record degraded "$elapsed"
+    else
+        _record ok "$elapsed"
+    fi
     printf '\nfinished %s after %s\n' "$(date -Is)" "$(_hms "$elapsed")" >> "$logfile"
 
     discord_notify "$DISCORD_WEBHOOK" "$color" "ZFS replication $verdict - $JOB" \
@@ -255,7 +347,9 @@ main() {
         "Target size" "$(_human "$after_used")" \
         Snapshots    "$before_snaps to $after_snaps" \
         Permissions  "$perms" || true
+    [[ $fixup_failed -eq 0 ]] \
+        || fail "replication succeeded but requested permission fixups failed"
     log "done in $(_hms "$elapsed")"
 }
 
-main "$@"
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi
