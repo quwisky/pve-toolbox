@@ -63,6 +63,7 @@ nav:
   - Getting started: getting-started.md
   - Modules:
       - Overview: modules/index.md
+      - config-backup: modules/config-backup.md
       - zfs-scrub: modules/zfs-scrub.md
       - zfs-replication: modules/zfs-replication.md
       - scrutiny-collectors: modules/scrutiny-collectors.md

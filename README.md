@@ -20,6 +20,7 @@ pve-toolbox/
 │   └── tui.sh               # whiptail/dialog widgets for `pve-toolbox ui`
 ├── modules/
 │   ├── _template/           # copy this to start a new module (underscore = hidden)
+│   ├── config-backup/       # snapshots /etc/pve and host config, reported to Discord
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
 │   ├── zfs-scrub/           # scheduled scrub per pool, reported to Discord
 │   └── zfs-replication/     # syncoid jobs on a timer, reported to Discord
@@ -67,6 +68,7 @@ without regenerating anything. See
 
 | Module | What it does |
 | --- | --- |
+| [config-backup](https://quwisky.github.io/pve-toolbox/modules/config-backup/) | Snapshots `/etc/pve` and host config into verified tar.gz archives on a timer |
 | [zfs-scrub](https://quwisky.github.io/pve-toolbox/modules/zfs-scrub/) | Scrubs each pool on its own timer, reports start and result to Discord |
 | [zfs-replication](https://quwisky.github.io/pve-toolbox/modules/zfs-replication/) | Runs `syncoid` jobs on timers, reports duration and size to Discord |
 | [scrutiny-collectors](https://quwisky.github.io/pve-toolbox/modules/scrutiny-collectors/) | SMART / ZFS / MDADM collectors feeding a remote Scrutiny instance |
