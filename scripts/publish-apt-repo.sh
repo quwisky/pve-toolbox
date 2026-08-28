@@ -35,7 +35,30 @@ Description: pve-toolbox packages for PVE 9 / Debian 13
 SignWith: $fingerprint
 EOF
 
-reprepro --basedir "$repo_dir" includedeb trixie "$deb"
+# Publishing is retryable after a later workflow step fails. An identical
+# package already in the pool is success; the same package/version with
+# different bytes is a conflict and must never be silently replaced.
+package=$(dpkg-deb --field "$deb" Package)
+version=$(dpkg-deb --field "$deb" Version)
+architecture=$(dpkg-deb --field "$deb" Architecture)
+existing=""
+while IFS= read -r -d '' candidate; do
+    [[ $(dpkg-deb --field "$candidate" Package) == "$package" ]] || continue
+    [[ $(dpkg-deb --field "$candidate" Version) == "$version" ]] || continue
+    [[ $(dpkg-deb --field "$candidate" Architecture) == "$architecture" ]] || continue
+    existing=$candidate
+    break
+done < <(find "$repo_dir/pool" -type f -name '*.deb' -print0 2>/dev/null)
+
+if [[ -n $existing ]]; then
+    cmp -s "$deb" "$existing" || {
+        echo "error: $package $version is already published with different bytes" >&2
+        exit 1
+    }
+    echo "$package $version is already present; keeping the identical package"
+else
+    reprepro --basedir "$repo_dir" includedeb trixie "$deb"
+fi
 install -m 0644 "$public_key" "$repo_dir/pve-toolbox.asc"
 gpg --batch --yes --dearmor \
     --output "$repo_dir/pve-toolbox.gpg" "$public_key"

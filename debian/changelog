@@ -1,3 +1,13 @@
+pve-toolbox (0.1.1) unstable; urgency=medium
+
+  * Propagate module failures to command-line callers.
+  * Require exact checksums for downloaded collector executables.
+  * Make collector installation and release publication transactional.
+  * Pin the APT repository key fingerprint during bootstrap.
+  * Enforce the complete validation matrix before publishing a release.
+
+ -- Bence Nagy <quwisky@qwky.eu>  Fri, 28 Aug 2026 22:30:00 +0200
+
 pve-toolbox (0.1.0) unstable; urgency=medium
 
   * Initial native Debian package for PVE 9 / Debian 13.

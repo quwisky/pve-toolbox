@@ -30,7 +30,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            build-essential debhelper devscripts reprepro shellcheck python3-pip rsync
+            build-essential debhelper devscripts expect gnupg reprepro shellcheck \
+            python3-pip rsync whiptail zsh
           pip install -r docs/requirements.txt
 
       - name: Resolve release version
@@ -46,8 +47,14 @@ jobs:
             release_tag="v$package_version"
             if git ls-remote --exit-code --tags origin "refs/tags/$release_tag" \
               >/dev/null 2>&1; then
-              echo "release tag already exists: $release_tag" >&2
-              exit 1
+              if [ "$GITHUB_RUN_ATTEMPT" = 1 ]; then
+                echo "release tag already exists: $release_tag" >&2
+                exit 1
+              fi
+              git fetch --force origin \
+                "refs/tags/$release_tag:refs/tags/$release_tag"
+              test "$(git rev-parse "$release_tag^{commit}")" = "$GITHUB_SHA"
+              echo "resuming the same release run for $release_tag"
             fi
           else
             release_tag=$GITHUB_REF_NAME
@@ -60,7 +67,14 @@ jobs:
       - name: Test and build
         run: |
           make lint
-          PACKAGING_TEST_REQUIRED=1 REPOSITORY_TEST_REQUIRED=1 make test
+          sudo env "PATH=$PATH" \
+            TUI_TEST_REQUIRED=1 \
+            ZSH_TEST_REQUIRED=1 \
+            CB_GATE_TESTS_REQUIRED=1 \
+            PACKAGING_TEST_REQUIRED=1 \
+            PACKAGING_INSTALL_TEST_REQUIRED=1 \
+            REPOSITORY_TEST_REQUIRED=1 \
+            make test
           mkdocs build --strict
           dpkg-buildpackage --build=binary --no-sign
           mkdir -p dist
@@ -100,16 +114,20 @@ jobs:
           git -C apt-repo config user.name github-actions[bot]
           git -C apt-repo config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git -C apt-repo add --all
-          git -C apt-repo commit -m "chore(repo): publish ${RELEASE_TAG}" \
-            || { echo "release is already published"; exit 1; }
-          git -C apt-repo push origin HEAD:apt
+          if git -C apt-repo diff --cached --quiet; then
+            echo "APT repository already contains ${RELEASE_TAG}; continuing the release"
+          else
+            git -C apt-repo commit -m "chore(repo): publish ${RELEASE_TAG}"
+            git -C apt-repo push origin HEAD:apt
+          fi
 
       - name: Attach package to GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] \
+              && [ "$GITHUB_RUN_ATTEMPT" = 1 ]; then
               echo "GitHub release already exists: $RELEASE_TAG" >&2
               exit 1
             fi

@@ -37,9 +37,10 @@ curl -fsSL https://raw.githubusercontent.com/quwisky/pve-toolbox/master/scripts/
 pve-toolbox
 ```
 
-The bootstrap configures the signed `trixie` repository and installs the
+The bootstrap verifies the downloaded signing key against the pinned
+fingerprint, configures the signed `trixie` repository, and installs the
 `pve-toolbox` package. Future releases arrive through `apt upgrade`.
-The repository signing key has fingerprint
+The trusted repository signing key has fingerprint
 `C354 8BC5 2A3D 5375 57DB 2A7F 84A4 3B72 AE04 34F2`.
 
 PVE 8 remains on the git-checkout installation path:
