@@ -23,10 +23,15 @@ Architectures: amd64
 Signed-By: /etc/apt/keyrings/pve-toolbox.gpg
 ```
 
-The key is published at
-`https://quwisky.github.io/pve-toolbox/apt/pve-toolbox.gpg`. It is scoped to
-this source through `Signed-By`; it is not added to the system-wide trusted
-keyring.
+The binary keyring is published at
+`https://quwisky.github.io/pve-toolbox/apt/pve-toolbox.gpg`, with an armored
+copy at `https://quwisky.github.io/pve-toolbox/apt/pve-toolbox.asc`. It is
+scoped to this source through `Signed-By`; it is not added to the system-wide
+trusted keyring. Its primary fingerprint is:
+
+```text
+C354 8BC5 2A3D 5375 57DB  2A7F 84A4 3B72 AE04 34F2
+```
 
 ## Package contents
 
@@ -77,10 +82,11 @@ A manual run derives the tag from `VERSION` and refuses any other branch or an
 existing tag.
 
 The workflow runs the full tests, builds the `.deb`, imports the dedicated
-signing subkey from the `APT_SIGNING_KEY` Actions secret, and updates the signed
-`trixie/main` repository on the `apt` branch. It then creates a GitHub Release
-with generated changelog notes and attaches the package plus its SHA-256
-manifest.
+signing subkey from the `APT_SIGNING_KEY` Actions secret, and verifies that it
+matches the public certificate committed at `keys/pve-toolbox.asc`. It updates
+the signed `trixie/main` repository on the `apt` branch, publishes both public
+key formats, then creates a GitHub Release with generated changelog notes and
+attaches the package plus its SHA-256 manifest.
 
 Pages is assembled from the MkDocs site and the `apt` branch. The docs and
 release workflows share one deployment concurrency group so neither can erase

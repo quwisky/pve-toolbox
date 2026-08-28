@@ -96,7 +96,7 @@ jobs:
         run: |
           ./scripts/publish-apt-repo.sh \
             apt-repo "dist/pve-toolbox_${PACKAGE_VERSION}_all.deb" \
-            "$APT_SIGNING_FINGERPRINT"
+            "$APT_SIGNING_FINGERPRINT" keys/pve-toolbox.asc
           git -C apt-repo config user.name github-actions[bot]
           git -C apt-repo config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git -C apt-repo add --all

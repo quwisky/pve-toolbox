@@ -39,6 +39,8 @@ pve-toolbox
 
 The bootstrap configures the signed `trixie` repository and installs the
 `pve-toolbox` package. Future releases arrive through `apt upgrade`.
+The repository signing key has fingerprint
+`C354 8BC5 2A3D 5375 57DB 2A7F 84A4 3B72 AE04 34F2`.
 
 PVE 8 remains on the git-checkout installation path:
 

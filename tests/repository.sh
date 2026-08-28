@@ -37,14 +37,26 @@ gpg --batch --passphrase "" \
 fingerprint=$(gpg --batch --with-colons --list-secret-keys \
     | awk -F: '$1 == "fpr" { print $10; exit }')
 [[ $fingerprint =~ ^[0-9A-F]{40}$ ]] || fail "test key has no usable fingerprint"
+public_key="$WORK/test-signing-key.asc"
+gpg --batch --armor --export "$fingerprint" > "$public_key"
+
+mismatch_repo="$WORK/mismatch-repository"
+if ./scripts/publish-apt-repo.sh \
+    "$mismatch_repo" "$deb" "$fingerprint" keys/pve-toolbox.asc \
+    >/dev/null 2>&1; then
+    fail "publisher accepted a mismatched public key"
+fi
 
 repo="$WORK/repository"
-./scripts/publish-apt-repo.sh "$repo" "$deb" "$fingerprint" >/dev/null
+./scripts/publish-apt-repo.sh \
+    "$repo" "$deb" "$fingerprint" "$public_key" >/dev/null
 expected="trixie|main|amd64: pve-toolbox $(<VERSION)"
 [[ $(reprepro --basedir "$repo" list trixie) == "$expected" ]] \
     || fail "repository index did not contain the package"
 [[ -s $repo/dists/trixie/main/binary-amd64/Packages.gz ]] \
     || fail "repository omitted the amd64 package index"
+cmp -s "$public_key" "$repo/pve-toolbox.asc" \
+    || fail "repository omitted the armored public key"
 gpgv --keyring "$repo/pve-toolbox.gpg" \
     "$repo/dists/trixie/Release.gpg" "$repo/dists/trixie/Release" \
     >/dev/null 2>&1 || fail "repository Release signature did not verify"
