@@ -1,0 +1,25 @@
+#!/bin/sh
+set -e
+
+install -d -m 0750 /etc/pve-toolbox
+install -d -m 0755 /var/lib/pve-toolbox
+
+if [ -r /etc/os-release ]; then
+    . /etc/os-release
+    if [ "${VERSION_CODENAME:-}" != trixie ]; then
+        echo "pve-toolbox: warning: this package targets Debian 13 (trixie) / PVE 9" >&2
+    fi
+fi
+
+legacy=/usr/local/bin/pve-toolbox
+if [ -e "$legacy" ] || [ -L "$legacy" ]; then
+    target=$(readlink -f "$legacy" 2>/dev/null || true)
+    if [ "$target" != /usr/bin/pve-toolbox ]; then
+        echo "pve-toolbox: warning: $legacy takes precedence over /usr/bin/pve-toolbox" >&2
+        echo "pve-toolbox: remove the old checkout symlink after verifying the package" >&2
+    fi
+fi
+
+#DEBHELPER#
+
+exit 0

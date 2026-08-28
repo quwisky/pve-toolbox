@@ -30,7 +30,17 @@ pve-toolbox/
 └── Makefile                 # make syntax / lint / test
 ```
 
-## Install
+## Install on PVE 9
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/quwisky/pve-toolbox/master/scripts/install-apt.sh | bash
+pve-toolbox
+```
+
+The bootstrap configures the signed `trixie` repository and installs the
+`pve-toolbox` package. Future releases arrive through `apt upgrade`.
+
+PVE 8 remains on the git-checkout installation path:
 
 ```bash
 git clone https://github.com/quwisky/pve-toolbox.git /opt/pve-toolbox
@@ -53,11 +63,12 @@ pve-toolbox update [mod]...    update (all installed if none given)
 pve-toolbox check [mod]...     report available updates, change nothing
 pve-toolbox status [mod]       detailed status
 pve-toolbox uninstall <mod>...
-pve-toolbox self-update        git pull this checkout
+pve-toolbox self-update        git pull this checkout (git installs only)
+pve-toolbox --version          print the installed version
 ```
 
 Flags: `-y` non-interactive (modules read their env vars instead of prompting),
-`-f` force, `-h` help.
+`-f` force, `-V` version, `-h` help.
 
 `link` also installs bash and zsh completion for commands, module names and
 tags. Candidates are queried from the launcher, so a new module completes

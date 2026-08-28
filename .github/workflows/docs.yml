@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: docs-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.ref == 'refs/heads/master' && 'pages' || format('docs-{0}', github.ref) }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -30,6 +30,15 @@ jobs:
 
       # --strict turns broken internal links and nav typos into failures.
       - run: mkdocs build --strict
+
+      - name: Preserve the published APT repository
+        if: github.ref == 'refs/heads/master'
+        run: |
+          if git ls-remote --exit-code --heads origin apt >/dev/null 2>&1; then
+            git clone --depth 1 --branch apt "${{ github.server_url }}/${{ github.repository }}.git" apt-repo
+            mkdir -p site/apt
+            rsync -a --exclude .git apt-repo/ site/apt/
+          fi
 
       - uses: actions/upload-pages-artifact@v3
         if: github.ref == 'refs/heads/master'

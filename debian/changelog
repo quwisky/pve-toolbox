@@ -1,0 +1,6 @@
+pve-toolbox (0.1.0) unstable; urgency=medium
+
+  * Initial native Debian package for PVE 9 / Debian 13.
+  * Add a guarded manual release path from master with generated notes.
+
+ -- Bence Nagy <quwisky@qwky.eu>  Fri, 28 Aug 2026 19:00:00 +0200

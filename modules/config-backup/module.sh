@@ -29,7 +29,7 @@ CB_UNIT="pve-toolbox-config-backup"
 
 # -------------------------------------------------------------- internals --
 
-_cb_dir()   { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/opt/pve-toolbox}" "$MODULE_NAME"; }
+_cb_dir()   { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}" "$MODULE_NAME"; }
 _cb_src()   { printf '%s/%s.sh' "$(_cb_dir)" "$CB_BIN"; }
 _cb_timer() { printf '%s/%s.timer' "$TOOLBOX_SYSTEMD_DIR" "$CB_UNIT"; }
 

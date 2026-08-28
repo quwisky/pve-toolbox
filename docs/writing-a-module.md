@@ -64,7 +64,7 @@ word meaningful — the menu shows only that word in the `STATUS` column.
     Compute paths lazily inside a function instead:
 
     ```bash
-    _my_dir() { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/opt/pve-toolbox}" "$MODULE_NAME"; }
+    _my_dir() { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}" "$MODULE_NAME"; }
     ```
 
 !!! danger "Persist through the helpers, not ad-hoc dotfiles"

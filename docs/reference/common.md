@@ -19,6 +19,12 @@ host:
 | `TOOLBOX_BASH_COMPLETION_DIR` | `/usr/share/bash-completion/completions` |
 | `TOOLBOX_ZSH_COMPLETION_DIR` | `/usr/share/zsh/vendor-completions` |
 
+`TOOLBOX_ROOT` points at the checkout for git installs and at
+`/usr/lib/pve-toolbox` for Debian packages. Module files should use it when
+locating files shipped beside `module.sh`; their fallback is the packaged
+path. The launcher-only `PVE_TOOLBOX_ROOT` override exists for staging and
+package tests.
+
 ## Output
 
 `info` `ok` `warn` `die` `step` `dim`

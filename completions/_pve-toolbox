@@ -28,6 +28,7 @@ _pve-toolbox() {
         _values 'flag' \
             '(-y --yes)'{-y,--yes}'[non-interactive, take defaults]' \
             '(-f --force)'{-f,--force}'[reinstall or redownload even if current]' \
+            '(-V --version)'{-V,--version}'[show installed version]' \
             '(-h --help)'{-h,--help}'[show usage]'
         return
     fi

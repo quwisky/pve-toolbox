@@ -1,0 +1,67 @@
+.TH PVE-TOOLBOX 1 "August 2026" "pve-toolbox" "User Commands"
+.SH NAME
+pve-toolbox \- modular administration toolbox for Proxmox VE hosts
+.SH SYNOPSIS
+.B pve-toolbox
+.RI [ options ]
+.RI [ command ]
+.RI [ module ...]
+.SH DESCRIPTION
+.B pve-toolbox
+discovers self-contained administration modules and provides interactive,
+full-screen, and command-line interfaces for installing, updating, checking,
+reporting, and removing them.
+.SH COMMANDS
+.TP
+.B list [tag]
+List modules and their status, optionally filtered by tag.
+.TP
+.B install module ...
+Install or reconfigure modules.
+.TP
+.B update [module ...]
+Update named modules, or every installed module when none is named.
+.TP
+.B check [module ...]
+Check for updates without changing the host.
+.TP
+.B status [module ...]
+Show detailed module status.
+.TP
+.B uninstall module ...
+Remove modules after confirmation.
+.TP
+.B ui
+Open the full-screen interface. This requires whiptail or dialog.
+.TP
+.B link
+Link a git checkout into standard command and completion paths. Packaged
+installs refuse this command.
+.TP
+.B self-update
+Update a git checkout. Packaged installs use apt instead.
+.SH OPTIONS
+.TP
+.BR \-y ", " \-\-yes
+Run non-interactively with configured values and defaults.
+.TP
+.BR \-f ", " \-\-force
+Force reinstall or redownload behavior where a module supports it.
+.TP
+.BR \-V ", " \-\-version
+Print the installed version.
+.TP
+.BR \-h ", " \-\-help
+Print command usage.
+.SH FILES
+.TP
+.I /etc/pve-toolbox/
+Runtime-generated module configuration and secrets.
+.TP
+.I /var/lib/pve-toolbox/
+Runtime-generated module state.
+.TP
+.I /usr/lib/pve-toolbox/
+Packaged libraries and modules.
+.SH SEE ALSO
+Project documentation: https://quwisky.github.io/pve-toolbox/

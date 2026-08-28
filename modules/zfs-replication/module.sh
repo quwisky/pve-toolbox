@@ -23,7 +23,7 @@ ZR_LOG_DIR="/var/log/pve-toolbox"
 
 # ------------------------------------------------------------- internals --
 
-_zr_dir() { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/opt/pve-toolbox}" "$MODULE_NAME"; }
+_zr_dir() { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}" "$MODULE_NAME"; }
 _zr_src() { printf '%s/%s.sh' "$(_zr_dir)" "$ZR_BIN"; }
 
 _zr_defaults() {

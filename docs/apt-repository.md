@@ -1,0 +1,87 @@
+# APT repository
+
+The package repository supports PVE 9 / Debian 13 (`trixie`) only. PVE 8 hosts
+should keep using the [git checkout](getting-started.md#git-checkout).
+
+## Bootstrap
+
+The installer verifies the host suite before making changes, downloads the
+repository key, writes a deb822 source, and installs the package:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/quwisky/pve-toolbox/master/scripts/install-apt.sh | bash
+```
+
+The equivalent source is:
+
+```text
+Types: deb
+URIs: https://quwisky.github.io/pve-toolbox/apt/
+Suites: trixie
+Components: main
+Architectures: amd64
+Signed-By: /etc/apt/keyrings/pve-toolbox.gpg
+```
+
+The key is published at
+`https://quwisky.github.io/pve-toolbox/apt/pve-toolbox.gpg`. It is scoped to
+this source through `Signed-By`; it is not added to the system-wide trusted
+keyring.
+
+## Package contents
+
+The native, architecture-independent package starts at version `0.1.0`. The
+repository indexes it for `amd64`, the PVE host architecture, because Debian
+repositories place `Architecture: all` packages in each concrete client
+architecture index. It installs:
+
+| Path | Purpose |
+| --- | --- |
+| `/usr/bin/pve-toolbox` | launcher |
+| `/usr/lib/pve-toolbox/lib/` | shared launcher libraries |
+| `/usr/lib/pve-toolbox/modules/` | runtime modules; `_template` is excluded |
+| `/usr/share/bash-completion/completions/pve-toolbox` | Bash completion |
+| `/usr/share/zsh/vendor-completions/_pve-toolbox` | Zsh completion |
+| `/etc/pve-toolbox/` | generated config and secrets, directory mode `0750` |
+| `/var/lib/pve-toolbox/` | generated state, directory mode `0755` |
+
+`curl` and `jq` are hard dependencies. `whiptail` and `zfsutils-linux` are
+recommended; `smartmontools` and `sanoid` remain suggestions because only the
+modules that use them need them.
+
+Runtime config is not a dpkg conffile. Removing the package preserves both
+config and state; purging removes them. Module-installed helpers and systemd
+units under `/usr/local` and `/etc/systemd/system` remain owned by their
+modules, not by the package.
+
+## Checkout migration
+
+`/usr/local/bin` precedes `/usr/bin` on the default root path. If a previous
+`pve-toolbox link` symlink is still present, package installation warns because
+that checkout would continue to shadow the package. It never deletes the
+operator-owned symlink automatically.
+
+Packaged installs reject `pve-toolbox link` and `pve-toolbox self-update`.
+Upgrade them with:
+
+```bash
+apt update
+apt upgrade pve-toolbox
+```
+
+## Publishing a release
+
+A tag such as `v0.1.0` must match both `VERSION` and `debian/changelog`. The
+release workflow can run from that tag, or be started manually from `master`.
+A manual run derives the tag from `VERSION` and refuses any other branch or an
+existing tag.
+
+The workflow runs the full tests, builds the `.deb`, imports the dedicated
+signing subkey from the `APT_SIGNING_KEY` Actions secret, and updates the signed
+`trixie/main` repository on the `apt` branch. It then creates a GitHub Release
+with generated changelog notes and attaches the package plus its SHA-256
+manifest.
+
+Pages is assembled from the MkDocs site and the `apt` branch. The docs and
+release workflows share one deployment concurrency group so neither can erase
+or race the other.

@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = purge ]; then
+    rm -rf -- /etc/pve-toolbox /var/lib/pve-toolbox
+fi
+
+#DEBHELPER#
+
+exit 0

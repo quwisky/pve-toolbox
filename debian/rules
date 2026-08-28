@@ -1,0 +1,36 @@
+#!/usr/bin/make -f
+
+PACKAGE_ROOT := debian/pve-toolbox
+PACKAGE_LIB := $(PACKAGE_ROOT)/usr/lib/pve-toolbox
+PACKAGE_VERSION := $(shell dpkg-parsechangelog -S Version)
+
+%:
+	dh $@
+
+override_dh_auto_build:
+
+# The release and CI workflows run the repository test suite before package
+# construction. Running it through dh_auto_test would make tests/package.sh
+# recursively invoke dpkg-buildpackage.
+override_dh_auto_test:
+
+override_dh_auto_install:
+	install -D -m 0755 pve-toolbox $(PACKAGE_ROOT)/usr/bin/pve-toolbox
+	install -d -m 0755 $(PACKAGE_LIB)/lib $(PACKAGE_LIB)/modules
+	install -m 0644 lib/common.sh lib/discord.sh lib/tui.sh $(PACKAGE_LIB)/lib/
+	set -e; for module in modules/*; do \
+		name=$$(basename "$$module"); \
+		case $$name in _*) continue ;; esac; \
+		cp -a "$$module" "$(PACKAGE_LIB)/modules/$$name"; \
+	done
+	printf '%s\n' '$(PACKAGE_VERSION)' > $(PACKAGE_LIB)/VERSION
+	install -D -m 0644 completions/pve-toolbox.bash \
+		$(PACKAGE_ROOT)/usr/share/bash-completion/completions/pve-toolbox
+	install -D -m 0644 completions/_pve-toolbox \
+		$(PACKAGE_ROOT)/usr/share/zsh/vendor-completions/_pve-toolbox
+	install -d -m 0750 $(PACKAGE_ROOT)/etc/pve-toolbox
+	install -d -m 0755 $(PACKAGE_ROOT)/var/lib/pve-toolbox
+
+override_dh_fixperms:
+	dh_fixperms
+	chmod 0750 $(PACKAGE_ROOT)/etc/pve-toolbox

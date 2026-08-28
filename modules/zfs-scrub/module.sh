@@ -25,7 +25,7 @@ ZS_UNIT="pve-toolbox-zfs-scrub"
 
 # ------------------------------------------------------------- internals --
 
-_zs_dir() { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/opt/pve-toolbox}" "$MODULE_NAME"; }
+_zs_dir() { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}" "$MODULE_NAME"; }
 _zs_src() { printf '%s/%s.sh' "$(_zs_dir)" "$ZS_BIN"; }
 
 _zs_defaults() {

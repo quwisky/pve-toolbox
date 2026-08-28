@@ -1,0 +1,7 @@
+# The issue's package contract requires secret-bearing runtime config to live
+# in a group-readable directory while individual files remain mode 0600.
+pve-toolbox: non-standard-dir-perm 0750 != 0755 [etc/pve-toolbox/]
+
+# /usr/lib/pve-toolbox is the split package root; lib/ mirrors the checkout's
+# stable layout so modules can source the same paths under both install modes.
+pve-toolbox: repeated-path-segment lib [usr/lib/pve-toolbox/lib/]

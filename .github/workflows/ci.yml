@@ -41,7 +41,8 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            make git ca-certificates whiptail expect zsh curl jq rsync tar gzip
+            make git ca-certificates whiptail expect zsh curl jq rsync tar gzip \
+            build-essential debhelper devscripts gnupg reprepro
 
       - uses: actions/checkout@v4
 
@@ -55,3 +56,6 @@ jobs:
           # This job installs every runner dependency, so a skipped gate test
           # here means a broken environment, not an absent one.
           CB_GATE_TESTS_REQUIRED: "1"
+          PACKAGING_TEST_REQUIRED: "1"
+          PACKAGING_INSTALL_TEST_REQUIRED: "1"
+          REPOSITORY_TEST_REQUIRED: "1"

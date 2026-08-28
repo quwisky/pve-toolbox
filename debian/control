@@ -1,0 +1,18 @@
+Source: pve-toolbox
+Section: admin
+Priority: optional
+Maintainer: Bence Nagy <quwisky@qwky.eu>
+Build-Depends: debhelper-compat (= 13)
+Rules-Requires-Root: no
+Standards-Version: 4.7.2
+Homepage: https://github.com/quwisky/pve-toolbox
+
+Package: pve-toolbox
+Architecture: all
+Depends: curl, jq, ${misc:Depends}
+Recommends: whiptail, zfsutils-linux
+Suggests: smartmontools, sanoid
+Description: modular administration toolbox for Proxmox VE hosts
+ pve-toolbox provides an interactive launcher and self-contained modules for
+ backups, ZFS maintenance and replication, and storage monitoring on Proxmox
+ VE hosts.

@@ -27,7 +27,7 @@ _pve_toolbox() {
     done
 
     if [[ $cur == -* ]]; then
-        mapfile -t COMPREPLY < <(compgen -W '-y --yes -f --force -h --help' -- "$cur")
+        mapfile -t COMPREPLY < <(compgen -W '-y --yes -f --force -V --version -h --help' -- "$cur")
         return
     fi
 

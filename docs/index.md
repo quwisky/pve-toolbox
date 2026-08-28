@@ -56,7 +56,9 @@ See [Writing a module](writing-a-module.md#state-versus-config).
 
     | Path | Contents | Mode |
     | --- | --- | --- |
-    | `/usr/local/bin/` | launcher symlink and module helper scripts | `0755` |
+    | `/usr/bin/pve-toolbox` | packaged launcher | `0755` |
+    | `/usr/lib/pve-toolbox/` | packaged libraries and real modules | `0755` |
+    | `/usr/local/bin/` | checkout launcher symlink and module helper scripts | `0755` |
     | `/usr/local/lib/pve-toolbox/` | shared libs the helpers source | `0644` |
     | `/etc/pve-toolbox/` | per-module config, secrets included | `0600` |
     | `/var/lib/pve-toolbox/` | per-module state | `0644` |
@@ -70,7 +72,7 @@ See [Writing a module](writing-a-module.md#state-versus-config).
     `TOOLBOX_BASH_COMPLETION_DIR`, `TOOLBOX_ZSH_COMPLETION_DIR` — which is what
     makes the modules testable off a real host.
 
-    The two completion paths are the exception to the table: `link` symlinks
-    into them rather than copying, so `self-update` refreshes them, and it
-    skips either directory that is not already there rather than creating a
-    tree for a shell that is not installed.
+    The two completion paths are regular package files under an APT install.
+    For a checkout, `link` symlinks into them so `self-update` refreshes them,
+    and skips either directory that is not already there rather than creating
+    a tree for a shell that is not installed.

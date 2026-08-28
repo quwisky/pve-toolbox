@@ -12,8 +12,9 @@
 #   pve-toolbox uninstall <mod>...
 #   pve-toolbox link               symlink into /usr/local/bin + completions
 #   pve-toolbox self-update        git pull this checkout
+#   pve-toolbox --version          print the installed version
 #
-# Flags: -y/--yes non-interactive, -f/--force, -h/--help
+# Flags: -y/--yes non-interactive, -f/--force, -V/--version, -h/--help
 #
 set -euo pipefail
 
@@ -25,9 +26,26 @@ while [[ -L $_src ]]; do
     _src="$(readlink -- "$_src")"
     [[ $_src != /* ]] && _src="$_dir/$_src"
 done
-TOOLBOX_ROOT="$(cd -- "$(dirname -- "$_src")" && pwd)"
+_dir="$(cd -- "$(dirname -- "$_src")" && pwd -P)"
+_src="$_dir/$(basename -- "$_src")"
+# The Debian package splits the launcher in /usr/bin from its code in
+# /usr/lib. PVE_TOOLBOX_ROOT makes that layout testable without installing a
+# package onto the host running the tests.
+TOOLBOX_PACKAGED=0
+if [[ $_src == /usr/bin/pve-toolbox || -n ${PVE_TOOLBOX_ROOT:-} ]]; then
+    TOOLBOX_PACKAGED=1
+    TOOLBOX_ROOT="${PVE_TOOLBOX_ROOT:-/usr/lib/pve-toolbox}"
+else
+    TOOLBOX_ROOT="$_dir"
+fi
 unset _src _dir
 MODULE_DIR="$TOOLBOX_ROOT/modules"
+
+if [[ -r $TOOLBOX_ROOT/VERSION ]]; then
+    IFS= read -r TOOLBOX_VERSION < "$TOOLBOX_ROOT/VERSION"
+else
+    TOOLBOX_VERSION="unknown"
+fi
 
 # shellcheck source=lib/common.sh
 source "$TOOLBOX_ROOT/lib/common.sh"
@@ -345,6 +363,8 @@ cmd_ui() {
 }
 
 cmd_link() {
+    [[ $TOOLBOX_PACKAGED -eq 0 ]] \
+        || die "this install is managed by apt; do not replace dpkg-owned paths"
     require_root
     ln -sfn "$TOOLBOX_ROOT/pve-toolbox" "$TOOLBOX_BIN_DIR/pve-toolbox"
     ok "linked $TOOLBOX_BIN_DIR/pve-toolbox -> $TOOLBOX_ROOT/pve-toolbox"
@@ -402,6 +422,8 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags>
 }
 
 cmd_self_update() {
+    [[ $TOOLBOX_PACKAGED -eq 0 ]] \
+        || die "this install is managed by apt; run: apt update && apt upgrade pve-toolbox"
     [[ -d "$TOOLBOX_ROOT/.git" ]] || die "$TOOLBOX_ROOT is not a git checkout"
     command -v git >/dev/null 2>&1 || die "git not installed"
     info "pulling $TOOLBOX_ROOT"
@@ -420,6 +442,7 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -y|--yes)   ASSUME_YES=1 ;;
         -f|--force) FORCE=1 ;;
+        -V|--version) printf 'pve-toolbox %s\n' "$TOOLBOX_VERSION"; exit 0 ;;
         -h|--help)  usage; exit 0 ;;
         --)         shift; ARGS+=("$@"); break ;;
         -*)         die "unknown flag: $1" ;;
@@ -427,7 +450,7 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
-export ASSUME_YES FORCE TOOLBOX_ROOT
+export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED
 
 case "${ARGS[0]:-menu}" in
     menu)        menu ;;
