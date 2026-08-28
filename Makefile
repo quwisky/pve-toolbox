@@ -16,6 +16,7 @@ syntax:
 
 test: syntax
 	@./tests/lib.sh
+	@./tests/doctor.sh
 	@./tests/discord.sh
 	@./tests/config-backup.sh
 	@./tests/hardening.sh

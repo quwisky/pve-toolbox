@@ -43,6 +43,7 @@ pve-toolbox install <mod>...   install specific modules
 pve-toolbox update [mod]...    update (all installed if none given)
 pve-toolbox check [mod]...     report available updates, change nothing
 pve-toolbox status [mod]       detailed status
+pve-toolbox doctor             read-only host and module health audit
 pve-toolbox uninstall <mod>...
 pve-toolbox self-update        git pull this checkout (git installs only)
 pve-toolbox --version          print the installed version
@@ -50,6 +51,10 @@ pve-toolbox --version          print the installed version
 
 Flags: `-y` non-interactive (modules read their env vars instead of
 prompting), `-f` force, `-V` version, `-h` help.
+
+The [`doctor` command](doctor.md) checks the host and every installed module
+without making changes. Its exit status distinguishes a healthy report from a
+warning or failure, so it can also run from monitoring automation.
 
 ## Shell completion
 

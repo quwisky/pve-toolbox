@@ -39,7 +39,7 @@ _pve_toolbox() {
         install|update|check|status)
                    candidates=$(_pve_toolbox_candidates modules) ;;
         uninstall) candidates=$(_pve_toolbox_candidates installed) ;;
-        *)         return ;;   # menu, link, self-update take nothing
+        *)         return ;;   # menu, doctor, link, self-update take nothing
     esac
 
     # Drop what is already on the line, so completing a second module does

@@ -66,7 +66,7 @@ has_not() { [[ " $1 " != *" $2 "* ]]; }
 
 # Commands, and every verb the launcher dispatches.
 got=$(complete_words 1 ./pve-toolbox "")
-for verb in menu ui list install update check status uninstall link self-update; do
+for verb in menu ui list install update check status doctor uninstall link self-update; do
     has "$got" "$verb" || fail "commands missing $verb, got: $got"
 done
 pass "bash offers every command"
@@ -126,7 +126,7 @@ got=$(complete_words 1 ./pve-toolbox "--f")
 pass "bash offers flags"
 
 # menu, ui, link and self-update take nothing, and neither does a typo.
-for verb in menu ui link self-update definitely-not-a-command; do
+for verb in menu ui doctor link self-update definitely-not-a-command; do
     got=$(complete_words 2 ./pve-toolbox "$verb" "")
     [[ -z $got ]] || fail "$verb should offer nothing, got: $got"
 done
@@ -203,7 +203,7 @@ pass "status names an uninstalled module without calling it a failure"
 # status must still tell automation that the requested operation was incomplete.
 failure_root=$(tmp)
 mkdir -p "$failure_root/lib" "$failure_root/modules/failing"
-cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$failure_root/lib/"
+cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" "$failure_root/lib/"
 printf '%s\n' \
     'MODULE_NAME="failing"' \
     'MODULE_TITLE="Failing fixture"' \

@@ -41,6 +41,7 @@ contents=$(dpkg-deb --contents "$deb")
 for path in \
     ./usr/bin/pve-toolbox \
     ./usr/lib/pve-toolbox/lib/common.sh \
+    ./usr/lib/pve-toolbox/lib/doctor.sh \
     ./usr/lib/pve-toolbox/modules/config-backup/module.sh \
     ./usr/share/man/man1/pve-toolbox.1.gz \
     ./usr/share/bash-completion/completions/pve-toolbox \

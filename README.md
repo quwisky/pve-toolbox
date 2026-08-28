@@ -17,6 +17,7 @@ pve-toolbox/
 ├── lib/
 │   ├── common.sh            # output, prompts, releases, systemd, state, conf
 │   ├── discord.sh           # webhook reporting, also installed for helper scripts
+│   ├── doctor.sh            # read-only host and module health checks
 │   └── tui.sh               # whiptail/dialog widgets for `pve-toolbox ui`
 ├── modules/
 │   ├── _template/           # copy this to start a new module (underscore = hidden)
@@ -65,6 +66,7 @@ pve-toolbox install <mod>...   install specific modules
 pve-toolbox update [mod]...    update (all installed if none given)
 pve-toolbox check [mod]...     report available updates, change nothing
 pve-toolbox status [mod]       detailed status
+pve-toolbox doctor             read-only host and module health audit
 pve-toolbox uninstall <mod>...
 pve-toolbox self-update        git pull this checkout (git installs only)
 pve-toolbox --version          print the installed version
@@ -72,6 +74,12 @@ pve-toolbox --version          print the installed version
 
 Flags: `-y` non-interactive (modules read their env vars instead of prompting),
 `-f` force, `-V` version, `-h` help.
+
+`doctor` checks cluster quorum, failed units, ZFS pools, Proxmox storage,
+recent failed tasks, pending reboots, and installed module health without
+changing the host. See the [doctor
+guide](https://quwisky.github.io/pve-toolbox/doctor/) for result states,
+thresholds, and exit codes.
 
 `link` also installs bash and zsh completion for commands, module names and
 tags. Candidates are queried from the launcher, so a new module completes
@@ -96,7 +104,7 @@ $EDITOR modules/my-thing/module.sh
 
 Set the metadata (`MODULE_NAME` must match the directory name) and implement
 `module_install`, `module_update`, `module_status`, `module_uninstall`.
-`module_status_long` is optional and falls back to `module_status`.
+`module_status_long` and the read-only `module_doctor` health hook are optional.
 
 Two rules:
 
