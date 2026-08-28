@@ -1,0 +1,30 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: pve-toolbox
+Label: pve-toolbox
+Suite: trixie
+Codename: trixie
+Date: Fri, 28 Aug 2026 19:21:07 UTC
+Architectures: amd64
+Components: main
+Description: pve-toolbox packages for PVE 9 / Debian 13
+MD5Sum:
+ eaf1724642f5824159a0f5a0b45b3d92 749 main/binary-amd64/Packages
+ 2b0e3fc79c316e6a5ec538903c15b108 516 main/binary-amd64/Packages.gz
+ 0c950f5837ba90b7bc5e8b10208d8cc3 147 main/binary-amd64/Release
+SHA1:
+ 45da80b49911305b1f00fe4a4e5db45236958b12 749 main/binary-amd64/Packages
+ 429661a033e5d252a5c74de616daf6c1b6934098 516 main/binary-amd64/Packages.gz
+ 531a1dca0bb579084f64ca8e2782c6668e8f261a 147 main/binary-amd64/Release
+SHA256:
+ b78f4517ccd99419a7b21fa744db1a53bcb6388ed2e28dca493ca76a4d028aee 749 main/binary-amd64/Packages
+ 2f95366fb18cd141a7db8befbefd5fc699cc4b8b655948fa8bd0fa6b86e36bcf 516 main/binary-amd64/Packages.gz
+ bb42eacdfb19a88face15d2adab9fbbfb10c0b848685cd8fe591163fded5e78e 147 main/binary-amd64/Release
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYKAB0WIQQqmLOs65PDs5JvBs/Cms+w5x2iVAUCapHfowAKCRDCms+w5x2i
+VKZYAQDoeaZM79qpY+Lh8CmLJV3IgEcD8senMKxZnSZrFYeq1gD9Ea8spHv9CM+m
+BskDARbakKzLbdeyEA9MnArLyKjIcwU=
+=Gl97
+-----END PGP SIGNATURE-----

@@ -1,0 +1,8 @@
+Origin: pve-toolbox
+Label: pve-toolbox
+Codename: trixie
+Suite: trixie
+Architectures: amd64
+Components: main
+Description: pve-toolbox packages for PVE 9 / Debian 13
+SignWith: C3548BC52A3D537557DB2A7F84A43B72AE0434F2

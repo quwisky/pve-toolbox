@@ -1,0 +1,21 @@
+Package: pve-toolbox
+Version: 0.1.0
+Architecture: all
+Maintainer: Bence Nagy <quwisky@qwky.eu>
+Installed-Size: 298
+Depends: curl, jq
+Recommends: whiptail, zfsutils-linux
+Suggests: smartmontools, sanoid
+Homepage: https://github.com/quwisky/pve-toolbox
+Priority: optional
+Section: admin
+Filename: pool/main/p/pve-toolbox/pve-toolbox_0.1.0_all.deb
+Size: 69092
+SHA256: 93ec7448ae48b23d5e342b4231eca3e90550903efa5e533886a59c6c4d40ae40
+SHA1: 15c9711ad13d38f1b94f3940ffb3124ef1b1f249
+MD5sum: c8f978681b2ec5521894cbfa7c33a408
+Description: modular administration toolbox for Proxmox VE hosts
+ pve-toolbox provides an interactive launcher and self-contained modules for
+ backups, ZFS maintenance and replication, and storage monitoring on Proxmox
+ VE hosts.
+
