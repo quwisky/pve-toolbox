@@ -89,9 +89,9 @@ flag on this module will do it.
 
 ## Secrets policy
 
-`/etc/pve/priv/`, anything named `*.pem` or `*.key`, and `/etc/apt/auth.conf`
-are removed from the staged tree before anything else looks at it. What is left
-is then scanned for private key headers, `password:`/`token=`-shaped
+`/etc/pve/priv/`, anything named `*.pem` or `*.key`, `/etc/apt/auth.conf`, and
+`/etc/apt/auth.conf.d/` are removed from the staged tree before anything else
+looks at it. What is left is then scanned for private key headers, `password:`/`token=`-shaped
 assignments in any case, bearer tokens and Discord webhook URLs. **An unexpected match
 aborts the run** — no archive is written and the failure is reported.
 
@@ -111,8 +111,9 @@ error message prints. A bare glob exempts a file from every pattern; a
 intact.
 
 To archive the secrets rather than drop them, set `CB_INCLUDE_SECRETS=1` and
-give an age recipient. Each file is then encrypted to `secrets/<path>.age` and
-the cleartext removed; without a recipient the install refuses. Keep the age
+give an age recipient. Every file under the explicit secret paths, plus every
+staged `*.pem` and `*.key`, is then encrypted to `secrets/<path>.age` and the
+cleartext removed; without a recipient the install refuses. Keep the age
 identity somewhere that is not the machine being backed up.
 
 ## Restore classes
@@ -328,7 +329,7 @@ pve-config-backup restore latest --target-node pve2 \
 | node path | `nodes/<src>/` → `nodes/<tgt>/`, with the source node read from the staged tree rather than trusted from metadata |
 | `--map-storage A=B` | anchored on the field (`^key: A:`), so mapping `local` leaves `local-lvm` and `my-local` alone |
 | `--map-bridge A=B` | `bridge=A` in a `netN:` line; the model, MAC, tag and firewall options survive byte for byte |
-| `--vmid-offset N`, `--map-vmid A=B` | the filename and the `vm-<id>-`, `subvol-<id>-` and `<id>/` tokens — never a bare number, which would rewrite `memory: 100` and `tag=100` |
+| `--vmid-offset N`, `--map-vmid A=B` | the guest config filename, its `firewall/<vmid>.fw`, and the `vm-<id>-`, `subvol-<id>-` and `<id>/` tokens — never a bare number, which would rewrite `memory: 100` and `tag=100` |
 | `--regenerate-macs` | the MAC in both serialisations — qemu's `net0: <model>=<mac>,…` and LXC's `hwaddr=<mac>`. One new address per old one, so an interface keeps the same MAC in the running config and in every snapshot stanza |
 
 Covers qemu (`scsiN`, `ideN`, `virtioN`, `sataN`, `efidiskN`, `tpmstateN`,
@@ -355,6 +356,10 @@ Refusing beats a transform that is right most of the time.
   rewritten; the volumes are not, because nothing here touches storage. A guest
   renamed 100 → 1100 refers to `vm-1100-disk-0` while the volume is still
   called `vm-100-disk-0`. Move the volumes first; the report names them.
+- **Every effective target VMID must be unique.** Explicit maps and offset or
+  identity results are checked together before the staged tree is changed.
+  Guest firewall targets are checked against both the archive and the live
+  cluster, so a remap cannot replace another guest's rules.
 - **An archive from a cluster keeps only its own node.** `/etc/pve/nodes/`
   holds a directory per member, so an archive taken on a cluster contains every
   node's guests. The transform keeps the source node's and drops the rest —
@@ -493,7 +498,9 @@ write, and a `.manifest` of `path`, restore class, size and digest. Both are
 pruned with their archive.
 
 Only one capture runs at a time — a second invocation finds the lock held,
-says so and exits successfully rather than piling up behind the first.
+says so and exits successfully rather than piling up behind the first. The
+lock lives only in a private directory owned by the running user; if that
+directory cannot be created and verified, the run fails closed.
 
 ## Update semantics
 

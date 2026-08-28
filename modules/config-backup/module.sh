@@ -296,7 +296,7 @@ module_install() {
     _cb_seed_from_conf
     # git belongs to the git backend, which is a later release. curl and jq are
     # what discord.sh needs; tar and gzip are essential and always present.
-    pkg_ensure curl:curl jq:jq
+    pkg_ensure curl:curl jq:jq util-linux:flock
 
     step "Discord webhook"
     if [[ -z $CB_WEBHOOK && $ASSUME_YES -eq 1 ]]; then

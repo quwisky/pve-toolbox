@@ -428,6 +428,13 @@ _cb_collect_host() {
     do
         _cb_take "$(_cb_host "$p")" "host/$p"
     done
+    # apt deliberately keeps repository credentials outside sources.list.
+    # Stage them only when they will be encrypted immediately, just like
+    # pmxcfs private material above.
+    if [[ $CB_INCLUDE_SECRETS -eq 1 ]]; then
+        _cb_take "$(_cb_host etc/apt/auth.conf)" "host/etc/apt/auth.conf"
+        _cb_take "$(_cb_host etc/apt/auth.conf.d)" "host/etc/apt/auth.conf.d"
+    fi
     _cb_take "$(_cb_host var/spool/cron/crontabs)" "host/var/spool/cron/crontabs"
 
     # GRUB: the file, not the generated grub.cfg - IOMMU and vfio are
@@ -543,14 +550,30 @@ _cb_drop_secrets() {
 _cb_encrypt_secrets() {
     command -v age >/dev/null 2>&1 || fail "CB_INCLUDE_SECRETS is on but age is not installed"
     [[ -n $CB_AGE_RECIPIENT ]] || fail "CB_INCLUDE_SECRETS is on but CB_AGE_RECIPIENT is empty"
-    local f rel
-    while IFS= read -r f; do
+    local p f rel
+    local -a files=()
+    # Encrypt everything the drop pass would otherwise remove: the explicit
+    # secret roots and key-shaped files found anywhere else in the stage.
+    for p in "${CB_SECRET_PATHS[@]}"; do
+        if [[ -f $CB_STAGE/$p ]]; then
+            files+=("$CB_STAGE/$p")
+        elif [[ -d $CB_STAGE/$p ]]; then
+            while IFS= read -r -d '' f; do files+=("$f"); done \
+                < <(find "$CB_STAGE/$p" -type f -print0 2>/dev/null)
+        fi
+    done
+    while IFS= read -r -d '' f; do files+=("$f"); done \
+        < <(find "$CB_STAGE" \( -name '*.key' -o -name '*.pem' \) -type f -print0 2>/dev/null)
+
+    for f in "${files[@]}"; do
+        # A key inside an explicit secret root appears in both searches.
+        [[ -f $f ]] || continue
         rel=${f#"$CB_STAGE"/}
         mkdir -p "$(dirname "$CB_STAGE/secrets/$rel")"
         age -r "$CB_AGE_RECIPIENT" -o "$CB_STAGE/secrets/$rel.age" "$f" \
             || fail "age failed on $rel"
         rm -f "$f"
-    done < <(find "$CB_STAGE/pve/priv" -type f 2>/dev/null | LC_ALL=C sort)
+    done
     return 0
 }
 
@@ -1486,6 +1509,7 @@ _cb_restore() { # _cb_restore <source> [selector]
     # transform renames anything, so scoping by the VMID you can see in
     # `inspect` selects what you meant rather than nothing at all.
     if [[ -n $CB_TARGET_NODE ]]; then
+        CB_XN_SOURCE_SELECTOR=$CB_SELECTOR
         _cb_prune_to_selector
         CB_SELECTOR=""
         _cb_transform
@@ -1731,6 +1755,7 @@ CB_XN_SOURCE_GONE=0
 CB_XN_VMID_OFFSET=0
 CB_XN_REGEN_MACS=0
 CB_XN_REPORT=""
+CB_XN_SOURCE_SELECTOR=""
 declare -A CB_MAP_STORAGE=()
 declare -A CB_MAP_BRIDGE=()
 declare -A CB_MAP_VMID=()
@@ -1828,6 +1853,103 @@ _cb_new_vmid() { # _cb_new_vmid <old>
     if [[ -n ${CB_MAP_VMID[$1]:-} ]]; then printf '%s' "${CB_MAP_VMID[$1]}"; return 0; fi
     if [[ $CB_XN_VMID_OFFSET -ne 0 ]]; then printf '%s' $(( $1 + CB_XN_VMID_OFFSET )); return 0; fi
     printf '%s' "$1"
+}
+
+_cb_xn_target_selector() { # _cb_xn_target_selector <source-selector> <source-node>
+    local target=$1 src=$2 old new
+    if [[ -n $src && $src != unknown && $src != "$CB_TARGET_NODE" ]]; then
+        target=${target/#pve\/nodes\/$src/pve\/nodes\/$CB_TARGET_NODE}
+    fi
+    if [[ $target =~ ^(.*\/(qemu-server|lxc)/)([0-9]+)\.conf$ ]]; then
+        old=${BASH_REMATCH[3]}; new=$(_cb_new_vmid "$old")
+        target="${BASH_REMATCH[1]}$new.conf"
+    elif [[ $target =~ ^pve/firewall/([0-9]+)\.fw$ ]]; then
+        old=${BASH_REMATCH[1]}; new=$(_cb_new_vmid "$old")
+        target="pve/firewall/$new.fw"
+    fi
+    printf '%s' "$target"
+}
+
+# Every guest is validated together before a single config is renamed. This
+# catches explicit-map collisions as well as collisions between an explicit
+# map and the offset/identity result of another guest.
+_cb_xn_validate_vmid_targets() { # _cb_xn_validate_vmid_targets <source-node>
+    local src=$1 f old new
+    local -A targets=()
+    local -a roots=("$CB_SRC_DIR/pve/qemu-server" "$CB_SRC_DIR/pve/lxc")
+    [[ -n $src && $src != unknown ]] \
+        && roots+=("$CB_SRC_DIR/pve/nodes/$src/qemu-server" "$CB_SRC_DIR/pve/nodes/$src/lxc")
+    while IFS= read -r f; do
+        old=$(basename "$f" .conf)
+        [[ $old =~ ^[0-9]+$ ]] || continue
+        new=$(_cb_new_vmid "$old")
+        _cb_valid_vmid "$new" || continue
+        if [[ -n ${targets[$new]+set} ]]; then
+            fail "VMID mapping collision: $old and ${targets[$new]} both target VMID $new"
+        fi
+        targets[$new]=$old
+    done < <(find "${roots[@]}" -maxdepth 1 -type f -name '*.conf' 2>/dev/null | LC_ALL=C sort)
+    return 0
+}
+
+# Numeric firewall files belong to their guest and must undergo the identical
+# VMID transform. Reject every collision before the transform mutates anything.
+_cb_xn_validate_firewalls() {
+    local dir="$CB_SRC_DIR/pve/firewall" f old new target i
+    [[ -d $dir ]] || return 0
+    local -a files=() olds=() news=()
+    local -A sources=() targets=()
+    while IFS= read -r f; do
+        old=$(basename "$f" .fw)
+        [[ $old =~ ^[0-9]+$ ]] || continue
+        new=$(_cb_new_vmid "$old")
+        _cb_valid_vmid "$new" \
+            || fail "firewall VMID mapping target $new is not a valid VMID (100-999999999)"
+        [[ -z ${targets[$new]+set} ]] \
+            || fail "firewall VMID mapping collision: $old and ${targets[$new]} both target VMID $new"
+        files+=("$f"); olds+=("$old"); news+=("$new")
+        sources[$old]=1; targets[$new]=$old
+    done < <(find "$dir" -maxdepth 1 -type f -name '*.fw' 2>/dev/null | LC_ALL=C sort)
+
+    for i in "${!files[@]}"; do
+        old=${olds[$i]}; new=${news[$i]}
+        [[ $old != "$new" ]] || continue
+        target="$dir/$new.fw"
+        if [[ ( -e $target || -L $target ) && -z ${sources[$new]+set} ]]; then
+            fail "firewall VMID mapping collision: $old cannot replace existing $new.fw"
+        fi
+        if [[ -e $CB_PVE_DIR/firewall/$new.fw || -L $CB_PVE_DIR/firewall/$new.fw ]]; then
+            fail "firewall VMID mapping collision: target VMID $new already has live firewall rules"
+        fi
+    done
+    return 0
+}
+
+# Moves are staged through a private directory so swaps cannot clobber either
+# side. Collision validation has already run while the source tree was intact.
+_cb_xn_firewalls() {
+    local dir="$CB_SRC_DIR/pve/firewall" f old new tmp i
+    [[ -d $dir ]] || return 0
+    local -a files=() olds=() news=()
+    while IFS= read -r f; do
+        old=$(basename "$f" .fw)
+        [[ $old =~ ^[0-9]+$ ]] || continue
+        new=$(_cb_new_vmid "$old")
+        files+=("$f"); olds+=("$old"); news+=("$new")
+    done < <(find "$dir" -maxdepth 1 -type f -name '*.fw' 2>/dev/null | LC_ALL=C sort)
+    tmp=$(mktemp -d "$dir/.vmid-map.XXXXXX")
+    for i in "${!files[@]}"; do
+        old=${olds[$i]}; new=${news[$i]}
+        [[ $old != "$new" ]] || continue
+        mv "${files[$i]}" "$tmp/$new.fw"
+    done
+    while IFS= read -r -d '' f; do mv "$f" "$dir/$(basename "$f")"; done \
+        < <(find "$tmp" -maxdepth 1 -type f -print0)
+    rmdir "$tmp"
+    for i in "${!files[@]}"; do
+        [[ ${olds[$i]} == "${news[$i]}" ]] || _cb_xn_note "  firewall  ${olds[$i]}.fw -> ${news[$i]}.fw"
+    done
+    return 0
 }
 
 # A VMID lives under some other, live node. A hit under the source node's own
@@ -1944,20 +2066,6 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
     _cb_xn_note "Transform report"
     _cb_xn_note "  mode      $CB_XN_MODE"
 
-    # Auto-exclusions first, so nothing below can resurrect them.
-    local rel why
-    while IFS= read -r rel; do
-        rel=${rel#./}
-        if why=$(_cb_xn_excluded "$rel"); then
-            rm -f "$CB_SRC_DIR/$rel"
-            _cb_xn_note "  excluded  $rel   ($why)"
-        elif _cb_is_cluster_wide "$rel"; then
-            rm -f "$CB_SRC_DIR/$rel"
-            _cb_xn_note "  blocked   $rel   (shared by the cluster; restoring it would delete entries this cluster has and the source did not)"
-        fi
-    done < <(cd "$CB_SRC_DIR" && find . -type f | LC_ALL=C sort)
-    _cb_xn_note ""
-
     # Derive the source node from the staged tree, not from metadata. A wrong
     # name made the rename below silently no-op while the guest loop still
     # rewrote configs under nodes/<source>/ - which maps onto that node's live
@@ -1991,13 +2099,10 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
         fi
         local keep=0
         for name in "${staged_nodes[@]}"; do
-            [[ $name == "$src" ]] && { keep=1; continue; }
-            rm -rf "${CB_SRC_DIR:?}/pve/nodes/$name"
-            _cb_xn_note "  dropped   nodes/$name/ (another node's guests)"
+            [[ $name == "$src" ]] && keep=1
         done
         [[ $keep -eq 1 ]] \
             || fail "the source says node '$src' but its tree holds only ${staged_nodes[*]} - refusing to transform an inconsistent archive"
-        staged_nodes=("$src")
     fi
 
     if [[ ${#staged_nodes[@]} -eq 1 ]]; then
@@ -2006,9 +2111,36 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
         fi
         src=${staged_nodes[0]}
     fi
+    _cb_xn_validate_vmid_targets "$src"
+    _cb_xn_validate_firewalls
+
+    if [[ -n $CB_XN_SOURCE_SELECTOR ]]; then
+        CB_SELECTOR=$(_cb_xn_target_selector "$CB_XN_SOURCE_SELECTOR" "$src")
+    fi
+
     # After the derivation, so the one line an operator scans names the node
     # actually used rather than whatever the metadata claimed.
     _cb_xn_note "  node      $src -> $CB_TARGET_NODE"
+    _cb_xn_note ""
+
+    # Validation above is read-only. Only after every effective VMID is known
+    # to be unique may the transform start pruning or renaming the staged tree.
+    local rel why
+    while IFS= read -r rel; do
+        rel=${rel#./}
+        if why=$(_cb_xn_excluded "$rel"); then
+            rm -f "$CB_SRC_DIR/$rel"
+            _cb_xn_note "  excluded  $rel   ($why)"
+        elif _cb_is_cluster_wide "$rel"; then
+            rm -f "$CB_SRC_DIR/$rel"
+            _cb_xn_note "  blocked   $rel   (shared by the cluster; restoring it would delete entries this cluster has and the source did not)"
+        fi
+    done < <(cd "$CB_SRC_DIR" && find . -type f | LC_ALL=C sort)
+    for name in "${staged_nodes[@]}"; do
+        [[ $name == "$src" ]] && continue
+        rm -rf "${CB_SRC_DIR:?}/pve/nodes/$name"
+        _cb_xn_note "  dropped   nodes/$name/ (another node's guests)"
+    done
     _cb_xn_note ""
 
     # nodes/<src>/ -> nodes/<tgt>/, resolving the real path rather than the
@@ -2030,6 +2162,7 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
         old=$base; new=$(_cb_new_vmid "$old")
         if ! _cb_valid_vmid "$new"; then
             _cb_xn_note "  $old  BLOCKED    $new is not a valid VMID (100-999999999)"
+            rm -f "$CB_SRC_DIR/pve/firewall/$old.fw"
             rm -f "$f"
             continue
         fi
@@ -2043,11 +2176,13 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
 
         if [[ $hostpci -eq 1 ]]; then
             _cb_xn_note "  $old  BLOCKED    it names host hardware (PCI address or USB bus-port) on the source machine"
+            rm -f "$CB_SRC_DIR/pve/firewall/$old.fw"
             rm -f "$f"
             continue
         fi
         if taken=$(_cb_vmid_taken "$new" "$src"); then
             _cb_xn_note "  $old  BLOCKED    VMID $new is already live on node $taken"
+            rm -f "$CB_SRC_DIR/pve/firewall/$old.fw"
             rm -f "$f"
             continue
         fi
@@ -2063,6 +2198,7 @@ _cb_transform() { # _cb_transform -> rewrites CB_SRC_DIR in place
             _cb_xn_note "  $old  restorable"
         fi
     done < <(find "$CB_SRC_DIR/pve" -path '*/qemu-server/*.conf' -o -path '*/lxc/*.conf' 2>/dev/null | LC_ALL=C sort)
+    _cb_xn_firewalls
     return 0
 }
 
@@ -2086,10 +2222,19 @@ _cb_show_transform() {
 # file description, and flock locks descriptions rather than processes, so a
 # second call would drop the first lock and silently re-take it.
 _cb_take_lock() {
-    local dir=$CB_LOCK_DIR
-    mkdir -p "$dir" 2>/dev/null || dir=/tmp
-    chmod 0700 "$dir" 2>/dev/null || true
-    exec 9>"$dir/pve-config-backup.lock"
+    local dir=$CB_LOCK_DIR owner mode lock
+    [[ ! -L $dir ]] || return 1
+    mkdir -p "$dir" 2>/dev/null || return 1
+    chmod 0700 "$dir" 2>/dev/null || return 1
+    owner=$(stat -c '%u' "$dir" 2>/dev/null) || return 1
+    mode=$(stat -c '%a' "$dir" 2>/dev/null) || return 1
+    [[ $owner == "$EUID" && $mode == 700 ]] || return 1
+    lock="$dir/pve-config-backup.lock"
+    [[ ! -L $lock ]] || return 1
+    # Read/write without truncation. The verified private directory prevents
+    # an unprivileged process replacing the path between this check and open.
+    exec 9<>"$lock" || return 1
+    chmod 0600 "$lock" 2>/dev/null || return 1
     flock -n 9
 }
 
@@ -2443,6 +2588,7 @@ main() {
     command -v jq   >/dev/null 2>&1 || fail "jq not found"
     command -v tar  >/dev/null 2>&1 || fail "tar not found"
     command -v gzip >/dev/null 2>&1 || fail "gzip not found"
+    command -v flock >/dev/null 2>&1 || fail "flock not found"
 
     _cb_read_conf
 

@@ -153,6 +153,40 @@ _cb_drop_secrets
 [[ -e $stage/pve/priv/authkey.key ]] && fail "a key under priv/ survived _cb_drop_secrets"
 pass "priv/ is dropped if it reaches the stage anyway"
 
+# Enabling secret capture must encrypt every path the drop pass covers, not
+# just pve/priv. Use a deterministic stand-in for age so this remains a unit
+# test and does not need a real keypair.
+mkdir -p "$FIX/root/etc/apt/auth.conf.d"
+printf 'machine repo.example login user password pass\n' > "$FIX/root/etc/apt/auth.conf"
+printf 'machine mirror.example login user password pass\n' > "$FIX/root/etc/apt/auth.conf.d/mirror.conf"
+printf -- '-----BEGIN PRIVATE KEY-----\nkey\n' > "$FIX/root/etc/cron.d/client.pem"
+age() {
+    [[ $1 == -r && $3 == -o && $# -eq 5 ]] || return 2
+    printf 'encrypted %s\n' "$(sha256sum "$5" | awk '{print $1}')" > "$4"
+}
+CB_INCLUDE_SECRETS=1 CB_AGE_RECIPIENT=age1test
+stage_fixture; stage=$CB_STAGE
+_cb_encrypt_secrets
+for encrypted in \
+    secrets/pve/priv/authkey.key.age \
+    secrets/host/etc/apt/auth.conf.age \
+    secrets/host/etc/apt/auth.conf.d/mirror.conf.age \
+    secrets/host/etc/cron.d/client.pem.age
+do
+    [[ -f $stage/$encrypted ]] || fail "$encrypted was not produced"
+done
+[[ -e $stage/pve/priv/authkey.key ]] && fail "pve/priv cleartext survived encryption"
+[[ -e $stage/host/etc/apt/auth.conf ]] && fail "apt auth cleartext survived encryption"
+[[ -e $stage/host/etc/cron.d/client.pem ]] && fail "a key-shaped cleartext file survived encryption"
+_cb_drop_secrets
+[[ -f $stage/secrets/host/etc/apt/auth.conf.age ]] \
+    || fail "the drop pass removed an encrypted secret"
+CB_INCLUDE_SECRETS=0 CB_AGE_RECIPIENT=''
+unset -f age
+rm -f "$FIX/root/etc/apt/auth.conf" "$FIX/root/etc/apt/auth.conf.d/mirror.conf" \
+      "$FIX/root/etc/cron.d/client.pem"
+pass "all configured secret paths are encrypted"
+
 # A key somewhere the drop list does not cover has to stop the run. The
 # pattern starts with a dash, so a scan that passes it to grep without -e
 # exits 2 and reads as clean - assert on the named path, not just on failure.
@@ -515,13 +549,11 @@ pass "no force-push in the source"
 
 if ! command -v git >/dev/null 2>&1 || ! command -v rsync >/dev/null 2>&1; then
     printf 'skip git backend tests, no git or rsync\n'
-    exit 0
-fi
-
-export CB_GIT_ENABLED=1
-export CB_GIT_BRANCH=master
-export CB_GIT_AUTHOR_NAME=test
-export CB_GIT_AUTHOR_EMAIL=test@example.invalid
+else
+    export CB_GIT_ENABLED=1
+    export CB_GIT_BRANCH=master
+    export CB_GIT_AUTHOR_NAME=test
+    export CB_GIT_AUTHOR_EMAIL=test@example.invalid
 
 # An embedded credential defeats the whole point of CB_GIT_TOKEN_FILE: git
 # writes it into .git/config and puts it in every argv.
@@ -710,6 +742,7 @@ pass "a branch name cannot smuggle in a force push"
 grep -rq 'ghp_TESTTOKENVALUE' "$CB_GIT_DIR/.git/config" 2>/dev/null \
     && fail "a token was written into .git/config"
 pass "no credential in .git/config"
+fi
 
 # --- 8. restore ------------------------------------------------------------
 
@@ -903,6 +936,18 @@ kill "$holder" 2>/dev/null || true
 wait "$holder" 2>/dev/null || true
 pass "the lock is exclusive"
 
+# Failure to create the configured private lock directory must fail closed;
+# falling back to a predictable file in /tmp would let another user redirect
+# or suppress the root process.
+bad_lock="$WORK/not-a-directory"
+printf 'not a directory\n' > "$bad_lock"
+( CB_LOCK_DIR=$bad_lock; _cb_take_lock ) \
+    && fail "an unusable private lock directory fell back to a shared path"
+ln -s "$CB_LOCK_DIR" "$WORK/lock-symlink"
+( CB_LOCK_DIR="$WORK/lock-symlink"; _cb_take_lock ) \
+    && fail "a symlinked lock directory was accepted"
+pass "the lock fails closed"
+
 # --- 9. cross-node transform ----------------------------------------------
 
 # A pmxcfs-shaped fixture: the real collector never produces the flat
@@ -992,6 +1037,61 @@ printf '[OPTIONS]\n' > "$XSRC/pve/firewall/cluster.fw"
 [[ -e $XSRC/pve/firewall/100.fw ]] || fail "a guest's own firewall rules were dropped as cluster-wide"
 [[ -e $XSRC/pve/firewall/cluster.fw ]] && fail "cluster.fw was not blocked"
 pass "guest firewall rules survive, cluster.fw does not"
+
+# A remapped guest's firewall follows the config filename. Otherwise the new
+# guest starts without its rules and restoring the old name can hit another
+# guest later.
+xn_fixture
+mkdir -p "$XSRC/pve/firewall"
+printf '[OPTIONS]\npolicy_in: DROP\n' > "$XSRC/pve/firewall/100.fw"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=clone CB_XN_VMID_OFFSET=1000; xn_run )
+[[ -f $XSRC/pve/firewall/1100.fw ]] || fail "the remapped guest firewall was not renamed"
+[[ -e $XSRC/pve/firewall/100.fw ]] && fail "the old guest firewall filename survived remapping"
+pass "guest firewall filenames follow VMID remaps"
+
+# Two independently valid mappings may still collide globally. Refuse before
+# moving the node tree so mv can never replace the first guest with the second.
+xn_fixture
+( CB_TARGET_NODE=pve2 CB_XN_MODE=clone
+  CB_MAP_VMID=([100]=500 [200]=500); xn_run ) \
+    && fail "duplicate effective target VMIDs were accepted"
+[[ -f $XSRC/pve/nodes/pve1/qemu-server/100.conf ]] \
+    || fail "a duplicate VMID mapping mutated the source tree before failing"
+[[ -f $XSRC/pve/nodes/pve1/lxc/200.conf ]] \
+    || fail "a duplicate VMID mapping overwrote a source guest"
+pass "effective target VMIDs are globally unique"
+
+# Firewall collisions are checked while the tree is still untouched. The
+# destination may be another staged firewall or rules already live on target.
+xn_fixture
+mkdir -p "$XSRC/pve/firewall"
+printf 'source\n' > "$XSRC/pve/firewall/100.fw"
+printf 'unrelated\n' > "$XSRC/pve/firewall/1100.fw"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=clone CB_MAP_VMID=([100]=1100); xn_run ) \
+    && fail "a staged firewall target collision was accepted"
+[[ $(cat "$XSRC/pve/firewall/1100.fw") == unrelated ]] \
+    || fail "a staged firewall target was overwritten"
+[[ -f $XSRC/pve/nodes/pve1/qemu-server/100.conf ]] \
+    || fail "the firewall collision was detected after mutation began"
+rm -f "$XSRC/pve/firewall/1100.fw"
+mkdir -p "$XLIVE/pve/firewall"
+printf 'live\n' > "$XLIVE/pve/firewall/1100.fw"
+( CB_TARGET_NODE=pve2 CB_XN_MODE=clone CB_MAP_VMID=([100]=1100); xn_run ) \
+    && fail "a live firewall target collision was accepted"
+[[ $(cat "$XLIVE/pve/firewall/1100.fw") == live ]] \
+    || fail "live firewall rules were overwritten"
+rm -rf "$XLIVE/pve/firewall"
+pass "guest firewall target collisions are refused"
+
+# A scoped cross-node restore prunes using the source name, but rollback must
+# retain the transformed target name rather than widening to the whole host.
+xn_fixture
+( CB_TARGET_NODE=pve2 CB_XN_MODE=clone CB_XN_VMID_OFFSET=1000
+  CB_XN_SOURCE_SELECTOR='pve/nodes/pve1/qemu-server/100.conf'
+  CB_SELECTOR=''; xn_run
+  [[ $CB_SELECTOR == pve/nodes/pve2/qemu-server/1100.conf ]] ) \
+    || fail "the rollback selector was not transformed to the target guest"
+pass "cross-node rollback keeps its target-side scope"
 
 # A typo in dr mode used to reach the per-guest check and drop that guest with
 # a line in the report, rather than refusing before anything ran.
