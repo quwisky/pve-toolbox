@@ -1,5 +1,7 @@
 pve-toolbox (0.4.0) unstable; urgency=medium
 
+  * Add read-only cluster certificate expiry, hostname, and chain checks.
+  * Report node reachability and failed or stale native ACME tasks.
   * Add read-only storage hygiene checks for snapshots, content, definitions,
     ZFS objects, capacity, inodes, and LVM thin pools.
   * Distinguish orphan candidates from volumes with ambiguous ownership.

@@ -23,6 +23,7 @@ pve-toolbox/
 ├── modules/
 │   ├── _template/           # copy this to start a new module (underscore = hidden)
 │   ├── backup-audit/        # read-only guest backup protection and freshness audit
+│   ├── certificate-watch/   # read-only cluster TLS and ACME health audit
 │   ├── config-backup/       # snapshots /etc/pve and host config, reported to Discord
 │   ├── native-notifications/ # owned native PVE targets, matchers, and shared sender
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
@@ -99,6 +100,7 @@ without regenerating anything. See
 | Module | What it does |
 | --- | --- |
 | [backup-audit](https://quwisky.github.io/pve-toolbox/modules/backup-audit/) | Finds uncovered guests, stale or failed backups, excluded volumes, weak retention, and unhealthy backup storage |
+| [certificate-watch](https://quwisky.github.io/pve-toolbox/modules/certificate-watch/) | Checks cluster TLS expiry, hostname coverage, chains, reachability, and ACME task history |
 | [config-backup](https://quwisky.github.io/pve-toolbox/modules/config-backup/) | Snapshots `/etc/pve` and host config into verified tar.gz archives on a timer |
 | [native-notifications](https://quwisky.github.io/pve-toolbox/modules/native-notifications/) | Provisions owned PVE notification targets and matchers with protected credentials and rollback |
 | [storage-hygiene](https://quwisky.github.io/pve-toolbox/modules/storage-hygiene/) | Audits old snapshots, unreferenced-looking storage, stale content, and capacity pressure without cleanup |

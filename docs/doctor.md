@@ -35,6 +35,9 @@ The [native-notifications module](modules/native-notifications.md) checks that
 its owned target, matcher, helper, and templates remain enabled and intact.
 The [storage-hygiene module](modules/storage-hygiene.md) adds snapshot age,
 volume ownership evidence, stale content, and backend pressure checks.
+The [certificate-watch module](modules/certificate-watch.md) checks every
+cluster node's active TLS certificate, trust chain, hostname coverage,
+reachability, and native ACME task history.
 
 ## Result states and exit status
 
