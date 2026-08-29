@@ -18,6 +18,8 @@ export TOOLBOX_CONF_DIR TOOLBOX_STATE_DIR CW_PVE_DIR
 
 # shellcheck source=lib/common.sh
 source "$ROOT/lib/common.sh"
+# shellcheck source=lib/pve.sh
+source "$ROOT/lib/pve.sh"
 # shellcheck source=lib/report.sh
 source "$ROOT/lib/report.sh"
 # shellcheck source=lib/doctor.sh
@@ -59,22 +61,37 @@ make_leaf pve4 pve4 1 yes
 CW_CA_BUNDLE="$WORK/root.crt"
 CW_NOW_EPOCH=$(( $(date -u -d "$(openssl x509 -in "$WORK/pve4.crt" -noout -enddate | cut -d= -f2-)" +%s) + 1 ))
 export CW_CA_BUNDLE CW_NOW_EPOCH
+CW_TASK_FAILURE_NODE=""
 
 pvesh() {
     [[ ${1:-} == get ]] || fail "certificate audit attempted a mutating PVE call: $*"
-    case ${2:-} in
+    local endpoint=${2:-}
+    shift 2
+    if [[ $endpoint == "/nodes/$CW_TASK_FAILURE_NODE/tasks" ]]; then
+        printf 'task history unavailable\n' >&2
+        return 7
+    fi
+    case $endpoint in
         /nodes) printf '%s\n' '[{"node":"pve1"},{"node":"pve2"},{"node":"pve3"},{"node":"pve4"}]' ;;
-        /cluster/tasks)
-            jq -n --argjson now "$CW_NOW_EPOCH" '[
-              {node:"pve1",type:"acmerenew",status:"OK",endtime:($now-86400)},
-              {node:"pve3",type:"acmenewcert",status:"OK",endtime:($now-172800)},
-              {node:"pve3",type:"acmerenew",status:"certificate order failed",endtime:($now-3600)}
-            ]' ;;
+        /nodes/pve1/tasks|/nodes/pve2/tasks|/nodes/pve3/tasks|/nodes/pve4/tasks)
+            [[ $* == '--limit 200 --output-format json' ]] \
+                || fail "unsupported ACME task options: $*"
+            case $endpoint in
+                /nodes/pve1/tasks)
+                    jq -n --argjson now "$CW_NOW_EPOCH" \
+                        '[{type:"acmerenew",status:"OK",endtime:($now-86400)}]' ;;
+                /nodes/pve3/tasks)
+                    jq -n --argjson now "$CW_NOW_EPOCH" '[
+                      {type:"acmenewcert",status:"OK",endtime:($now-172800)},
+                      {type:"acmerenew",status:"certificate order failed",endtime:($now-3600)}
+                    ]' ;;
+                *) printf '[]\n' ;;
+            esac ;;
         /nodes/pve2/status) return 1 ;;
         /nodes/*/status) printf '%s\n' '{"status":"online"}' ;;
         /nodes/pve1/config|/nodes/pve3/config) printf '%s\n' '{"acme":"account=default","acmedomain0":"domain=example.test"}' ;;
         /nodes/pve2/config|/nodes/pve4/config) printf '%s\n' '{}' ;;
-        *) fail "unexpected PVE fixture endpoint: ${2:-}" ;;
+        *) fail "unexpected PVE fixture endpoint: $endpoint" ;;
     esac
 }
 
@@ -102,6 +119,15 @@ module_doctor
 [[ $(result_state node.pve3.acme) == fail ]] || fail "latest failed ACME task was not failed"
 [[ $(result_state node.pve4.expiry) == fail ]] || fail "expired generated certificate was not failed"
 pass "valid, expired, mismatched, incomplete-chain, and unreachable fixtures"
+
+doctor_reset
+CW_TASK_FAILURE_NODE=pve3
+module_doctor
+[[ $(result_state api.acme-task-history) == fail ]] \
+    || fail "partial ACME task history did not fail closed"
+[[ ${#REPORT_STATES[@]} -eq 1 ]] || fail "certificate audit continued after task history failure"
+CW_TASK_FAILURE_NODE=""
+pass "certificate audit rejects partial per-node task history"
 
 CW_FAIL_DAYS=7 CW_WARN_DAYS=30
 now=1000000

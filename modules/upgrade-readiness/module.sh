@@ -202,11 +202,15 @@ _ur_check_nodes() {
 }
 
 _ur_check_backups() {
-    local guests tasks now cutoff guest vmid last age
+    local nodes=$1 guests tasks now cutoff guest vmid last age
     _ur_array "cluster guest inventory" /cluster/resources --type vm || return 0
     guests=$UR_JSON
-    _ur_array "cluster backup task history" /cluster/tasks --typefilter vzdump --limit 500 || return 0
-    tasks=$UR_JSON
+    if ! pve_collect_node_tasks "$nodes" --typefilter vzdump --limit 500; then
+        doctor_result fail api.cluster-backup-task-history \
+            "could not read cluster backup task history" "$PVE_TASKS_ERROR"
+        return 0
+    fi
+    tasks=$PVE_TASKS_JSON
     now=${UR_NOW_EPOCH:-$(date +%s)}; cutoff=$((now - UR_BACKUP_HOURS * 3600))
     while IFS= read -r guest; do
         vmid=$(jq -r '.vmid | tostring' <<<"$guest")
@@ -237,7 +241,7 @@ _ur_audit() {
     _ur_array "cluster node inventory" /nodes || return 0
     nodes=$UR_JSON
     _ur_check_nodes "$nodes"
-    _ur_check_backups
+    _ur_check_backups "$nodes"
 }
 
 module_install() {

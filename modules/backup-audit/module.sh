@@ -246,7 +246,7 @@ _ba_check_storage() { # _ba_check_storage <guest-relations-json>
 }
 
 _ba_audit() {
-    local guests jobs tasks relations guest vmid node type relation detail stats
+    local guests jobs tasks relations node_inventory guest vmid node type relation detail stats
     local now cutoff last age failures
     local -a nodes=()
 
@@ -263,13 +263,23 @@ _ba_audit() {
     guests=$BA_ARRAY
     _ba_array "cluster backup jobs" /cluster/backup || return 0
     jobs=$BA_ARRAY
-    _ba_array "cluster backup task history" /cluster/tasks --typefilter vzdump --limit 500 \
-        || return 0
-    tasks=$BA_ARRAY
     relations=$(_ba_relation_json "$guests" "$jobs") || {
         doctor_result fail data.model "could not map guests to backup jobs"
         return 0
     }
+
+    if [[ $(jq 'length' <<<"$relations") -eq 0 ]]; then
+        tasks='[]'
+    else
+        node_inventory=$(jq -c 'map({node: (.node // null)}) | unique_by(.node)' \
+            <<<"$relations")
+        if ! pve_collect_node_tasks "$node_inventory" --typefilter vzdump --limit 500; then
+            doctor_result fail api.cluster-backup-task-history \
+                "could not read cluster backup task history" "$PVE_TASKS_ERROR"
+            return 0
+        fi
+        tasks=$PVE_TASKS_JSON
+    fi
 
     mapfile -t nodes < <(jq -r '[.[].node // empty] | unique[]' <<<"$relations")
     if [[ $(jq 'length' <<<"$relations") -eq 0 ]]; then

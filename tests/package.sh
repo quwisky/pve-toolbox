@@ -42,6 +42,7 @@ for path in \
     ./usr/bin/pve-toolbox \
     ./usr/lib/pve-toolbox/lib/common.sh \
     ./usr/lib/pve-toolbox/lib/doctor.sh \
+    ./usr/lib/pve-toolbox/lib/pve.sh \
     ./usr/lib/pve-toolbox/lib/report.sh \
     ./usr/lib/pve-toolbox/modules/backup-audit/module.sh \
     ./usr/lib/pve-toolbox/modules/config-backup/module.sh \

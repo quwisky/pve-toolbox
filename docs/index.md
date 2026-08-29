@@ -14,6 +14,7 @@ pve-toolbox/
 │   ├── common.sh            # output, prompts, releases, systemd, state, conf
 │   ├── discord.sh           # webhook reporting
 │   ├── doctor.sh            # read-only host and module health checks
+│   ├── pve.sh               # validated, read-only Proxmox API helpers
 │   ├── report.sh            # versioned, redacted automation results
 │   └── tui.sh               # whiptail widgets behind `pve-toolbox ui`
 ├── modules/

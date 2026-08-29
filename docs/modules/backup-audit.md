@@ -24,8 +24,12 @@ edits a job, restores a guest, prunes retention, or deletes a backup.
 
 ## What it checks
 
-The module reads the cluster-wide guest inventory, backup jobs, and recent
-`vzdump` task history. For each non-template VM or container it distinguishes:
+The module reads the cluster-wide guest inventory and backup jobs, then reads
+recent `vzdump` task history from each node that owns an inventoried guest. PVE
+9 exposes the required history filters on these per-node endpoints. If any
+node's task history is unavailable or malformed, the audit fails instead of
+evaluating partial history. For each non-template VM or container it
+distinguishes:
 
 - covered by an enabled job;
 - intentionally listed in an enabled job's exclusion list;

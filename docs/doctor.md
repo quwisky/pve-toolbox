@@ -80,9 +80,11 @@ reported utilization.
 ## Task history
 
 The cluster task-list endpoint does not expose historical filters on PVE 9, so
-the doctor enumerates the cluster nodes and reads each node's task history with
-the supported failure and 24-hour filters. If any node cannot be queried, the
-check fails rather than reporting an incomplete cluster as healthy.
+the doctor and task-aware modules enumerate the relevant cluster nodes and read
+each node's task history with supported filters. The shared task reader rejects
+unsafe node names, malformed responses, and partial cluster results. If any
+node cannot be queried, the affected check fails rather than reporting an
+incomplete cluster as healthy.
 
 ## Example
 

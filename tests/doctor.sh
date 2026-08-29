@@ -12,6 +12,8 @@ fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 
 # shellcheck source=lib/common.sh
 source "$ROOT/lib/common.sh"
+# shellcheck source=lib/pve.sh
+source "$ROOT/lib/pve.sh"
 # shellcheck source=lib/report.sh
 source "$ROOT/lib/report.sh"
 # shellcheck source=lib/doctor.sh
@@ -172,7 +174,7 @@ pass "doctor distinguishes warnings from failures"
 fixture="$WORK/fixture"
 fake_bin="$WORK/bin"
 mkdir -p "$fixture/lib" "$fixture/modules/example" "$fake_bin" "$WORK/empty-pve"
-cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" \
+cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" "$ROOT/lib/pve.sh" \
     "$ROOT/lib/report.sh" "$fixture/lib/"
 cp "$ROOT/pve-toolbox" "$fixture/pve-toolbox"
 cp "$ROOT/VERSION" "$fixture/VERSION"

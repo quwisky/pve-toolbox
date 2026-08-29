@@ -18,12 +18,15 @@ UR_APT_DIR="$WORK/apt"
 UR_REBOOT_FILE="$WORK/reboot-required"
 UR_NOW_EPOCH=2000000000
 export TOOLBOX_CONF_DIR TOOLBOX_STATE_DIR UR_APT_DIR UR_REBOOT_FILE UR_NOW_EPOCH
+UR_MALFORMED_TASK_NODE=""
 
 pass() { printf 'ok  %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 
 # shellcheck source=lib/common.sh
 source "$ROOT/lib/common.sh"
+# shellcheck source=lib/pve.sh
+source "$ROOT/lib/pve.sh"
 # shellcheck source=lib/report.sh
 source "$ROOT/lib/report.sh"
 # shellcheck source=lib/doctor.sh
@@ -47,7 +50,9 @@ df() {
 
 pvesh() {
     [[ ${1:-} == get ]] || fail "upgrade preflight attempted a mutating PVE call: $*"
-    case ${2:-} in
+    local endpoint=${2:-}
+    shift 2
+    case $endpoint in
         /nodes) printf '%s\n' '[{"node":"pve1"},{"node":"pve2"},{"node":"pve3"}]' ;;
         /nodes/pve3/status) return 1 ;;
         /nodes/*/status) printf '%s\n' '{"status":"online"}' ;;
@@ -58,12 +63,23 @@ pvesh() {
         /nodes/pve1/storage) printf '%s\n' '[{"storage":"local","enabled":1,"active":0}]' ;;
         /nodes/pve2/storage) printf '%s\n' '[{"storage":"local","enabled":1,"active":1}]' ;;
         /cluster/resources) printf '%s\n' '[{"vmid":100,"type":"qemu"},{"vmid":101,"type":"lxc"}]' ;;
-        /cluster/tasks)
-            jq -n --argjson now "$UR_NOW_EPOCH" '[
-              {type:"vzdump",id:100,status:"OK",endtime:($now-3600)},
-              {type:"vzdump",id:101,status:"OK",endtime:($now-259200)}
-            ]' ;;
-        *) fail "unexpected PVE fixture endpoint: ${2:-}" ;;
+        /nodes/pve1/tasks|/nodes/pve2/tasks|/nodes/pve3/tasks)
+            [[ $* == '--typefilter vzdump --limit 500 --output-format json' ]] \
+                || fail "unsupported backup task options: $*"
+            if [[ $endpoint == "/nodes/$UR_MALFORMED_TASK_NODE/tasks" ]]; then
+                printf '{"not":"an array"}\n'
+                return
+            fi
+            case $endpoint in
+                /nodes/pve1/tasks)
+                    jq -n --argjson now "$UR_NOW_EPOCH" \
+                        '[{type:"vzdump",id:100,status:"OK",endtime:($now-3600)}]' ;;
+                /nodes/pve2/tasks)
+                    jq -n --argjson now "$UR_NOW_EPOCH" \
+                        '[{type:"vzdump",id:101,status:"OK",endtime:($now-259200)}]' ;;
+                *) printf '[]\n' ;;
+            esac ;;
+        *) fail "unexpected PVE fixture endpoint: $endpoint" ;;
     esac
 }
 
@@ -94,6 +110,14 @@ module_doctor
 [[ $(result_state backup.100) == pass ]] || fail "recent backup did not pass"
 [[ $(result_state backup.101) == fail ]] || fail "missing recent backup was not failed"
 pass "mixed versions, suites, holds, space, services, storage, and backups"
+
+doctor_reset
+UR_MALFORMED_TASK_NODE=pve2
+module_doctor
+[[ $(result_state api.cluster-backup-task-history) == fail ]] \
+    || fail "malformed cluster backup task history did not fail closed"
+UR_MALFORMED_TASK_NODE=""
+pass "upgrade preflight rejects malformed per-node task history"
 
 conf_clear upgrade-readiness
 UR_POLICY='../escape' UR_BACKUP_HOURS=48 UR_MIN_FREE_MB=2048

@@ -16,6 +16,7 @@ syntax:
 
 test: syntax
 	@./tests/lib.sh
+	@./tests/pve.sh
 	@./tests/report.sh
 	@./tests/doctor.sh
 	@./tests/backup-audit.sh

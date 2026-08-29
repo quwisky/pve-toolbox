@@ -51,6 +51,8 @@ fi
 
 # shellcheck source=lib/common.sh
 source "$TOOLBOX_ROOT/lib/common.sh"
+# shellcheck source=lib/pve.sh
+source "$TOOLBOX_ROOT/lib/pve.sh"
 # shellcheck source=lib/report.sh
 source "$TOOLBOX_ROOT/lib/report.sh"
 # shellcheck source=lib/doctor.sh
