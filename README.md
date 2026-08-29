@@ -28,6 +28,7 @@ pve-toolbox/
 │   ├── native-notifications/ # owned native PVE targets, matchers, and shared sender
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
 │   ├── storage-hygiene/     # read-only snapshot, content, and capacity audit
+│   ├── upgrade-readiness/   # read-only, policy-driven upgrade preflight
 │   ├── zfs-scrub/           # scheduled scrub per pool, reported to Discord
 │   └── zfs-replication/     # syncoid jobs on a timer, reported to Discord
 ├── completions/             # bash + zsh completion, installed by `link`
@@ -104,6 +105,7 @@ without regenerating anything. See
 | [config-backup](https://quwisky.github.io/pve-toolbox/modules/config-backup/) | Snapshots `/etc/pve` and host config into verified tar.gz archives on a timer |
 | [native-notifications](https://quwisky.github.io/pve-toolbox/modules/native-notifications/) | Provisions owned PVE notification targets and matchers with protected credentials and rollback |
 | [storage-hygiene](https://quwisky.github.io/pve-toolbox/modules/storage-hygiene/) | Audits old snapshots, unreferenced-looking storage, stale content, and capacity pressure without cleanup |
+| [upgrade-readiness](https://quwisky.github.io/pve-toolbox/modules/upgrade-readiness/) | Reports repository, package, space, cluster, service, storage, and backup blockers before upgrades |
 | [zfs-scrub](https://quwisky.github.io/pve-toolbox/modules/zfs-scrub/) | Scrubs each pool on its own timer, reports start and result to Discord |
 | [zfs-replication](https://quwisky.github.io/pve-toolbox/modules/zfs-replication/) | Runs `syncoid` jobs on timers, reports duration and size to Discord |
 | [scrutiny-collectors](https://quwisky.github.io/pve-toolbox/modules/scrutiny-collectors/) | SMART / ZFS / MDADM collectors feeding a remote Scrutiny instance |

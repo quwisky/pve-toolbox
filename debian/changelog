@@ -1,5 +1,8 @@
 pve-toolbox (0.4.0) unstable; urgency=medium
 
+  * Add a read-only, policy-driven PVE 9 upgrade readiness preflight.
+  * Report repository, package, reboot, space, cluster, storage, service, and
+    recent-backup blockers with remediation context.
   * Add read-only cluster certificate expiry, hostname, and chain checks.
   * Report node reachability and failed or stale native ACME tasks.
   * Add read-only storage hygiene checks for snapshots, content, definitions,
