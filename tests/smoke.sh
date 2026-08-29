@@ -161,11 +161,12 @@ pass "packaged installs report their version and defer to apt"
 # turns on getting that right. Nothing is installed in a checkout, so every
 # module has to report so and none may appear as installed.
 list=$(launch ./pve-toolbox list)
+module_count=$(launch ./pve-toolbox _complete modules | wc -l)
 while read -r mod; do
     [[ $list == *"$mod"* ]] || fail "list did not mention $mod"
 done < <(launch ./pve-toolbox _complete modules)
-[[ $(launch ./pve-toolbox list | grep -c 'status: not installed') -eq 4 ]] \
-    || fail "expected four uninstalled modules in list"
+[[ $(launch ./pve-toolbox list | grep -c 'status: not installed') -eq $module_count ]] \
+    || fail "expected every discovered module to be uninstalled"
 [[ -z $(launch ./pve-toolbox _complete installed) ]] \
     || fail "_complete installed named a module in a bare checkout"
 pass "nothing reads as installed in a checkout"

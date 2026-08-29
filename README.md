@@ -22,6 +22,7 @@ pve-toolbox/
 │   └── tui.sh               # whiptail/dialog widgets for `pve-toolbox ui`
 ├── modules/
 │   ├── _template/           # copy this to start a new module (underscore = hidden)
+│   ├── backup-audit/        # read-only guest backup protection and freshness audit
 │   ├── config-backup/       # snapshots /etc/pve and host config, reported to Discord
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
 │   ├── zfs-scrub/           # scheduled scrub per pool, reported to Discord
@@ -95,6 +96,7 @@ without regenerating anything. See
 
 | Module | What it does |
 | --- | --- |
+| [backup-audit](https://quwisky.github.io/pve-toolbox/modules/backup-audit/) | Finds uncovered guests, stale or failed backups, excluded volumes, weak retention, and unhealthy backup storage |
 | [config-backup](https://quwisky.github.io/pve-toolbox/modules/config-backup/) | Snapshots `/etc/pve` and host config into verified tar.gz archives on a timer |
 | [zfs-scrub](https://quwisky.github.io/pve-toolbox/modules/zfs-scrub/) | Scrubs each pool on its own timer, reports start and result to Discord |
 | [zfs-replication](https://quwisky.github.io/pve-toolbox/modules/zfs-replication/) | Runs `syncoid` jobs on timers, reports duration and size to Discord |

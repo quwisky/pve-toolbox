@@ -1,3 +1,11 @@
+pve-toolbox (0.4.0) unstable; urgency=medium
+
+  * Add read-only guest backup coverage and freshness auditing.
+  * Report weak retention, excluded volumes, failed jobs, and backup storage
+    health through doctor and JSON output.
+
+ -- Bence Nagy <quwisky@qwky.eu>  Fri, 28 Aug 2026 23:55:00 +0200
+
 pve-toolbox (0.3.0) unstable; urgency=medium
 
   * Add versioned JSON and quiet output for status, check, and doctor.
