@@ -1,5 +1,10 @@
 pve-toolbox (0.4.0) unstable; urgency=medium
 
+  * Add idempotent native PVE webhook, Discord, Gotify, and SMTP targets.
+  * Provision owned matchers with delivery tests, protected credentials, and
+    rollback on failure.
+  * Add a shared helper for custom events through Proxmox notification
+    matchers.
   * Add read-only guest backup coverage and freshness auditing.
   * Report weak retention, excluded volumes, failed jobs, and backup storage
     health through doctor and JSON output.

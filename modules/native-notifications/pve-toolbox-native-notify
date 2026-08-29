@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Send a custom event through Proxmox VE's native notification matcher path.
+set -euo pipefail
+
+usage() {
+    printf 'usage: pve-toolbox-native-notify <info|notice|warning|error> <title> <message>\n'
+}
+
+[[ $# -eq 3 ]] || { usage >&2; exit 64; }
+severity=$1 title=$2 message=$3
+case $severity in info|notice|warning|error) ;; *) usage >&2; exit 64 ;; esac
+[[ -n $title && -n $message ]] || { usage >&2; exit 64; }
+command -v perl >/dev/null 2>&1 || { printf 'error: perl is required\n' >&2; exit 69; }
+
+# Values travel in the environment rather than generated Perl source, so
+# quotes, newlines, and backslashes remain data. No secret is accepted here.
+PVE_TOOLBOX_NOTIFY_SEVERITY=$severity \
+PVE_TOOLBOX_NOTIFY_TITLE=$title \
+PVE_TOOLBOX_NOTIFY_MESSAGE=$message \
+perl -MPVE::Notify -e '
+    use strict;
+    use warnings;
+    my $data = PVE::Notify::common_template_data();
+    $data->{title} = $ENV{PVE_TOOLBOX_NOTIFY_TITLE};
+    $data->{message} = $ENV{PVE_TOOLBOX_NOTIFY_MESSAGE};
+    my $fields = {
+        type => "pve-toolbox",
+        hostname => $data->{hostname},
+    };
+    PVE::Notify::notify(
+        $ENV{PVE_TOOLBOX_NOTIFY_SEVERITY},
+        "pve-toolbox",
+        $data,
+        $fields,
+    );
+'

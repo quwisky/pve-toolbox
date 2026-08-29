@@ -19,6 +19,7 @@ test: syntax
 	@./tests/report.sh
 	@./tests/doctor.sh
 	@./tests/backup-audit.sh
+	@./tests/native-notifications.sh
 	@./tests/discord.sh
 	@./tests/config-backup.sh
 	@./tests/hardening.sh
