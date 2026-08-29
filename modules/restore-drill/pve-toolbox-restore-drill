@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+# Isolated, ownership-checked restore drill runner.
+set -euo pipefail
+
+RD_CONF=${RD_CONF:-/etc/pve-toolbox/restore-drill.conf}
+RD_RUN_STATE=${RD_RUN_STATE:-/var/lib/pve-toolbox/restore-drill-run.state}
+RD_LAST_REPORT=${RD_LAST_REPORT:-/var/lib/pve-toolbox/restore-drill-last.state}
+RD_LOCK=${RD_LOCK:-/var/lib/pve-toolbox/restore-drill.lock}
+: "${RD_STORAGE:=local-lvm}"
+: "${RD_VMID_START:=900000}"
+: "${RD_BOOT_PROBE:=1}"
+: "${RD_BOOT_TIMEOUT:=60}"
+: "${RD_ALLOW_UNATTENDED:=0}"
+
+usage() {
+    cat <<'EOF'
+usage: pve-toolbox-restore-drill --backup <volume> [options]
+       pve-toolbox-restore-drill --cleanup [--unattended]
+
+Options:
+  --backup <volume>    exact vzdump backup volume or path
+  --storage <name>     isolated restore target storage
+  --vmid <id>          temporary VMID (otherwise allocate from configured range)
+  --execute            perform the displayed restore plan
+  --unattended         use the separately enabled unattended policy
+  --keep               preserve a successful drill for inspection
+  --cleanup            resume safe cleanup from the recorded state
+EOF
+}
+
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+note() { printf '%s\n' "$*"; }
+
+load_conf() {
+    if [[ -r $RD_CONF ]]; then
+        # The module writes this root-only file with shell-safe quoted values.
+        # shellcheck disable=SC1090
+        source "$RD_CONF"
+    fi
+    [[ $RD_STORAGE =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid configured storage"
+    [[ $RD_VMID_START =~ ^[1-9][0-9]*$ && $RD_VMID_START -le 999999999 ]] || die "invalid VMID start"
+    [[ $RD_BOOT_PROBE =~ ^[01]$ && $RD_BOOT_TIMEOUT =~ ^[1-9][0-9]*$ ]] || die "invalid probe policy"
+    [[ $RD_ALLOW_UNATTENDED =~ ^[01]$ ]] || die "invalid unattended policy"
+}
+
+state_get() { awk -F= -v key="$1" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$RD_RUN_STATE"; }
+
+write_state() { # phase created cleanup probe duration
+    local phase=$1 created=$2 cleanup=$3 probe=$4 duration=$5 tmp
+    mkdir -p -- "$(dirname -- "$RD_RUN_STATE")"
+    tmp=$(mktemp "${RD_RUN_STATE}.tmp.XXXXXX")
+    chmod 0600 "$tmp"
+    printf '%s\n' \
+        "RUN_ID=$run_id" "PHASE=$phase" "VMID=$vmid" "KIND=$kind" \
+        "BACKUP=$backup" "STORAGE=$storage" "NODE=$node" \
+        "START_EPOCH=$started" "DURATION_SECONDS=$duration" \
+        "CREATED=$created" "PROBE=$probe" "CLEANUP=$cleanup" > "$tmp"
+    mv -f -- "$tmp" "$RD_RUN_STATE"
+}
+
+load_state() {
+    [[ -f $RD_RUN_STATE && ! -L $RD_RUN_STATE ]] || die "no recoverable drill state exists"
+    run_id=$(state_get RUN_ID); phase=$(state_get PHASE); vmid=$(state_get VMID)
+    kind=$(state_get KIND); backup=$(state_get BACKUP); storage=$(state_get STORAGE)
+    node=$(state_get NODE); started=$(state_get START_EPOCH); created=$(state_get CREATED)
+    duration=$(state_get DURATION_SECONDS); probe=$(state_get PROBE)
+    [[ $run_id =~ ^[A-Za-z0-9._-]+$ && $phase =~ ^[a-z-]+$ \
+        && $vmid =~ ^[1-9][0-9]*$ && $kind =~ ^(qemu|lxc)$ \
+        && $backup =~ ^[A-Za-z0-9/][A-Za-z0-9._:/+-]+$ && $storage =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ \
+        && $node =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && $started =~ ^[0-9]+$ \
+        && $created =~ ^[01]$ && $duration =~ ^[0-9]+$ \
+        && $probe =~ ^(not-run|pending|passed|failed|unknown)$ ]] \
+        || die "drill state is malformed; refusing automatic cleanup"
+}
+
+guest_exists() {
+    qm status "$1" >/dev/null 2>&1 || pct status "$1" >/dev/null 2>&1
+}
+
+allocate_vmid() {
+    local candidate=$RD_VMID_START limit=$((RD_VMID_START + 9999))
+    while [[ $candidate -le $limit ]]; do
+        if ! guest_exists "$candidate"; then printf '%s' "$candidate"; return 0; fi
+        candidate=$((candidate + 1))
+    done
+    return 1
+}
+
+confirm_action() { # exact phrase
+    local phrase=$1 reply
+    if [[ $unattended -eq 1 ]]; then
+        [[ $RD_ALLOW_UNATTENDED -eq 1 ]] \
+            || die "--unattended requires RD_ALLOW_UNATTENDED=1 in the module configuration"
+        return 0
+    fi
+    [[ -t 0 ]] || die "confirmation requires a terminal; configure unattended policy explicitly for automation"
+    printf 'Type %s to continue: ' "$phrase" >&2
+    IFS= read -r reply
+    [[ $reply == "$phrase" ]] || die "confirmation did not match"
+}
+
+marker() { printf 'pve-toolbox restore-drill run=%s' "$run_id"; }
+
+mark_guest() {
+    local config
+    if [[ $kind == qemu ]]; then
+        qm set "$vmid" --description "$(marker)" --onboot 0 >/dev/null || return 1
+        local key value
+        config=$(qm config "$vmid") || return 1
+        while IFS=: read -r key value; do
+            value=${value# }
+            if [[ $key =~ ^net[0-9]+$ ]]; then
+                [[ $value == *,link_down=1* ]] || value+=",link_down=1"
+                qm set "$vmid" --"$key" "$value" >/dev/null || return 1
+            elif [[ $key =~ ^(ide|sata|scsi|virtio|efidisk|tpmstate)[0-9]+$ ]]; then
+                if [[ $value =~ (^|,)backup=[01]($|,) ]]; then
+                    value=$(sed -E 's/(^|,)backup=[01]($|,)/\1backup=0\2/' <<<"$value")
+                else
+                    value+=",backup=0"
+                fi
+                qm set "$vmid" --"$key" "$value" >/dev/null || return 1
+            fi
+        done <<<"$config"
+    else
+        pct set "$vmid" --description "$(marker)" --onboot 0 >/dev/null || return 1
+        local key value
+        config=$(pct config "$vmid") || return 1
+        while IFS=: read -r key value; do
+            value=${value# }
+            if [[ $key =~ ^net[0-9]+$ ]]; then
+                pct set "$vmid" --delete "$key" >/dev/null || return 1
+            elif [[ $key == rootfs || $key =~ ^mp[0-9]+$ ]]; then
+                if [[ $value =~ (^|,)backup=[01]($|,) ]]; then
+                    value=$(sed -E 's/(^|,)backup=[01]($|,)/\1backup=0\2/' <<<"$value")
+                else
+                    value+=",backup=0"
+                fi
+                pct set "$vmid" --"$key" "$value" >/dev/null || return 1
+            fi
+        done <<<"$config"
+    fi
+}
+
+owned_guest() {
+    local config
+    if [[ $kind == qemu ]]; then config=$(qm config "$vmid" 2>/dev/null) || return 1
+    else config=$(pct config "$vmid" 2>/dev/null) || return 1
+    fi
+    grep -Fqx "description: $(marker)" <<<"$config"
+}
+
+restore_guest() {
+    if [[ $kind == qemu ]]; then
+        qmrestore "$backup" "$vmid" --storage "$storage" --unique 1
+    else
+        pct restore "$vmid" "$backup" --storage "$storage" --unprivileged 1
+    fi
+}
+
+probe_guest() {
+    [[ $RD_BOOT_PROBE -eq 1 ]] || { note "boot probe disabled by policy"; return 0; }
+    local deadline status
+    if [[ $kind == qemu ]]; then qm start "$vmid" >/dev/null; else pct start "$vmid" >/dev/null; fi
+    deadline=$(( $(date +%s) + RD_BOOT_TIMEOUT ))
+    while [[ $(date +%s) -le $deadline ]]; do
+        if [[ $kind == qemu ]]; then status=$(qm status "$vmid" 2>/dev/null || true)
+        else status=$(pct status "$vmid" 2>/dev/null || true)
+        fi
+        [[ $status == *'status: running'* ]] && return 0
+        sleep 1
+    done
+    return 1
+}
+
+stop_owned_guest() {
+    if [[ $kind == qemu ]]; then qm stop "$vmid" --timeout 30 >/dev/null 2>&1 || true
+    else pct stop "$vmid" --timeout 30 >/dev/null 2>&1 || true
+    fi
+}
+
+finish_report() {
+    local cleanup=$1 probe=$2 duration=$3
+    write_state completed 1 "$cleanup" "$probe" "$duration"
+    mkdir -p -- "$(dirname -- "$RD_LAST_REPORT")"
+    cp -- "$RD_RUN_STATE" "$RD_LAST_REPORT"
+    chmod 0600 "$RD_LAST_REPORT"
+    rm -f -- "$RD_RUN_STATE"
+}
+
+cleanup_guest() {
+    local duration=${1:-0} probe=${2:-unknown}
+    [[ $created -eq 1 ]] || die "state cannot prove the guest was marked as created by this drill; inspect VMID $vmid manually"
+    guest_exists "$vmid" || die "recorded temporary guest $vmid is missing; refusing to infer cleanup"
+    owned_guest || die "guest $vmid does not carry run marker $(marker); refusing deletion"
+    stop_owned_guest
+    if [[ $kind == qemu ]]; then
+        if ! qm destroy "$vmid" --purge 1 --destroy-unreferenced-disks 1; then
+            write_state cleanup-failed 1 failed "$probe" "$duration"
+            die "cleanup failed; retry: pve-toolbox-restore-drill --cleanup"
+        fi
+    elif ! pct destroy "$vmid" --purge 1; then
+        write_state cleanup-failed 1 failed "$probe" "$duration"
+        die "cleanup failed; retry: pve-toolbox-restore-drill --cleanup"
+    fi
+    finish_report success "$probe" "$duration"
+    note "restore drill cleanup completed for VMID $vmid"
+}
+
+notify_result() {
+    local severity=$1 message=$2
+    command -v pve-toolbox-native-notify >/dev/null 2>&1 || return 0
+    pve-toolbox-native-notify "$severity" "restore drill" "$message" >/dev/null 2>&1 || true
+}
+
+manual_recovery() {
+    local command
+    [[ $kind == qemu ]] && command=qm || command=pct
+    note "Inspect the partial guest: $command config $vmid" >&2
+    note "The helper will not delete it without its run marker. If you independently prove" >&2
+    note "that VMID $vmid is only this partial restore, remove it manually with:" >&2
+    if [[ $kind == qemu ]]; then
+        note "  qm destroy $vmid --purge 1 --destroy-unreferenced-disks 1" >&2
+    else
+        note "  pct destroy $vmid --purge 1" >&2
+    fi
+}
+
+backup=""; storage=""; vmid=""; execute=0; unattended=0; keep=0; cleanup=0
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --backup) [[ $# -ge 2 ]] || die "--backup needs a value"; backup=$2; shift 2 ;;
+        --storage) [[ $# -ge 2 ]] || die "--storage needs a value"; storage=$2; shift 2 ;;
+        --vmid) [[ $# -ge 2 ]] || die "--vmid needs a value"; vmid=$2; shift 2 ;;
+        --execute) execute=1; shift ;;
+        --unattended) unattended=1; shift ;;
+        --keep) keep=1; shift ;;
+        --cleanup) cleanup=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; die "unknown option: $1" ;;
+    esac
+done
+
+load_conf
+[[ $EUID -eq 0 ]] || die "restore drills must run as root"
+mkdir -p -- "$(dirname -- "$RD_LOCK")"
+exec 9>"$RD_LOCK"
+flock -n 9 || die "another restore drill is active"
+
+if [[ $cleanup -eq 1 ]]; then
+    [[ -z $backup && -z $vmid && $execute -eq 0 && $keep -eq 0 ]] || die "--cleanup cannot be combined with restore options"
+    load_state
+    confirm_action "DELETE $vmid"
+    cleanup_guest "$duration" "$probe"
+    exit 0
+fi
+
+[[ -n $backup && $backup =~ ^[A-Za-z0-9/][A-Za-z0-9._:/+-]+$ ]] \
+    || die "an exact, safe --backup value is required"
+storage=${storage:-$RD_STORAGE}
+[[ $storage =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid target storage"
+case $backup in
+    *vzdump-qemu-*) kind=qemu ;;
+    *vzdump-lxc-*) kind=lxc ;;
+    *) die "backup name must identify a vzdump qemu or lxc archive" ;;
+esac
+node=${RD_NODE:-$(hostname -s)}
+[[ $node =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid node name"
+if [[ -n $vmid ]]; then
+    [[ $vmid =~ ^[1-9][0-9]*$ && $vmid -le 999999999 ]] || die "invalid VMID"
+    guest_exists "$vmid" && die "VMID $vmid already exists; refusing collision"
+else
+    vmid=$(allocate_vmid) || die "no free temporary VMID in the configured range"
+fi
+
+note "Restore drill plan"
+note "  backup: $backup"
+note "  target: node=$node storage=$storage VMID=$vmid type=$kind"
+note "  isolation: networking and disk backup disabled, onboot disabled, no HA/replication enrollment"
+note "  probe: boot=$RD_BOOT_PROBE timeout=${RD_BOOT_TIMEOUT}s"
+note "  cleanup: delete only the ownership-marked temporary guest"
+[[ $execute -eq 1 ]] || { note "Dry run only. Add --execute to perform this plan."; exit 0; }
+[[ ! -e $RD_RUN_STATE ]] || die "an unfinished drill exists; inspect it or run --cleanup"
+confirm_action "RESTORE $vmid"
+
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$-$RANDOM"
+started=$(date +%s)
+write_state restore-started 0 pending not-run 0
+if ! restore_guest; then
+    write_state restore-failed 0 manual not-run "$(( $(date +%s) - started ))"
+    notify_result error "restore failed for $backup at VMID $vmid; manual inspection required"
+    manual_recovery
+    die "restore failed; state retained at $RD_RUN_STATE and automatic deletion is disabled"
+fi
+if ! mark_guest; then
+    write_state isolation-failed 0 manual not-run "$(( $(date +%s) - started ))"
+    notify_result error "isolation failed for VMID $vmid; manual inspection required"
+    manual_recovery
+    die "could not prove isolation/ownership; do not start VMID $vmid; inspect it manually"
+fi
+created=1
+write_state restored 1 pending pending "$(( $(date +%s) - started ))"
+if ! probe_guest; then
+    write_state probe-failed 1 preserved failed "$(( $(date +%s) - started ))"
+    notify_result error "isolated restore probe failed for VMID $vmid; drill preserved"
+    die "probe failed; VMID $vmid was preserved for inspection; cleanup with pve-toolbox-restore-drill --cleanup"
+fi
+duration=$(( $(date +%s) - started ))
+write_state probe-passed 1 pending passed "$duration"
+notify_result notice "isolated restore probe passed for $backup in ${duration}s"
+if [[ $keep -eq 1 ]]; then
+    note "probe passed; VMID $vmid preserved by --keep"
+    note "cleanup later: pve-toolbox-restore-drill --cleanup"
+    exit 0
+fi
+cleanup_guest "$duration" passed

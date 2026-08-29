@@ -41,6 +41,9 @@ reachability, and native ACME task history.
 The [upgrade-readiness module](modules/upgrade-readiness.md) applies a
 release-specific preflight policy to repositories, packages, filesystems,
 cluster nodes, services, storage, and recent backups.
+The [restore-drill module](modules/restore-drill.md) reports a missing helper
+or unfinished drill while leaving recovery and cleanup explicitly operator
+controlled.
 
 ## Result states and exit status
 
