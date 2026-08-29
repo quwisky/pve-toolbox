@@ -61,7 +61,34 @@ pvesm() {
     printf 'Name Type Status Total Used Available %%\n'
     printf 'local dir active 100 20 80 20.00%%\n'
 }
-pvesh() { printf '[]\n'; }
+PVE_NODES_JSON='[{"node":"pve1"}]'
+PVE1_TASKS_JSON='[]'
+PVE2_TASKS_JSON='[]'
+pvesh() {
+    local action=${1:-} endpoint=${2:-}
+    shift 2
+    [[ $action == get ]] || { printf 'unexpected pvesh action: %s\n' "$action" >&2; return 64; }
+    case $endpoint in
+        /nodes)
+            [[ $* == '--output-format json' ]] \
+                || { printf 'unexpected node query: %s\n' "$*" >&2; return 64; }
+            printf '%s\n' "$PVE_NODES_JSON"
+            ;;
+        /nodes/pve1/tasks|/nodes/pve2/tasks)
+            [[ $* =~ ^--errors\ 1\ --since\ [0-9]+\ --limit\ 50\ --output-format\ json$ ]] \
+                || { printf 'unexpected task query: %s\n' "$*" >&2; return 64; }
+            if [[ $endpoint == /nodes/pve1/tasks ]]; then
+                printf '%s\n' "$PVE1_TASKS_JSON"
+            else
+                printf '%s\n' "$PVE2_TASKS_JSON"
+            fi
+            ;;
+        *)
+            printf 'unexpected pvesh endpoint: %s\n' "$endpoint" >&2
+            return 64
+            ;;
+    esac
+}
 
 doctor_reset
 doctor_run_core
@@ -71,6 +98,35 @@ for state in "${DOCTOR_STATES[@]}"; do
 done
 doctor_render >/dev/null || fail "healthy doctor report exited nonzero"
 pass "healthy core checks pass"
+
+# PVE 9 exposes the historical task filters on each node's task endpoint, not
+# on /cluster/tasks. Query every node so a failure on a peer is still visible.
+PVE_NODES_JSON='[{"node":"pve1"},{"node":"pve2"}]'
+PVE1_TASKS_JSON='[{"node":"pve1","type":"vzdump","status":"backup failed"}]'
+PVE2_TASKS_JSON='[{"node":"pve2","type":"qmstart","status":"start failed"}]'
+doctor_reset
+doctor_check_tasks
+[[ ${DOCTOR_STATES[0]} == warn \
+    && ${DOCTOR_SUMMARIES[0]} == '2 failed Proxmox task(s) in the last 24 hours' ]] \
+    || fail "cluster-wide node task failures were not reported"
+[[ ${DOCTOR_DETAILS[0]} == *'pve1:vzdump backup failed'* \
+    && ${DOCTOR_DETAILS[0]} == *'pve2:qmstart start failed'* ]] \
+    || fail "cluster-wide task detail omitted a node"
+pass "doctor queries supported per-node task history"
+
+# Disabled storage is intentionally unavailable and has no capacity to audit.
+# Keep it visible as detail without making healthy enabled storage fail.
+pvesm() {
+    printf 'Name Type Status Total Used Available %%\n'
+    printf 'local dir active 100 20 80 20.00%%\n'
+    printf 'local-lvm lvmthin disabled 0 0 0 N/A\n'
+}
+doctor_reset
+doctor_check_storage
+[[ ${DOCTOR_STATES[0]} == pass ]] || fail "disabled storage caused a capacity failure"
+[[ ${DOCTOR_DETAILS[0]} == 'disabled: local-lvm' ]] \
+    || fail "disabled storage was not retained as informational detail"
+pass "doctor ignores intentionally disabled storage capacity"
 
 # Failure and warning fixtures exercise each negative branch without touching
 # the host. Historical task failures are warnings; loss of quorum, failed
@@ -84,7 +140,8 @@ pvesm() {
     printf 'local dir active 100 90 10 90.00%%\n'
     printf 'archive dir inactive 100 0 100 0.00%%\n'
 }
-pvesh() { printf '[{"node":"pve1","type":"vzdump","status":"backup failed"}]\n'; }
+PVE_NODES_JSON='[{"node":"pve1"}]'
+PVE1_TASKS_JSON='[{"node":"pve1","type":"vzdump","status":"backup failed"}]'
 
 doctor_reset
 doctor_run_core
@@ -115,7 +172,7 @@ fake_bin="$WORK/bin"
 mkdir -p "$fixture/lib" "$fixture/modules/example" "$fake_bin" "$WORK/empty-pve"
 cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" "$fixture/lib/"
 cp "$ROOT/pve-toolbox" "$fixture/pve-toolbox"
-printf '0.2.0\n' > "$fixture/VERSION"
+printf '0.2.1\n' > "$fixture/VERSION"
 printf '%s\n' \
     'MODULE_NAME="example"' \
     'MODULE_TITLE="Example"' \
@@ -130,7 +187,14 @@ printf '%s\n' '#!/usr/bin/env bash' 'exit 0' > "$fake_bin/zpool"
 printf '%s\n' '#!/usr/bin/env bash' \
     "printf 'Name Type Status Total Used Available %%\\nlocal dir active 100 20 80 20.00%%%%\\n'" \
     > "$fake_bin/pvesm"
-printf '%s\n' '#!/usr/bin/env bash' "printf '[]\\n'" > "$fake_bin/pvesh"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'case ${2:-} in' \
+    '    /nodes) printf '\''[{"node":"pve1"}]\n'\'' ;;' \
+    '    /nodes/pve1/tasks) printf '\''[]\n'\'' ;;' \
+    '    *) exit 64 ;;' \
+    'esac' \
+    > "$fake_bin/pvesh"
 chmod 0755 "$fake_bin"/* "$fixture/pve-toolbox"
 
 output=$(PATH="$fake_bin:$PATH" PVE_TOOLBOX_ROOT="$fixture" \

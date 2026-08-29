@@ -19,8 +19,8 @@ preventing the remaining checks from running.
 | `cluster.quorum` | A clustered node is quorate; standalone nodes pass as not applicable |
 | `systemd.failed` | No systemd units are failed |
 | `zfs.pools` | Every configured ZFS pool reports `ONLINE` |
-| `storage.capacity` | Proxmox storage is active and below the capacity thresholds |
-| `pve.tasks` | Failed Proxmox tasks during the last 24 hours |
+| `storage.capacity` | Enabled Proxmox storage is active and below the capacity thresholds |
+| `pve.tasks` | Failed Proxmox tasks on every cluster node during the last 24 hours |
 | `host.reboot` | No pending-reboot marker exists |
 | `module.<name>.status` | Every installed toolbox module can report its status |
 
@@ -55,8 +55,17 @@ PVE_TOOLBOX_DOCTOR_STORAGE_FAIL=90 \
   pve-toolbox doctor
 ```
 
-An invalid threshold is itself a failed check. Inactive Proxmox storage is a
-failure regardless of its reported utilization.
+An invalid threshold is itself a failed check. Storage explicitly configured
+as `disabled` is listed as informational detail because it has no capacity to
+audit. Any other non-active storage remains a failure regardless of its
+reported utilization.
+
+## Task history
+
+The cluster task-list endpoint does not expose historical filters on PVE 9, so
+the doctor enumerates the cluster nodes and reads each node's task history with
+the supported failure and 24-hour filters. If any node cannot be queried, the
+check fails rather than reporting an incomplete cluster as healthy.
 
 ## Example
 
