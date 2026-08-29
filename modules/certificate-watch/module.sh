@@ -125,7 +125,7 @@ _cw_verify_chain() { # _cw_verify_chain <source> <workdir>
 
 _cw_check_certificate() { # _cw_check_certificate <node>
     local node=$1 resolved path source work leaf end_text expiry now state days
-    local issuer subject sans chain_rc
+    local issuer subject sans chain_rc host_check
     if ! resolved=$(_cw_cert_path "$node"); then
         doctor_result fail "node.$(_cw_id "$node").certificate" \
             "active PVE certificate file is missing" "node=$node"
@@ -169,7 +169,12 @@ _cw_check_certificate() { # _cw_check_certificate <node>
                 "certificate expires in $days day(s)" "node=$node expiry_epoch=$expiry UTC" ;;
         esac
     fi
-    if openssl x509 -in "$leaf" -noout -checkhost "$node" >/dev/null 2>&1; then
+    # Some OpenSSL builds return success when -checkhost parsed the certificate
+    # even though its result text says the hostname does not match. Require the
+    # unambiguous positive result rather than trusting that inconsistent status.
+    host_check=$(openssl x509 -in "$leaf" -noout -checkhost "$node" 2>&1 || true)
+    if [[ $host_check == *"does match certificate"* \
+        && $host_check != *"does NOT match certificate"* ]]; then
         doctor_result pass "node.$(_cw_id "$node").hostname" \
             "certificate covers node hostname" "node=$node SAN=$sans"
     else
