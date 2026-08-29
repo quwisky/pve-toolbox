@@ -24,6 +24,7 @@ pve-toolbox/
 │   ├── _template/           # copy this to start a new module (underscore = hidden)
 │   ├── backup-audit/        # read-only guest backup protection and freshness audit
 │   ├── config-backup/       # snapshots /etc/pve and host config, reported to Discord
+│   ├── native-notifications/ # owned native PVE targets, matchers, and shared sender
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
 │   ├── zfs-scrub/           # scheduled scrub per pool, reported to Discord
 │   └── zfs-replication/     # syncoid jobs on a timer, reported to Discord
@@ -98,6 +99,7 @@ without regenerating anything. See
 | --- | --- |
 | [backup-audit](https://quwisky.github.io/pve-toolbox/modules/backup-audit/) | Finds uncovered guests, stale or failed backups, excluded volumes, weak retention, and unhealthy backup storage |
 | [config-backup](https://quwisky.github.io/pve-toolbox/modules/config-backup/) | Snapshots `/etc/pve` and host config into verified tar.gz archives on a timer |
+| [native-notifications](https://quwisky.github.io/pve-toolbox/modules/native-notifications/) | Provisions owned PVE notification targets and matchers with protected credentials and rollback |
 | [zfs-scrub](https://quwisky.github.io/pve-toolbox/modules/zfs-scrub/) | Scrubs each pool on its own timer, reports start and result to Discord |
 | [zfs-replication](https://quwisky.github.io/pve-toolbox/modules/zfs-replication/) | Runs `syncoid` jobs on timers, reports duration and size to Discord |
 | [scrutiny-collectors](https://quwisky.github.io/pve-toolbox/modules/scrutiny-collectors/) | SMART / ZFS / MDADM collectors feeding a remote Scrutiny instance |

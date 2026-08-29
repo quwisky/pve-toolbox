@@ -45,6 +45,8 @@ for path in \
     ./usr/lib/pve-toolbox/lib/report.sh \
     ./usr/lib/pve-toolbox/modules/backup-audit/module.sh \
     ./usr/lib/pve-toolbox/modules/config-backup/module.sh \
+    ./usr/lib/pve-toolbox/modules/native-notifications/module.sh \
+    ./usr/lib/pve-toolbox/modules/native-notifications/pve-toolbox-native-notify \
     ./usr/share/man/man1/pve-toolbox.1.gz \
     ./usr/share/bash-completion/completions/pve-toolbox \
     ./usr/share/zsh/vendor-completions/_pve-toolbox
