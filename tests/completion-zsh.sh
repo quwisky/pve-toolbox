@@ -52,7 +52,7 @@ offers() {
 has() { [[ " $1 " == *" $2 "* ]] }
 
 got=$(offers 2 ./pve-toolbox "")
-for verb in menu ui list install update check status uninstall link self-update; do
+for verb in menu ui list install update check status doctor uninstall link self-update; do
     has $got $verb || fail "commands missing $verb: $got"
 done
 print "ok  zsh offers every command"
@@ -89,7 +89,7 @@ got=$(offers 4 ./pve-toolbox -y install "")
 [[ $got == *zfs-scrub* ]] || fail "a flag before the command broke it: $got"
 print "ok  zsh finds the command past a flag"
 
-for verb in menu ui link self-update definitely-not-a-command; do
+for verb in menu ui doctor link self-update definitely-not-a-command; do
     got=$(offers 3 ./pve-toolbox $verb "")
     [[ -z $got ]] || fail "$verb takes no arguments, got: $got"
 done

@@ -17,7 +17,7 @@ override_dh_auto_test:
 override_dh_auto_install:
 	install -D -m 0755 pve-toolbox $(PACKAGE_ROOT)/usr/bin/pve-toolbox
 	install -d -m 0755 $(PACKAGE_LIB)/lib $(PACKAGE_LIB)/modules
-	install -m 0644 lib/common.sh lib/discord.sh lib/tui.sh $(PACKAGE_LIB)/lib/
+	install -m 0644 lib/common.sh lib/discord.sh lib/doctor.sh lib/tui.sh $(PACKAGE_LIB)/lib/
 	set -e; for module in modules/*; do \
 		name=$$(basename "$$module"); \
 		case $$name in _*) continue ;; esac; \

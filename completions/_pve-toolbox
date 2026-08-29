@@ -41,7 +41,7 @@ _pve-toolbox() {
         install|update|check|status)
                    cands=( ${(f)"$(_pve-toolbox_candidates modules)"} ) ;;
         uninstall) cands=( ${(f)"$(_pve-toolbox_candidates installed)"} ) ;;
-        *)         return 1 ;;   # menu, link, self-update take nothing
+        *)         return 1 ;;   # menu, doctor, link, self-update take nothing
     esac
 
     # Drop what is already on the line, so completing a second module does

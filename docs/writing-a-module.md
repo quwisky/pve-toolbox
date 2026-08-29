@@ -29,6 +29,7 @@ each module carries a `# shellcheck disable=SC2034` above the block.
 | `module_update` | `[--check]` update in place; honours `$FORCE` |
 | `module_status` | Print one short line; print exactly `not installed` and exit 1 when it is not |
 | `module_status_long` | Detailed status. Optional, falls back to `module_status` |
+| `module_doctor` | Emit additional read-only health results. Optional and called only when installed |
 | `module_uninstall` | Remove what install created |
 
 `module_status` is called for every module on every menu draw, on every
@@ -96,6 +97,36 @@ and the file stays sourceable by a plain script:
 source /etc/pve-toolbox/my-thing.conf
 echo "$API_TOKEN"
 ```
+
+## Module health checks
+
+An installed module may contribute checks to `pve-toolbox doctor`:
+
+```bash
+module_doctor() {
+    if systemctl is-active --quiet my-thing.timer; then
+        doctor_result pass timer "timer is active"
+    else
+        doctor_result fail timer "timer is not active"
+    fi
+}
+```
+
+`module_doctor` must be read-only and emit only through `doctor_result`:
+
+```text
+doctor_result <pass|warn|fail|skipped|unsupported> <id> <summary> [detail]
+```
+
+The launcher runs the hook in the same isolated subshell as every other module
+function. It validates the records and automatically prefixes IDs with
+`module.<module-name>.`; the example above becomes `module.my-thing.timer`.
+IDs contain lowercase letters, digits, dots, underscores, and hyphens. Summary
+and detail values are single logical lines and must not contain secrets.
+
+A hook that exits unsuccessfully, prints unrelated output, or produces no
+results is reported as a module health failure. One broken module hook cannot
+stop the remaining host and module checks.
 
 ## Long-running work
 

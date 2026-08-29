@@ -28,6 +28,11 @@ Check for updates without changing the host.
 .B status [module ...]
 Show detailed module status.
 .TP
+.B doctor
+Run a read-only host, cluster, storage, and installed-module health audit.
+Exit with status 0 when healthy, 2 when warnings are present, or 1 when a
+check fails.
+.TP
 .B uninstall module ...
 Remove modules after confirmation.
 .TP

@@ -22,6 +22,8 @@
 #                         so a longer line merely containing the words counts
 #                         as installed.
 #     module_status_long  detailed status (optional, falls back to status)
+#     module_doctor       emit read-only health results with doctor_result
+#                         (optional; called only for installed modules)
 #     module_uninstall    remove what install created
 #
 # Everything in lib/common.sh is already sourced: info/ok/warn/die/step,
@@ -69,6 +71,11 @@ module_update() {
 module_status() {
     state_exists "$MODULE_NAME" || { printf 'not installed'; return 1; }
     printf 'installed'
+}
+
+module_doctor() {
+    # IDs are automatically namespaced under module.<name> by the launcher.
+    doctor_result pass service "example service is healthy"
 }
 
 module_uninstall() {

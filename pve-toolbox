@@ -9,6 +9,7 @@
 #   pve-toolbox update [mod]...    update (all installed if none given)
 #   pve-toolbox check [mod]...     report available updates, change nothing
 #   pve-toolbox status [mod]       detailed status
+#   pve-toolbox doctor             read-only host and module health audit
 #   pve-toolbox uninstall <mod>...
 #   pve-toolbox link               symlink into /usr/local/bin + completions
 #   pve-toolbox self-update        git pull this checkout
@@ -49,6 +50,8 @@ fi
 
 # shellcheck source=lib/common.sh
 source "$TOOLBOX_ROOT/lib/common.sh"
+# shellcheck source=lib/doctor.sh
+source "$TOOLBOX_ROOT/lib/doctor.sh"
 
 FORCE=0
 
@@ -95,6 +98,16 @@ run_module() { # run_module <module> <function> [args...]
             die "module $mod does not implement $fn"
         fi
         "$fn" "$@"
+    )
+}
+
+module_has_function() { # module_has_function <module> <function>
+    local mod=$1 fn=$2
+    [[ -f "$MODULE_DIR/$mod/module.sh" ]] || return 1
+    (
+        # shellcheck source=/dev/null
+        source "$MODULE_DIR/$mod/module.sh"
+        declare -F "$fn" >/dev/null
     )
 }
 
@@ -257,6 +270,34 @@ cmd_each() { # cmd_each <function> [--check] <modules...>
     return "$failed"
 }
 
+cmd_doctor() {
+    doctor_reset
+    doctor_run_core
+
+    discover
+    local m status output rc
+    for m in "${MODULES[@]}"; do
+        status=""; rc=0
+        output=$(run_module "$m" module_status 2>/dev/null) || rc=$?
+        status=${output:-not installed}
+        [[ $status == "not installed" ]] && continue
+        if [[ $rc -ne 0 ]]; then
+            doctor_result fail "module.$m.status" \
+                "installed module status failed with exit $rc"
+            continue
+        fi
+        doctor_result pass "module.$m.status" "installed: $status"
+
+        module_has_function "$m" module_doctor || continue
+        output=""; rc=0
+        output=$(DOCTOR_EMIT=1 DOCTOR_PREFIX="module.$m." \
+            run_module "$m" module_doctor 2>&1) || rc=$?
+        doctor_import_module "$m" "$rc" "$output"
+    done
+
+    doctor_render
+}
+
 # ------------------------------------------------------------------- ui --
 
 # Modules prompt and print while they work, which cannot happen inside a
@@ -406,7 +447,7 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags>
     local -a tags
     case ${1:-} in
         commands)
-            printf '%s\n' menu ui list install update check status uninstall \
+            printf '%s\n' menu ui list install update check status doctor uninstall \
                 link self-update ;;
         modules)
             discover; printf '%s\n' "${MODULES[@]}" ;;
@@ -468,6 +509,8 @@ case "${ARGS[0]:-menu}" in
     update)      cmd_each module_update "${ARGS[@]:1}" ;;
     check)       cmd_each module_update --check "${ARGS[@]:1}" ;;
     status)      cmd_each module_status_long "${ARGS[@]:1}" ;;
+    doctor)      [[ ${#ARGS[@]} -eq 1 ]] || die "doctor takes no arguments"
+                 cmd_doctor ;;
     uninstall)   [[ ${#ARGS[@]} -lt 2 ]] && die "uninstall needs a module name"
                  cmd_each module_uninstall "${ARGS[@]:1}" ;;
     ui)          cmd_ui ;;

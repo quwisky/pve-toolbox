@@ -1,3 +1,11 @@
+pve-toolbox (0.2.0) unstable; urgency=medium
+
+  * Add a read-only doctor command for host, cluster, storage, and module
+    health checks.
+  * Let installed modules contribute isolated, validated health results.
+
+ -- Bence Nagy <quwisky@qwky.eu>  Fri, 28 Aug 2026 23:08:00 +0200
+
 pve-toolbox (0.1.1) unstable; urgency=medium
 
   * Propagate module failures to command-line callers.
