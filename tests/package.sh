@@ -51,6 +51,8 @@ for path in \
     ./usr/lib/pve-toolbox/modules/certificate-watch/module.sh \
     ./usr/lib/pve-toolbox/modules/upgrade-readiness/module.sh \
     ./usr/lib/pve-toolbox/modules/upgrade-readiness/policies/pve-9.conf \
+    ./usr/lib/pve-toolbox/modules/restore-drill/module.sh \
+    ./usr/lib/pve-toolbox/modules/restore-drill/pve-toolbox-restore-drill \
     ./usr/share/man/man1/pve-toolbox.1.gz \
     ./usr/share/bash-completion/completions/pve-toolbox \
     ./usr/share/zsh/vendor-completions/_pve-toolbox

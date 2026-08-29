@@ -22,6 +22,7 @@ pve-toolbox/
 │   ├── certificate-watch/
 │   ├── config-backup/
 │   ├── native-notifications/
+│   ├── restore-drill/
 │   ├── scrutiny-collectors/
 │   ├── storage-hygiene/
 │   ├── upgrade-readiness/
@@ -40,6 +41,7 @@ pve-toolbox/
 | [certificate-watch](modules/certificate-watch.md) | Read-only cluster certificate, chain, hostname, and ACME health audit |
 | [config-backup](modules/config-backup.md) | Timestamped snapshots of `/etc/pve` and host config, reported to Discord |
 | [native-notifications](modules/native-notifications.md) | Owned native PVE targets and matchers with protected secrets and tested delivery |
+| [restore-drill](modules/restore-drill.md) | Guarded, isolated backup restore validation with recoverable cleanup |
 | [storage-hygiene](modules/storage-hygiene.md) | Read-only snapshots, content ownership, storage definitions, and capacity audit |
 | [upgrade-readiness](modules/upgrade-readiness.md) | Policy-driven, read-only PVE upgrade blocker and risk preflight |
 | [zfs-scrub](modules/zfs-scrub.md) | Scrubs each pool on its own timer, reports start and result to Discord |

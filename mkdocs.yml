@@ -70,6 +70,7 @@ nav:
       - certificate-watch: modules/certificate-watch.md
       - config-backup: modules/config-backup.md
       - native-notifications: modules/native-notifications.md
+      - restore-drill: modules/restore-drill.md
       - storage-hygiene: modules/storage-hygiene.md
       - upgrade-readiness: modules/upgrade-readiness.md
       - zfs-scrub: modules/zfs-scrub.md

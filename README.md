@@ -26,6 +26,7 @@ pve-toolbox/
 │   ├── certificate-watch/   # read-only cluster TLS and ACME health audit
 │   ├── config-backup/       # snapshots /etc/pve and host config, reported to Discord
 │   ├── native-notifications/ # owned native PVE targets, matchers, and shared sender
+│   ├── restore-drill/       # guarded isolated backup restore validation
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
 │   ├── storage-hygiene/     # read-only snapshot, content, and capacity audit
 │   ├── upgrade-readiness/   # read-only, policy-driven upgrade preflight
@@ -104,6 +105,7 @@ without regenerating anything. See
 | [certificate-watch](https://quwisky.github.io/pve-toolbox/modules/certificate-watch/) | Checks cluster TLS expiry, hostname coverage, chains, reachability, and ACME task history |
 | [config-backup](https://quwisky.github.io/pve-toolbox/modules/config-backup/) | Snapshots `/etc/pve` and host config into verified tar.gz archives on a timer |
 | [native-notifications](https://quwisky.github.io/pve-toolbox/modules/native-notifications/) | Provisions owned PVE notification targets and matchers with protected credentials and rollback |
+| [restore-drill](https://quwisky.github.io/pve-toolbox/modules/restore-drill/) | Plans and explicitly runs isolated, ownership-checked VM or container restore drills |
 | [storage-hygiene](https://quwisky.github.io/pve-toolbox/modules/storage-hygiene/) | Audits old snapshots, unreferenced-looking storage, stale content, and capacity pressure without cleanup |
 | [upgrade-readiness](https://quwisky.github.io/pve-toolbox/modules/upgrade-readiness/) | Reports repository, package, space, cluster, service, storage, and backup blockers before upgrades |
 | [zfs-scrub](https://quwisky.github.io/pve-toolbox/modules/zfs-scrub/) | Scrubs each pool on its own timer, reports start and result to Discord |
