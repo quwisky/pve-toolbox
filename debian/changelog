@@ -1,5 +1,8 @@
 pve-toolbox (0.4.0) unstable; urgency=medium
 
+  * Add read-only storage hygiene checks for snapshots, content, definitions,
+    ZFS objects, capacity, inodes, and LVM thin pools.
+  * Distinguish orphan candidates from volumes with ambiguous ownership.
   * Add idempotent native PVE webhook, Discord, Gotify, and SMTP targets.
   * Provision owned matchers with delivery tests, protected credentials, and
     rollback on failure.

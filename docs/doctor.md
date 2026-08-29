@@ -33,6 +33,8 @@ guest coverage, backup freshness, failure history, retention, excluded-volume,
 and per-node backup-storage results after it is configured.
 The [native-notifications module](modules/native-notifications.md) checks that
 its owned target, matcher, helper, and templates remain enabled and intact.
+The [storage-hygiene module](modules/storage-hygiene.md) adds snapshot age,
+volume ownership evidence, stale content, and backend pressure checks.
 
 ## Result states and exit status
 

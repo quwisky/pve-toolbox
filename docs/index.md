@@ -22,6 +22,7 @@ pve-toolbox/
 │   ├── config-backup/
 │   ├── native-notifications/
 │   ├── scrutiny-collectors/
+│   ├── storage-hygiene/
 │   ├── zfs-scrub/
 │   └── zfs-replication/
 ├── completions/             # bash + zsh, installed by `link`
@@ -36,6 +37,7 @@ pve-toolbox/
 | [backup-audit](modules/backup-audit.md) | Read-only guest backup coverage, freshness, retention, and storage audit |
 | [config-backup](modules/config-backup.md) | Timestamped snapshots of `/etc/pve` and host config, reported to Discord |
 | [native-notifications](modules/native-notifications.md) | Owned native PVE targets and matchers with protected secrets and tested delivery |
+| [storage-hygiene](modules/storage-hygiene.md) | Read-only snapshots, content ownership, storage definitions, and capacity audit |
 | [zfs-scrub](modules/zfs-scrub.md) | Scrubs each pool on its own timer, reports start and result to Discord |
 | [zfs-replication](modules/zfs-replication.md) | Runs `syncoid` jobs on timers, reports duration and size to Discord |
 | [scrutiny-collectors](modules/scrutiny-collectors.md) | SMART / ZFS / MDADM collectors feeding a remote Scrutiny instance |

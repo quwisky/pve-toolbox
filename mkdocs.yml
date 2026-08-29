@@ -69,6 +69,7 @@ nav:
       - backup-audit: modules/backup-audit.md
       - config-backup: modules/config-backup.md
       - native-notifications: modules/native-notifications.md
+      - storage-hygiene: modules/storage-hygiene.md
       - zfs-scrub: modules/zfs-scrub.md
       - zfs-replication: modules/zfs-replication.md
       - scrutiny-collectors: modules/scrutiny-collectors.md

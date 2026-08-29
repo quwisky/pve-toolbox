@@ -20,6 +20,7 @@ test: syntax
 	@./tests/doctor.sh
 	@./tests/backup-audit.sh
 	@./tests/native-notifications.sh
+	@./tests/storage-hygiene.sh
 	@./tests/discord.sh
 	@./tests/config-backup.sh
 	@./tests/hardening.sh
