@@ -62,6 +62,7 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Doctor: doctor.md
+  - Automation output: automation.md
   - APT repository: apt-repository.md
   - Modules:
       - Overview: modules/index.md

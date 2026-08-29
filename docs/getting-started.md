@@ -50,7 +50,9 @@ pve-toolbox --version          print the installed version
 ```
 
 Flags: `-y` non-interactive (modules read their env vars instead of
-prompting), `-f` force, `-V` version, `-h` help.
+prompting), `-f` force, `--json` versioned output, `--quiet` exit-status-only
+output, `-V` version, `-h` help. JSON and quiet output are available for
+`status`, `check`, and `doctor`.
 
 The [`doctor` command](doctor.md) checks the host and every installed module
 without making changes. Its exit status distinguishes a healthy report from a
@@ -142,16 +144,21 @@ Type numbers to toggle selection, then a letter for the action:
 
 ## Unattended checks
 
-`check` changes nothing, which makes it safe on a timer:
+`check` changes nothing, which makes it safe on a timer. Quiet mode reports an
+available update with exit status `2` and an operational failure with `1`:
 
 ```bash
-DISCORD_WEBHOOK=https://discord.com/api/webhooks/<id>/<token>
-
-pve-toolbox check 2>&1 | grep -q 'update available' && \
-  curl -sf -X POST "$DISCORD_WEBHOOK" \
-       -H 'Content-Type: application/json' \
-       -d "{\"content\": \"pve-toolbox updates available on $(hostname -s)\"}"
+rc=0
+pve-toolbox check --quiet || rc=$?
+case $rc in
+  0) printf '%s\n' 'all installed modules are current' ;;
+  2) printf '%s\n' 'one or more updates are available' ;;
+  *) printf 'module check failed with exit %d\n' "$rc" >&2 ;;
+esac
 ```
+
+See [Automation output](automation.md) for the JSON schema, all exit codes,
+redaction behavior, and monitoring examples.
 
 ## Non-interactive install
 

@@ -10,24 +10,9 @@
 _TOOLBOX_DOCTOR_LOADED=1
 
 DOCTOR_RECORD_MARKER="PVE_TOOLBOX_DOCTOR"
-declare -ag DOCTOR_STATES=()
-declare -ag DOCTOR_IDS=()
-declare -ag DOCTOR_SUMMARIES=()
-declare -ag DOCTOR_DETAILS=()
 
 doctor_reset() {
-    DOCTOR_STATES=()
-    DOCTOR_IDS=()
-    DOCTOR_SUMMARIES=()
-    DOCTOR_DETAILS=()
-}
-
-_doctor_clean_field() {
-    local value=$1
-    value=${value//$'\t'/ }
-    value=${value//$'\r'/ }
-    value=${value//$'\n'/'; '}
-    printf '%s' "$value"
+    report_reset doctor
 }
 
 # doctor_result <pass|warn|fail|skipped|unsupported> <id> <summary> [detail]
@@ -44,8 +29,6 @@ doctor_result() {
     [[ $id =~ ^[a-z0-9][a-z0-9._-]*$ ]] || return 2
     [[ -n $summary ]] || return 2
 
-    summary=$(_doctor_clean_field "$summary")
-    detail=$(_doctor_clean_field "$detail")
     if [[ -n ${DOCTOR_PREFIX:-} ]]; then
         id="${DOCTOR_PREFIX}${id}"
     fi
@@ -56,10 +39,7 @@ doctor_result() {
         return 0
     fi
 
-    DOCTOR_STATES+=("$state")
-    DOCTOR_IDS+=("$id")
-    DOCTOR_SUMMARIES+=("$summary")
-    DOCTOR_DETAILS+=("$detail")
+    report_add "$state" "$id" "$summary" "$detail"
 }
 
 doctor_import_module() { # doctor_import_module <module> <exit-status> <output>
@@ -93,11 +73,11 @@ doctor_import_module() { # doctor_import_module <module> <exit-status> <output>
 }
 
 doctor_run_check() { # doctor_run_check <id> <function>
-    local id=$1 fn=$2 before=${#DOCTOR_STATES[@]}
+    local id=$1 fn=$2 before=${#REPORT_STATES[@]}
     if ! "$fn"; then
         doctor_result fail "$id" "health check execution failed"
     fi
-    if [[ ${#DOCTOR_STATES[@]} -eq $before ]]; then
+    if [[ ${#REPORT_STATES[@]} -eq $before ]]; then
         doctor_result fail "$id" "health check returned no result"
     fi
 }
@@ -319,8 +299,8 @@ doctor_run_core() {
 doctor_render() {
     local i label colour
     local pass_count=0 warn_count=0 fail_count=0 skipped_count=0 unsupported_count=0
-    for ((i = 0; i < ${#DOCTOR_STATES[@]}; i++)); do
-        case ${DOCTOR_STATES[$i]} in
+    for ((i = 0; i < ${#REPORT_STATES[@]}; i++)); do
+        case ${REPORT_STATES[$i]} in
             pass)        label=PASS; colour=$c_green; pass_count=$((pass_count + 1)) ;;
             warn)        label=WARN; colour=$c_yellow; warn_count=$((warn_count + 1)) ;;
             fail)        label=FAIL; colour=$c_red; fail_count=$((fail_count + 1)) ;;
@@ -328,15 +308,13 @@ doctor_render() {
             unsupported) label=N/A;  colour=$c_dim; unsupported_count=$((unsupported_count + 1)) ;;
         esac
         printf '%s%-4s%s %-28s %s\n' "$colour$c_bold" "$label" "$c_reset" \
-            "${DOCTOR_IDS[$i]}" "${DOCTOR_SUMMARIES[$i]}"
-        if [[ -n ${DOCTOR_DETAILS[$i]} ]]; then
-            printf '     %s\n' "${DOCTOR_DETAILS[$i]}"
+            "${REPORT_IDS[$i]}" "${REPORT_SUMMARIES[$i]}"
+        if [[ -n ${REPORT_DETAILS[$i]} ]]; then
+            printf '     %s\n' "${REPORT_DETAILS[$i]}"
         fi
     done
     printf '\nSummary: %d passed, %d warning, %d failed, %d skipped, %d unsupported\n' \
         "$pass_count" "$warn_count" "$fail_count" "$skipped_count" "$unsupported_count"
 
-    [[ $fail_count -eq 0 ]] || return 1
-    [[ $warn_count -eq 0 ]] || return 2
-    return 0
+    return "$(report_exit_code)"
 }

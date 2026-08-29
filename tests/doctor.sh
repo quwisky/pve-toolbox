@@ -12,13 +12,15 @@ fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 
 # shellcheck source=lib/common.sh
 source "$ROOT/lib/common.sh"
+# shellcheck source=lib/report.sh
+source "$ROOT/lib/report.sh"
 # shellcheck source=lib/doctor.sh
 source "$ROOT/lib/doctor.sh"
 
 state_for() { # state_for <id>
     local wanted=$1 i
-    for ((i = 0; i < ${#DOCTOR_IDS[@]}; i++)); do
-        [[ ${DOCTOR_IDS[$i]} == "$wanted" ]] && { printf '%s' "${DOCTOR_STATES[$i]}"; return; }
+    for ((i = 0; i < ${#REPORT_IDS[@]}; i++)); do
+        [[ ${REPORT_IDS[$i]} == "$wanted" ]] && { printf '%s' "${REPORT_STATES[$i]}"; return; }
     done
 }
 
@@ -26,9 +28,9 @@ state_for() { # state_for <id>
 # isolated subshells. Control characters must not let one result forge another.
 doctor_reset
 doctor_result pass host.example $'healthy\tservice' $'line one\nline two'
-[[ ${DOCTOR_SUMMARIES[0]} == "healthy service" ]] \
+[[ ${REPORT_SUMMARIES[0]} == "healthy service" ]] \
     || fail "doctor result retained a tab"
-[[ ${DOCTOR_DETAILS[0]} == "line one; line two" ]] \
+[[ ${REPORT_DETAILS[0]} == "line one; line two" ]] \
     || fail "doctor result retained a newline"
 doctor_result bogus bad.id nope >/dev/null 2>&1 \
     && fail "doctor accepted an unknown state"
@@ -40,7 +42,7 @@ doctor_reset
 record=$(DOCTOR_EMIT=1 DOCTOR_PREFIX=module.example. \
     doctor_result warn endpoint "endpoint is slow" "900 ms")
 doctor_import_module example 0 "$record"
-[[ ${DOCTOR_IDS[0]} == module.example.endpoint && ${DOCTOR_STATES[0]} == warn ]] \
+[[ ${REPORT_IDS[0]} == module.example.endpoint && ${REPORT_STATES[0]} == warn ]] \
     || fail "valid isolated module result was not imported"
 doctor_import_module broken 0 "unexpected module output"
 [[ $(state_for module.broken.protocol) == fail ]] \
@@ -92,8 +94,8 @@ pvesh() {
 
 doctor_reset
 doctor_run_core
-[[ ${#DOCTOR_STATES[@]} -eq 6 ]] || fail "core doctor did not return six checks"
-for state in "${DOCTOR_STATES[@]}"; do
+[[ ${#REPORT_STATES[@]} -eq 6 ]] || fail "core doctor did not return six checks"
+for state in "${REPORT_STATES[@]}"; do
     [[ $state == pass ]] || fail "healthy core fixture reported $state"
 done
 doctor_render >/dev/null || fail "healthy doctor report exited nonzero"
@@ -106,11 +108,11 @@ PVE1_TASKS_JSON='[{"node":"pve1","type":"vzdump","status":"backup failed"}]'
 PVE2_TASKS_JSON='[{"node":"pve2","type":"qmstart","status":"start failed"}]'
 doctor_reset
 doctor_check_tasks
-[[ ${DOCTOR_STATES[0]} == warn \
-    && ${DOCTOR_SUMMARIES[0]} == '2 failed Proxmox task(s) in the last 24 hours' ]] \
+[[ ${REPORT_STATES[0]} == warn \
+    && ${REPORT_SUMMARIES[0]} == '2 failed Proxmox task(s) in the last 24 hours' ]] \
     || fail "cluster-wide node task failures were not reported"
-[[ ${DOCTOR_DETAILS[0]} == *'pve1:vzdump backup failed'* \
-    && ${DOCTOR_DETAILS[0]} == *'pve2:qmstart start failed'* ]] \
+[[ ${REPORT_DETAILS[0]} == *'pve1:vzdump backup failed'* \
+    && ${REPORT_DETAILS[0]} == *'pve2:qmstart start failed'* ]] \
     || fail "cluster-wide task detail omitted a node"
 pass "doctor queries supported per-node task history"
 
@@ -123,8 +125,8 @@ pvesm() {
 }
 doctor_reset
 doctor_check_storage
-[[ ${DOCTOR_STATES[0]} == pass ]] || fail "disabled storage caused a capacity failure"
-[[ ${DOCTOR_DETAILS[0]} == 'disabled: local-lvm' ]] \
+[[ ${REPORT_STATES[0]} == pass ]] || fail "disabled storage caused a capacity failure"
+[[ ${REPORT_DETAILS[0]} == 'disabled: local-lvm' ]] \
     || fail "disabled storage was not retained as informational detail"
 pass "doctor ignores intentionally disabled storage capacity"
 
@@ -170,9 +172,10 @@ pass "doctor distinguishes warnings from failures"
 fixture="$WORK/fixture"
 fake_bin="$WORK/bin"
 mkdir -p "$fixture/lib" "$fixture/modules/example" "$fake_bin" "$WORK/empty-pve"
-cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" "$fixture/lib/"
+cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" \
+    "$ROOT/lib/report.sh" "$fixture/lib/"
 cp "$ROOT/pve-toolbox" "$fixture/pve-toolbox"
-printf '0.2.1\n' > "$fixture/VERSION"
+cp "$ROOT/VERSION" "$fixture/VERSION"
 printf '%s\n' \
     'MODULE_NAME="example"' \
     'MODULE_TITLE="Example"' \

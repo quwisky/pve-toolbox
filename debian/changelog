@@ -1,3 +1,10 @@
+pve-toolbox (0.3.0) unstable; urgency=medium
+
+  * Add versioned JSON and quiet output for status, check, and doctor.
+  * Standardize automation exit codes and redact sensitive result text.
+
+ -- Bence Nagy <quwisky@qwky.eu>  Sat, 29 Aug 2026 17:57:04 +0200
+
 pve-toolbox (0.2.1) unstable; urgency=medium
 
   * Query supported per-node task history endpoints on PVE 9.

@@ -18,6 +18,7 @@ pve-toolbox/
 │   ├── common.sh            # output, prompts, releases, systemd, state, conf
 │   ├── discord.sh           # webhook reporting, also installed for helper scripts
 │   ├── doctor.sh            # read-only host and module health checks
+│   ├── report.sh            # versioned, redacted automation results
 │   └── tui.sh               # whiptail/dialog widgets for `pve-toolbox ui`
 ├── modules/
 │   ├── _template/           # copy this to start a new module (underscore = hidden)
@@ -73,13 +74,17 @@ pve-toolbox --version          print the installed version
 ```
 
 Flags: `-y` non-interactive (modules read their env vars instead of prompting),
-`-f` force, `-V` version, `-h` help.
+`-f` force, `--json` versioned output, `--quiet` exit-status-only output,
+`-V` version, `-h` help. JSON and quiet output apply to `status`, `check`, and
+`doctor`.
 
 `doctor` checks cluster quorum, failed units, ZFS pools, Proxmox storage,
 recent failed tasks, pending reboots, and installed module health without
 changing the host. See the [doctor
 guide](https://quwisky.github.io/pve-toolbox/doctor/) for result states,
-thresholds, and exit codes.
+thresholds, and exit codes. The [automation
+guide](https://quwisky.github.io/pve-toolbox/automation/) documents the JSON
+schema, redaction, and monitoring examples.
 
 `link` also installs bash and zsh completion for commands, module names and
 tags. Candidates are queried from the launcher, so a new module completes
