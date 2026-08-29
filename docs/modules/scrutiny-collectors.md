@@ -25,6 +25,28 @@ there is no `zpool` binary. Every selected release asset is downloaded and
 verified before any binary is installed; a missing asset leaves the existing
 collector set untouched.
 
+Selecting the performance collector also installs Debian's `fio` package,
+which the collector validates before starting. Running `update` repairs this
+dependency on installations created by older toolbox versions, even when the
+collector release itself is already current. A check-only run remains
+read-only.
+
+The performance collector is deliberately not started as an update smoke test
+because it creates real disk load. After repairing a failed older installation,
+run it explicitly as `root` when that load is acceptable:
+
+```bash
+systemctl start scrutiny-collector-performance.service
+systemctl status scrutiny-collector-performance.service --no-pager
+```
+
+A successful run clears the failed unit state. If it still fails, inspect the
+collector output with:
+
+```bash
+journalctl -u scrutiny-collector-performance.service -n 100 --no-pager
+```
+
 ## Updates are the interesting part
 
 `update` does more than swap binaries:

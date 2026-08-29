@@ -170,8 +170,8 @@ doctor_check_zfs() {
 doctor_check_storage() {
     local warn_at=${PVE_TOOLBOX_DOCTOR_STORAGE_WARN:-85}
     local fail_at=${PVE_TOOLBOX_DOCTOR_STORAGE_FAIL:-95}
-    local output line name status percent value last
-    local -a columns=() warnings=() failures=()
+    local output line name status percent value last detail
+    local -a columns=() warnings=() failures=() disabled=()
     local seen=0
 
     if [[ ! $warn_at =~ ^[0-9]+$ || ! $fail_at =~ ^[0-9]+$ \
@@ -199,7 +199,9 @@ doctor_check_storage() {
         status=${columns[2]}
         last=$((${#columns[@]} - 1))
         percent=${columns[$last]%\%}
-        if [[ $status != active ]]; then
+        if [[ $status == disabled ]]; then
+            disabled+=("$name")
+        elif [[ $status != active ]]; then
             failures+=("$name:$status")
         elif [[ $percent =~ ^[0-9]+([.][0-9]+)?$ ]]; then
             value=${percent%%.*}
@@ -214,32 +216,74 @@ doctor_check_storage() {
     if [[ $seen -eq 0 ]]; then
         doctor_result unsupported storage.capacity "no Proxmox storage records were returned"
     elif [[ ${#failures[@]} -gt 0 ]]; then
+        detail=${failures[*]}
+        [[ ${#warnings[@]} -eq 0 ]] || detail+="; warnings: ${warnings[*]}"
+        [[ ${#disabled[@]} -eq 0 ]] || detail+="; disabled: ${disabled[*]}"
         doctor_result fail storage.capacity "storage requires attention" \
-            "${failures[*]}${warnings:+ warnings: ${warnings[*]}}"
+            "$detail"
     elif [[ ${#warnings[@]} -gt 0 ]]; then
-        doctor_result warn storage.capacity "storage is nearing capacity" "${warnings[*]}"
+        detail=${warnings[*]}
+        [[ ${#disabled[@]} -eq 0 ]] || detail+="; disabled: ${disabled[*]}"
+        doctor_result warn storage.capacity "storage is nearing capacity" "$detail"
     else
-        doctor_result pass storage.capacity "all active storage is below ${warn_at}%"
+        detail=""
+        [[ ${#disabled[@]} -eq 0 ]] || detail="disabled: ${disabled[*]}"
+        doctor_result pass storage.capacity \
+            "all enabled storage is active and below ${warn_at}%" "$detail"
     fi
 }
 
 doctor_check_tasks() {
-    local since output count detail
+    local since output nodes_json node node_output count detail
+    local -a nodes=() task_sets=()
     if ! command -v pvesh >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
         doctor_result unsupported pve.tasks "pvesh and jq are required"
         return
     fi
     since=$(date -d '24 hours ago' +%s)
-    if ! output=$(pvesh get /cluster/tasks --errors 1 --since "$since" \
-        --limit 50 --output-format json 2>&1); then
-        doctor_result fail pve.tasks "could not read recent failed Proxmox tasks" "$output"
+    if ! output=$(pvesh get /nodes --output-format json 2>&1); then
+        doctor_result fail pve.tasks "could not read the Proxmox node list" "$output"
         return
     fi
-    if ! count=$(jq -r 'if type == "array" then length else error("not an array") end' \
-        <<<"$output" 2>/dev/null); then
-        doctor_result fail pve.tasks "Proxmox task response was not valid JSON"
+    if ! nodes_json=$(jq -c '
+        if type == "array" then
+            [.[] | .node | select(type == "string" and length > 0)]
+        else
+            error("not an array")
+        end
+    ' <<<"$output" 2>/dev/null); then
+        doctor_result fail pve.tasks "Proxmox node response was not valid JSON"
         return
     fi
+    mapfile -t nodes < <(jq -r '.[]' <<<"$nodes_json")
+    if [[ ${#nodes[@]} -eq 0 ]]; then
+        doctor_result fail pve.tasks "no Proxmox nodes were returned"
+        return
+    fi
+
+    for node in "${nodes[@]}"; do
+        if [[ ! $node =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
+            doctor_result fail pve.tasks "Proxmox returned an unsafe node name"
+            return
+        fi
+        if ! node_output=$(pvesh get "/nodes/$node/tasks" --errors 1 --since "$since" \
+            --limit 50 --output-format json 2>&1); then
+            doctor_result fail pve.tasks \
+                "could not read recent failed Proxmox tasks for $node" "$node_output"
+            return
+        fi
+        if ! node_output=$(jq -c '
+            if type == "array" then . else error("not an array") end
+        ' <<<"$node_output" 2>/dev/null); then
+            doctor_result fail pve.tasks \
+                "Proxmox task response for $node was not valid JSON"
+            return
+        fi
+        task_sets+=("$node_output")
+    done
+
+    output=$(printf '%s\n' "${task_sets[@]}" | jq -cs 'add')
+    count=$(jq -r 'length' <<<"$output")
     if [[ $count -eq 0 ]]; then
         doctor_result pass pve.tasks "no failed Proxmox tasks in the last 24 hours"
         return

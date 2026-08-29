@@ -237,6 +237,54 @@ pass "zfs-scrub rejects schedule collisions and timer failures"
 pass "scrutiny installs require every selected release asset"
 
 (
+    export TOOLBOX_BIN_DIR="$WORK/sc-fio-bin" TOOLBOX_LIB_DIR="$WORK/sc-fio-lib"
+    export TOOLBOX_CONF_DIR="$WORK/sc-fio-conf" TOOLBOX_STATE_DIR="$WORK/sc-fio-state"
+    export TOOLBOX_SYSTEMD_DIR="$WORK/sc-fio-systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    CONFIG_DIR="$WORK/sc-fio-config"
+    SCRUTINY_API_ENDPOINT=https://example.invalid
+    require_root() { :; }
+    require_pve() { :; }
+    pkg_ensure() { printf '%s\n' "$*" >> "$WORK/sc-fio-packages"; }
+    detect_arch() { printf 'amd64'; }
+    curl() { :; }
+    ask() { :; }
+    ask_secret() { :; }
+    ask_yn() {
+        case $2 in
+            'fio performance collector'*) printf -v "$1" y ;;
+            *) printf -v "$1" n ;;
+        esac
+    }
+    have_zfs() { return 1; }
+    have_mdadm() { return 1; }
+    gh_release() { GH_TAG=v2.0.0; }
+    gh_fetch_checksums() { CHECKSUM_FILE=""; }
+    _sc_stage_binary() { printf 'performance\n' > "$3"; }
+    systemd_oneshot() { :; }
+    state_set() { :; }
+
+    module_install >/dev/null
+    grep -Eq '(^| )fio:fio( |$)' "$WORK/sc-fio-packages" \
+        || fail "performance collector install did not provision fio"
+
+    : > "$WORK/sc-fio-packages"
+    _sc_installed() { SC_PRESENT=(performance); }
+    _sc_version() { printf 'v2.0.0'; }
+    _sc_compare() { printf 'same'; }
+    module_update >/dev/null
+    grep -Eq '(^| )fio:fio( |$)' "$WORK/sc-fio-packages" \
+        || fail "performance collector update did not repair a missing fio dependency"
+) || exit 1
+pass "scrutiny performance installs and repairs its fio dependency"
+
+(
     export TOOLBOX_BIN_DIR="$WORK/sc-bin" TOOLBOX_LIB_DIR="$WORK/sc-lib"
     export TOOLBOX_CONF_DIR="$WORK/sc-conf" TOOLBOX_STATE_DIR="$WORK/sc-state"
     export TOOLBOX_SYSTEMD_DIR="$WORK/sc-systemd"

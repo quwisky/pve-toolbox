@@ -115,6 +115,16 @@ _sc_schedule_for() {
     printf '%s' "${!var}"
 }
 
+_sc_require_runtime_deps() {
+    local collector
+    for collector in "$@"; do
+        if [[ $collector == performance ]]; then
+            pkg_ensure fio:fio
+            return
+        fi
+    done
+}
+
 SC_UPDATE_STAGE=""
 SC_UPDATE_TIMERS_PAUSED=0
 SC_UPDATE_TIMER_LIST=""
@@ -209,6 +219,7 @@ module_install() {
     [[ $pick == y ]] && want+=(performance)
 
     [[ ${#want[@]} -eq 0 ]] && { warn "nothing selected"; return 1; }
+    _sc_require_runtime_deps "${want[@]}"
 
     local s var
     for s in "${want[@]}"; do
@@ -328,6 +339,7 @@ module_update() {
         dim "  https://github.com/$REPO/releases/tag/$GH_TAG"
         return 0
     fi
+    _sc_require_runtime_deps "${SC_PRESENT[@]}"
     if [[ $rel == same && ${FORCE:-0} -eq 0 ]]; then
         ok "up to date"
         return 0
