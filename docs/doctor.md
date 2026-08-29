@@ -38,6 +38,9 @@ volume ownership evidence, stale content, and backend pressure checks.
 The [certificate-watch module](modules/certificate-watch.md) checks every
 cluster node's active TLS certificate, trust chain, hostname coverage,
 reachability, and native ACME task history.
+The [upgrade-readiness module](modules/upgrade-readiness.md) applies a
+release-specific preflight policy to repositories, packages, filesystems,
+cluster nodes, services, storage, and recent backups.
 
 ## Result states and exit status
 

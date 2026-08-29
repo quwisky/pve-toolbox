@@ -22,6 +22,7 @@ test: syntax
 	@./tests/native-notifications.sh
 	@./tests/storage-hygiene.sh
 	@./tests/certificate-watch.sh
+	@./tests/upgrade-readiness.sh
 	@./tests/discord.sh
 	@./tests/config-backup.sh
 	@./tests/hardening.sh
