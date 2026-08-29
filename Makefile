@@ -18,6 +18,7 @@ test: syntax
 	@./tests/lib.sh
 	@./tests/report.sh
 	@./tests/doctor.sh
+	@./tests/backup-audit.sh
 	@./tests/discord.sh
 	@./tests/config-backup.sh
 	@./tests/hardening.sh

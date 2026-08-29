@@ -5,6 +5,7 @@ launcher discovers them at runtime; directories starting with `_` are skipped.
 
 | Module | Tags | Host only | Helper installed |
 | --- | --- | --- | --- |
+| [backup-audit](backup-audit.md) | `backup audit monitoring` | yes | none; contributes doctor checks |
 | [config-backup](config-backup.md) | `backup config notify` | yes | `pve-config-backup` |
 | [zfs-scrub](zfs-scrub.md) | `storage zfs monitoring notify` | yes | `pve-toolbox-zfs-scrub` |
 | [zfs-replication](zfs-replication.md) | `storage zfs backup replication notify` | yes | `pve-toolbox-zfs-sync` |
@@ -24,6 +25,7 @@ pve-toolbox list zfs
 | `module_update` | `update`, `check`, menu `u`/`c` | Update in place; `--check` reports only |
 | `module_status` | menu, `list` | One short line; exits 1 when not installed |
 | `module_status_long` | `status`, menu `s` | Detailed status; optional, falls back to `module_status` |
+| `module_doctor` | `doctor` | Read-only module health results; optional |
 | `module_uninstall` | `uninstall`, menu `x` | Remove what install created |
 
 See [Writing a module](../writing-a-module.md) for the full contract.

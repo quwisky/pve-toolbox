@@ -53,18 +53,15 @@ else
     export TUI_TEST_ROOT=0
 fi
 
-# tui.exp reaches zfs-scrub by counting rows in the module checklist, and the
-# screen cannot be used to confirm which row is selected - the checklist draws
-# every module's title, so matching one proves nothing. Assert the ordering
-# here, where it is cheap and fails before anything is driven, rather than
-# finding out by answering a prompt belonging to another module.
-want=4
-got=$(./pve-toolbox _complete modules | grep -nx 'zfs-scrub' | cut -d: -f1)
-if [[ $got != "$want" ]]; then
-    printf 'FAIL tui.exp expects zfs-scrub at row %s of the module list, found %s\n' \
-        "$want" "${got:-no row}" >&2
+# tui.exp reaches zfs-scrub by counting rows in the module checklist. Resolve
+# that row from the same discovery path as the UI, so adding an alphabetically
+# earlier module cannot make the driven test select a different module.
+TUI_ZFS_ROW=$(./pve-toolbox _complete modules | grep -nx 'zfs-scrub' | cut -d: -f1)
+if [[ -z $TUI_ZFS_ROW ]]; then
+    printf 'FAIL zfs-scrub is missing from the discovered module list\n' >&2
     exit 1
 fi
+export TUI_ZFS_ROW
 
 # Not exec'd: that would replace this shell and the cleanup trap would never
 # run.

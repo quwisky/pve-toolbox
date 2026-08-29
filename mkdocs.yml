@@ -66,6 +66,7 @@ nav:
   - APT repository: apt-repository.md
   - Modules:
       - Overview: modules/index.md
+      - backup-audit: modules/backup-audit.md
       - config-backup: modules/config-backup.md
       - zfs-scrub: modules/zfs-scrub.md
       - zfs-replication: modules/zfs-replication.md

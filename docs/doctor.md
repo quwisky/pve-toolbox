@@ -28,6 +28,10 @@ Installed modules may add more read-only checks. Their IDs are namespaced
 under `module.<name>.` and a malformed or failed module check becomes its own
 failure without corrupting the rest of the report.
 
+For example, the [backup-audit module](modules/backup-audit.md) contributes
+guest coverage, backup freshness, failure history, retention, excluded-volume,
+and per-node backup-storage results after it is configured.
+
 ## Result states and exit status
 
 | State | Meaning |

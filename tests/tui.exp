@@ -3,9 +3,9 @@
 #
 # Menu entries are chosen by counting Down presses, so reordering the menu in
 # cmd_ui means reordering the sends here. The module checklist is navigated the
-# same way; tests/tui.sh asserts the module ordering before this runs, so a
-# module added to the repo fails there rather than being installed here by
-# mistake. Do not try to assert it from the screen instead - the checklist
+# same way; tests/tui.sh supplies the discovered zfs-scrub row before this
+# runs, so a module added to the repo cannot make this install another module
+# by mistake. Do not try to assert it from the screen instead - the checklist
 # renders every module's title, so matching one proves nothing about which row
 # is selected.
 #
@@ -100,7 +100,9 @@ if {[info exists env(TUI_TEST_ROOT)] && $env(TUI_TEST_ROOT) == 1} {
     need {Install or reconfigure modules} "menu, for the prompt case"
     send -- "\r"
     need {Space toggles} "install checklist"
-    send -- "\033\[B\033\[B\033\[B"
+    for {set row 1} {$row < $env(TUI_ZFS_ROW)} {incr row} {
+        send -- "\033\[B"
+    }
     send -- " "
     send -- "\r"
     need {continue anyway} "a module prompt reaches the terminal"
