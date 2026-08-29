@@ -19,6 +19,7 @@ pve-toolbox/
 ├── modules/
 │   ├── _template/           # copy this to start a new module
 │   ├── backup-audit/
+│   ├── certificate-watch/
 │   ├── config-backup/
 │   ├── native-notifications/
 │   ├── scrutiny-collectors/
@@ -35,6 +36,7 @@ pve-toolbox/
 | Module | What it does |
 | --- | --- |
 | [backup-audit](modules/backup-audit.md) | Read-only guest backup coverage, freshness, retention, and storage audit |
+| [certificate-watch](modules/certificate-watch.md) | Read-only cluster certificate, chain, hostname, and ACME health audit |
 | [config-backup](modules/config-backup.md) | Timestamped snapshots of `/etc/pve` and host config, reported to Discord |
 | [native-notifications](modules/native-notifications.md) | Owned native PVE targets and matchers with protected secrets and tested delivery |
 | [storage-hygiene](modules/storage-hygiene.md) | Read-only snapshots, content ownership, storage definitions, and capacity audit |

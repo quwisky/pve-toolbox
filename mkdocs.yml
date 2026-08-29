@@ -67,6 +67,7 @@ nav:
   - Modules:
       - Overview: modules/index.md
       - backup-audit: modules/backup-audit.md
+      - certificate-watch: modules/certificate-watch.md
       - config-backup: modules/config-backup.md
       - native-notifications: modules/native-notifications.md
       - storage-hygiene: modules/storage-hygiene.md
