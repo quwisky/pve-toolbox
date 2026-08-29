@@ -35,10 +35,11 @@ openssl x509 -req -in "$WORK/intermediate.csr" -CA "$WORK/root.crt" \
     -CAkey "$WORK/root.key" -CAcreateserial -days 180 \
     -extfile "$WORK/intermediate.ext" -out "$WORK/intermediate.crt" >/dev/null 2>&1
 
-make_leaf() { # make_leaf <node> <san-host> <days> <include-intermediate>
-    local node=$1 san=$2 days=$3 include_intermediate=$4 dir="$WORK/pve/nodes/$1"
+make_leaf() { # make_leaf <node> <san-host> <days> <include-intermediate> [common-name]
+    local node=$1 san=$2 days=$3 include_intermediate=$4 common_name=${5:-$1}
+    local dir="$WORK/pve/nodes/$1"
     mkdir -p "$dir"
-    openssl req -newkey rsa:2048 -nodes -subj "/CN=$node" \
+    openssl req -newkey rsa:2048 -nodes -subj "/CN=$common_name" \
         -keyout "$WORK/$node.key" -out "$WORK/$node.csr" >/dev/null 2>&1
     printf '%s\n' "subjectAltName=DNS:$san" 'extendedKeyUsage=serverAuth' > "$WORK/$node.ext"
     openssl x509 -req -in "$WORK/$node.csr" -CA "$WORK/intermediate.crt" \
@@ -52,7 +53,7 @@ make_leaf() { # make_leaf <node> <san-host> <days> <include-intermediate>
 }
 
 make_leaf pve1 pve1 60 yes
-make_leaf pve2 other.example 60 yes
+make_leaf pve2 other.example 60 yes other.example
 make_leaf pve3 pve3 60 no
 make_leaf pve4 pve4 1 yes
 CW_CA_BUNDLE="$WORK/root.crt"
