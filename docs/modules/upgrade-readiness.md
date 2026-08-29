@@ -34,9 +34,12 @@ UR_MIN_FREE_MB=2048
 ```
 
 The backup age is deliberately operator-controlled. Set it to the recovery
-policy your environment actually requires; the default is 48 hours. The
-preflight can coexist with `backup-audit`, but it independently verifies this
-upgrade prerequisite so an uninstalled module cannot silently skip it.
+policy your environment actually requires; the default is 48 hours. Backup
+history is read from every cluster node because PVE 9 exposes the necessary
+filters on per-node task endpoints. Any unavailable or malformed node history
+fails this prerequisite. The preflight can coexist with `backup-audit`, but it
+independently verifies this upgrade prerequisite so an uninstalled module
+cannot silently skip it.
 
 ## Release policies
 

@@ -57,7 +57,7 @@ pass "JSON rendering is deterministic"
 fixture="$WORK/fixture"
 fake_bin="$WORK/bin"
 mkdir -p "$fixture/lib" "$fixture/modules/example" "$fake_bin" "$WORK/empty-pve"
-cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" \
+cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" "$ROOT/lib/pve.sh" \
     "$ROOT/lib/report.sh" "$fixture/lib/"
 cp "$ROOT/pve-toolbox" "$fixture/pve-toolbox"
 cp "$ROOT/VERSION" "$fixture/VERSION"

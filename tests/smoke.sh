@@ -204,7 +204,7 @@ pass "status names an uninstalled module without calling it a failure"
 # status must still tell automation that the requested operation was incomplete.
 failure_root=$(tmp)
 mkdir -p "$failure_root/lib" "$failure_root/modules/failing"
-cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" \
+cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" "$ROOT/lib/pve.sh" \
     "$ROOT/lib/report.sh" "$failure_root/lib/"
 printf '%s\n' \
     'MODULE_NAME="failing"' \

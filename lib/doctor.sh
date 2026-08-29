@@ -214,8 +214,7 @@ doctor_check_storage() {
 }
 
 doctor_check_tasks() {
-    local since output nodes_json node node_output count detail
-    local -a nodes=() task_sets=()
+    local since output count detail
     if ! command -v pvesh >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
         doctor_result unsupported pve.tasks "pvesh and jq are required"
         return
@@ -225,44 +224,12 @@ doctor_check_tasks() {
         doctor_result fail pve.tasks "could not read the Proxmox node list" "$output"
         return
     fi
-    if ! nodes_json=$(jq -c '
-        if type == "array" then
-            [.[] | .node | select(type == "string" and length > 0)]
-        else
-            error("not an array")
-        end
-    ' <<<"$output" 2>/dev/null); then
-        doctor_result fail pve.tasks "Proxmox node response was not valid JSON"
+    if ! pve_collect_node_tasks "$output" --errors 1 --since "$since" --limit 50; then
+        doctor_result fail pve.tasks "could not read recent failed Proxmox tasks" \
+            "$PVE_TASKS_ERROR"
         return
     fi
-    mapfile -t nodes < <(jq -r '.[]' <<<"$nodes_json")
-    if [[ ${#nodes[@]} -eq 0 ]]; then
-        doctor_result fail pve.tasks "no Proxmox nodes were returned"
-        return
-    fi
-
-    for node in "${nodes[@]}"; do
-        if [[ ! $node =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
-            doctor_result fail pve.tasks "Proxmox returned an unsafe node name"
-            return
-        fi
-        if ! node_output=$(pvesh get "/nodes/$node/tasks" --errors 1 --since "$since" \
-            --limit 50 --output-format json 2>&1); then
-            doctor_result fail pve.tasks \
-                "could not read recent failed Proxmox tasks for $node" "$node_output"
-            return
-        fi
-        if ! node_output=$(jq -c '
-            if type == "array" then . else error("not an array") end
-        ' <<<"$node_output" 2>/dev/null); then
-            doctor_result fail pve.tasks \
-                "Proxmox task response for $node was not valid JSON"
-            return
-        fi
-        task_sets+=("$node_output")
-    done
-
-    output=$(printf '%s\n' "${task_sets[@]}" | jq -cs 'add')
+    output=$PVE_TASKS_JSON
     count=$(jq -r 'length' <<<"$output")
     if [[ $count -eq 0 ]]; then
         doctor_result pass pve.tasks "no failed Proxmox tasks in the last 24 hours"

@@ -41,9 +41,11 @@ CW_FAIL_DAYS=7
 CW_ACME_STALE_DAYS=45
 ```
 
-When ACME is configured, `acmerenew` and `acmenewcert` task history is checked.
-The latest failure is a failure when it is newer than the latest success; an
-absent or stale success is a warning. Task inspection does not trigger renewal.
+When ACME is configured, `acmerenew` and `acmenewcert` task history is read
+from every node. The latest failure is a failure when it is newer than the
+latest success; an absent or stale success is a warning. An unavailable or
+malformed node history fails the audit rather than hiding a partial result.
+Task inspection does not trigger renewal.
 
 ## Monitoring
 
@@ -68,7 +70,7 @@ monitoring action; running doctor alone never sends anything.
 ## Limitations
 
 - Chain validation reflects the local node's current trust store.
-- ACME health is inferred from the most recent 200 cluster tasks, so older
+- ACME health is inferred from the most recent 200 tasks on each node, so older
   history may be unavailable.
 - The audit complements certificate and ACME checks in Proxmox; it does not
   replace renewal monitoring or official operational guidance.

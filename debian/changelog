@@ -1,3 +1,10 @@
+pve-toolbox (0.4.1) unstable; urgency=medium
+
+  * Query filtered task history through supported per-node PVE 9 endpoints.
+  * Reject partial or malformed task history in doctor and task-aware modules.
+
+ -- Bence Nagy <quwisky@qwky.eu>  Sat, 29 Aug 2026 19:47:00 +0200
+
 pve-toolbox (0.4.0) unstable; urgency=medium
 
   * Add guarded, isolated VM and container backup restore drills.

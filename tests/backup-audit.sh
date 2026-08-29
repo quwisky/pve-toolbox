@@ -16,6 +16,8 @@ export TOOLBOX_CONF_DIR TOOLBOX_STATE_DIR
 
 # shellcheck source=lib/common.sh
 source "$ROOT/lib/common.sh"
+# shellcheck source=lib/pve.sh
+source "$ROOT/lib/pve.sh"
 # shellcheck source=lib/report.sh
 source "$ROOT/lib/report.sh"
 # shellcheck source=lib/doctor.sh
@@ -25,17 +27,25 @@ source "$ROOT/modules/backup-audit/module.sh"
 
 BA_NOW_EPOCH=2000000000
 BA_SCENARIO=success
+BA_TASK_FAILURE_NODE=""
 export BA_NOW_EPOCH BA_SCENARIO
 
 pvesh() {
     [[ ${1:-} == get ]] || fail "backup audit attempted a non-read-only pvesh action: $*"
     local endpoint=${2:-}
+    shift 2
+    if [[ $endpoint == "/nodes/$BA_TASK_FAILURE_NODE/tasks" ]]; then
+        printf 'task history unavailable\n' >&2
+        return 7
+    fi
     case "$BA_SCENARIO:$endpoint" in
         success:/cluster/resources)
             printf '%s\n' '[{"vmid":100,"node":"pve1","type":"qemu","name":"web"}]' ;;
         success:/cluster/backup)
             printf '%s\n' '[{"id":"job-ok","enabled":1,"all":1,"storage":"backup","prune-backups":"keep-last=3"}]' ;;
-        success:/cluster/tasks)
+        success:/nodes/pve1/tasks)
+            [[ $* == '--typefilter vzdump --limit 500 --output-format json' ]] \
+                || fail "unsupported backup task options: $*"
             printf '%s\n' '[{"type":"vzdump","id":"100","status":"OK","endtime":1999996400}]' ;;
         success:/nodes/pve1/qemu/100/config)
             printf '%s\n' '{"scsi0":"local-lvm:vm-100-disk-0,size=8G"}' ;;
@@ -55,9 +65,14 @@ pvesh() {
                 {"id":"enabled","enabled":1,"vmid":"100,103,104","exclude":"101","storage":"backup"},
                 {"id":"disabled","enabled":0,"vmid":"102","storage":"backup","prune-backups":"keep-last=3"}
             ]' ;;
-        warning:/cluster/tasks)
+        warning:/nodes/pve1/tasks)
+            [[ $* == '--typefilter vzdump --limit 500 --output-format json' ]] \
+                || fail "unsupported backup task options: $*"
+            printf '%s\n' '[{"type":"vzdump","id":"100","status":"OK","endtime":1999996400}]' ;;
+        warning:/nodes/pve2/tasks)
+            [[ $* == '--typefilter vzdump --limit 500 --output-format json' ]] \
+                || fail "unsupported backup task options: $*"
             printf '%s\n' '[
-                {"type":"vzdump","id":"100","status":"OK","endtime":1999996400},
                 {"type":"vzdump","id":"103","status":"OK","endtime":1999700000},
                 {"type":"vzdump","id":"104","status":"OK","endtime":1999996400},
                 {"type":"vzdump","id":"104","status":"backup failed","endtime":1999990000}
@@ -80,7 +95,9 @@ pvesh() {
             ]' ;;
         failure:/cluster/backup)
             printf '%s\n' '[{"id":"weak","enabled":1,"vmid":"201","storage":"offline","prune-backups":"keep-last=1"}]' ;;
-        failure:/cluster/tasks)
+        failure:/nodes/pve1/tasks)
+            [[ $* == '--typefilter vzdump --limit 500 --output-format json' ]] \
+                || fail "unsupported backup task options: $*"
             printf '%s\n' '[
                 {"type":"vzdump","id":"201","status":"backup failed","endtime":1999996400},
                 {"type":"vzdump","id":"201","status":"backup failed","endtime":1999990000}
@@ -139,6 +156,16 @@ module_doctor
 [[ $(printf '%s\n' "${REPORT_STATES[@]}" | grep -c '^fail$' || true) -eq 0 ]] \
     || fail "warning fixture produced a failure"
 pass "cluster warning cases remain distinct"
+
+doctor_reset
+BA_SCENARIO=warning
+BA_TASK_FAILURE_NODE=pve2
+module_doctor
+[[ $(result_state api.cluster-backup-task-history) == fail ]] \
+    || fail "partial cluster backup task history did not fail closed"
+[[ ${#REPORT_STATES[@]} -eq 1 ]] || fail "backup audit continued after task history failure"
+BA_TASK_FAILURE_NODE=""
+pass "backup audit rejects partial per-node task history"
 
 doctor_reset
 BA_SCENARIO=failure

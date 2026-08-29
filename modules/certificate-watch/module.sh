@@ -255,7 +255,12 @@ _cw_audit() {
     fi
     _cw_array "cluster node inventory" /nodes || return 0
     nodes=$CW_JSON
-    if _cw_array "ACME task history" /cluster/tasks --limit 200; then tasks=$CW_JSON; fi
+    if ! pve_collect_node_tasks "$nodes" --limit 200; then
+        doctor_result fail api.acme-task-history "could not read ACME task history" \
+            "$PVE_TASKS_ERROR"
+        return 0
+    fi
+    tasks=$PVE_TASKS_JSON
     while IFS= read -r node; do
         if _cw_object "node $node reachability" "/nodes/$node/status"; then
             doctor_result pass "node.$(_cw_id "$node").reachability" "node API is reachable"
