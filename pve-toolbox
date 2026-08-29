@@ -15,7 +15,8 @@
 #   pve-toolbox self-update        git pull this checkout
 #   pve-toolbox --version          print the installed version
 #
-# Flags: -y/--yes non-interactive, -f/--force, -V/--version, -h/--help
+# Flags: -y/--yes non-interactive, -f/--force, --json, --quiet,
+#        -V/--version, -h/--help
 #
 set -euo pipefail
 
@@ -50,10 +51,19 @@ fi
 
 # shellcheck source=lib/common.sh
 source "$TOOLBOX_ROOT/lib/common.sh"
+# shellcheck source=lib/report.sh
+source "$TOOLBOX_ROOT/lib/report.sh"
 # shellcheck source=lib/doctor.sh
 source "$TOOLBOX_ROOT/lib/doctor.sh"
 
 FORCE=0
+OUTPUT_JSON=0
+OUTPUT_QUIET=0
+
+usage_error() {
+    printf '%s error:%s %s\n' "$c_red$c_bold" "$c_reset" "$*" >&2
+    exit 64
+}
 
 # --------------------------------------------------------------- discovery --
 
@@ -84,7 +94,7 @@ meta() { # meta <module> <VAR>
 # Run a module function in a subshell so module globals stay isolated.
 run_module() { # run_module <module> <function> [args...]
     local mod=$1 fn=$2; shift 2
-    [[ -f "$MODULE_DIR/$mod/module.sh" ]] || die "unknown module: $mod"
+    [[ -f "$MODULE_DIR/$mod/module.sh" ]] || usage_error "unknown module: $mod"
     (
         # shellcheck source=/dev/null
         source "$MODULE_DIR/$mod/module.sh"
@@ -249,6 +259,9 @@ cmd_each() { # cmd_each <function> [--check] <modules...>
     fi
     [[ ${#list[@]} -eq 0 ]] && { warn "no installed modules"; return 0; }
     for m in "${list[@]}"; do
+        [[ -f "$MODULE_DIR/$m/module.sh" ]] || usage_error "unknown module: $m"
+    done
+    for m in "${list[@]}"; do
         step "$(meta "$m" MODULE_TITLE)"
         if [[ $fn == module_status_long ]]; then
             # module_status exits 1 to mean "not installed", which is the
@@ -268,6 +281,59 @@ cmd_each() { # cmd_each <function> [--check] <modules...>
         fi
     done
     return "$failed"
+}
+
+cmd_module_report() { # cmd_module_report <status|check> <function> [--check] <modules...>
+    local command=$1 fn=$2; shift 2
+    local extra="" explicit=1
+    [[ ${1:-} == --check ]] && { extra=--check; shift; }
+    local list=("$@") m output rc state summary
+    [[ ${#list[@]} -eq 0 ]] && explicit=0
+
+    report_reset "$command"
+    discover
+    if [[ $explicit -eq 0 ]]; then
+        for m in "${MODULES[@]}"; do
+            is_installed "$m" || continue
+            list+=("$m")
+        done
+    fi
+    for m in "${list[@]}"; do
+        [[ -f "$MODULE_DIR/$m/module.sh" ]] || usage_error "unknown module: $m"
+        if [[ $command == status ]] && ! is_installed "$m"; then
+            report_add skipped "module.$m.status" "module is not installed"
+            continue
+        fi
+
+        output=""; rc=0
+        if [[ -n $extra ]]; then
+            output=$(run_module "$m" "$fn" "$extra" 2>&1) || rc=$?
+        else
+            output=$(run_module "$m" "$fn" 2>&1) || rc=$?
+        fi
+        if [[ $rc -ne 0 ]]; then
+            report_add fail "module.$m.$command" "$command failed with exit $rc" "$output"
+            continue
+        fi
+
+        state=pass
+        summary="$command completed"
+        if [[ $command == check && $output == *"update available:"* ]]; then
+            state=warn
+            summary="update available"
+        elif [[ $command == check && $output == *" is older than "* ]]; then
+            state=warn
+            summary="configured release is older than the installed version"
+        fi
+        report_add "$state" "module.$m.$command" "$summary" "$output"
+    done
+
+    local exit_code
+    exit_code=$(report_exit_code)
+    if [[ $OUTPUT_QUIET -eq 0 ]]; then
+        report_render_json "$exit_code"
+    fi
+    return "$exit_code"
 }
 
 cmd_doctor() {
@@ -295,6 +361,15 @@ cmd_doctor() {
         doctor_import_module "$m" "$rc" "$output"
     done
 
+    local exit_code
+    exit_code=$(report_exit_code)
+    if [[ $OUTPUT_QUIET -eq 1 ]]; then
+        return "$exit_code"
+    fi
+    if [[ $OUTPUT_JSON -eq 1 ]]; then
+        report_render_json "$exit_code"
+        return "$exit_code"
+    fi
     doctor_render
 }
 
@@ -466,7 +541,7 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags>
                     printf '%s\n' "${tags[@]}"
                 fi
             done | sort -u ;;
-        *)  die "unknown completion target: ${1:-}" ;;
+        *)  usage_error "unknown completion target: ${1:-}" ;;
     esac
 }
 
@@ -491,31 +566,52 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         -y|--yes)   ASSUME_YES=1 ;;
         -f|--force) FORCE=1 ;;
+        --json)     OUTPUT_JSON=1 ;;
+        --quiet)    OUTPUT_QUIET=1 ;;
         -V|--version) printf 'pve-toolbox %s\n' "$TOOLBOX_VERSION"; exit 0 ;;
         -h|--help)  usage; exit 0 ;;
         --)         shift; ARGS+=("$@"); break ;;
-        -*)         die "unknown flag: $1" ;;
+        -*)         usage_error "unknown flag: $1" ;;
         *)          ARGS+=("$1") ;;
     esac
     shift
 done
+[[ $OUTPUT_JSON -eq 0 || $OUTPUT_QUIET -eq 0 ]] \
+    || usage_error "--json and --quiet cannot be used together"
+
+command_name=${ARGS[0]:-menu}
+if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
+    case $command_name in
+        status|check|doctor) ;;
+        *) usage_error "--json and --quiet are supported by status, check, and doctor" ;;
+    esac
+    c_reset=""; c_bold=""; c_dim=""; c_red=""; c_green=""; c_yellow=""; c_blue=""
+fi
 export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED
 
-case "${ARGS[0]:-menu}" in
+case $command_name in
     menu)        menu ;;
     list)        cmd_list "${ARGS[@]:1}" ;;
-    install)     [[ ${#ARGS[@]} -lt 2 ]] && die "install needs a module name"
+    install)     [[ ${#ARGS[@]} -lt 2 ]] && usage_error "install needs a module name"
                  cmd_each module_install "${ARGS[@]:1}" ;;
     update)      cmd_each module_update "${ARGS[@]:1}" ;;
-    check)       cmd_each module_update --check "${ARGS[@]:1}" ;;
-    status)      cmd_each module_status_long "${ARGS[@]:1}" ;;
-    doctor)      [[ ${#ARGS[@]} -eq 1 ]] || die "doctor takes no arguments"
+    check)       if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
+                     cmd_module_report check module_update --check "${ARGS[@]:1}"
+                 else
+                     cmd_each module_update --check "${ARGS[@]:1}"
+                 fi ;;
+    status)      if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
+                     cmd_module_report status module_status_long "${ARGS[@]:1}"
+                 else
+                     cmd_each module_status_long "${ARGS[@]:1}"
+                 fi ;;
+    doctor)      [[ ${#ARGS[@]} -eq 1 ]] || usage_error "doctor takes no arguments"
                  cmd_doctor ;;
-    uninstall)   [[ ${#ARGS[@]} -lt 2 ]] && die "uninstall needs a module name"
+    uninstall)   [[ ${#ARGS[@]} -lt 2 ]] && usage_error "uninstall needs a module name"
                  cmd_each module_uninstall "${ARGS[@]:1}" ;;
     ui)          cmd_ui ;;
     link)        cmd_link ;;
     _complete)   cmd_complete "${ARGS[@]:1}" ;;
     self-update) cmd_self_update ;;
-    *)           die "unknown command: ${ARGS[0]} (try --help)" ;;
+    *)           usage_error "unknown command: ${ARGS[0]} (try --help)" ;;
 esac

@@ -81,5 +81,6 @@ PASS host.reboot                  no pending reboot marker
 Summary: 5 passed, 1 warning, 0 failed, 0 skipped, 0 unsupported
 ```
 
-The human-readable report is the interface in this release. Stable JSON output
-is tracked separately in [issue #19](https://github.com/quwisky/pve-toolbox/issues/19).
+Use `pve-toolbox doctor --json` for the stable versioned schema or
+`pve-toolbox doctor --quiet` for exit-status-only monitoring. See
+[Automation output](automation.md).

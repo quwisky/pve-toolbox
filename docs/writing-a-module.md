@@ -124,6 +124,10 @@ function. It validates the records and automatically prefixes IDs with
 IDs contain lowercase letters, digits, dots, underscores, and hyphens. Summary
 and detail values are single logical lines and must not contain secrets.
 
+The shared reporting layer removes known credential shapes as a defensive
+fallback before JSON rendering, but module functions must never deliberately
+emit tokens, passwords, webhook URLs, private-key paths, or other secrets.
+
 A hook that exits unsuccessfully, prints unrelated output, or produces no
 results is reported as a module health failure. One broken module hook cannot
 stop the remaining host and module checks.
@@ -175,6 +179,7 @@ Everything in `lib/common.sh` is already sourced:
 `have_mdadm` · `gh_release` `install_release_binary` `rollback_binary`
 `version_bare` `is_newer` · `state_*` `conf_*` · `systemd_oneshot` `systemd_remove`
 `wait_for_idle` `run_unit` · `backup_file` `install_toolbox_lib` ·
+`doctor_result` ·
 [`discord_notify`](reference/discord.md)
 
 See the [`lib/common.sh` reference](reference/common.md).

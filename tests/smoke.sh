@@ -118,7 +118,7 @@ has "$got" zfs-scrub || fail "a flag before the command broke it, got: $got"
 pass "bash finds the command past a flag"
 
 got=$(complete_words 1 ./pve-toolbox "-")
-for flag in -y --yes -f --force -V --version -h --help; do
+for flag in -y --yes -f --force --json --quiet -V --version -h --help; do
     has "$got" "$flag" || fail "flags missing $flag, got: $got"
 done
 got=$(complete_words 1 ./pve-toolbox "--f")
@@ -203,7 +203,8 @@ pass "status names an uninstalled module without calling it a failure"
 # status must still tell automation that the requested operation was incomplete.
 failure_root=$(tmp)
 mkdir -p "$failure_root/lib" "$failure_root/modules/failing"
-cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" "$failure_root/lib/"
+cp "$ROOT/lib/common.sh" "$ROOT/lib/discord.sh" "$ROOT/lib/doctor.sh" \
+    "$ROOT/lib/report.sh" "$failure_root/lib/"
 printf '%s\n' \
     'MODULE_NAME="failing"' \
     'MODULE_TITLE="Failing fixture"' \

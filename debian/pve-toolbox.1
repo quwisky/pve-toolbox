@@ -53,11 +53,21 @@ Run non-interactively with configured values and defaults.
 .BR \-f ", " \-\-force
 Force reinstall or redownload behavior where a module supports it.
 .TP
+.B \-\-json
+Emit versioned, machine-readable output for status, check, or doctor.
+.TP
+.B \-\-quiet
+Emit no report for status, check, or doctor; return only its standardized
+status. This cannot be combined with --json.
+.TP
 .BR \-V ", " \-\-version
 Print the installed version.
 .TP
 .BR \-h ", " \-\-help
 Print command usage.
+.SH EXIT STATUS
+0 indicates success, 1 an operational failure, 2 a warning, 64 invalid input,
+and 69 a report whose meaningful checks are unsupported.
 .SH FILES
 .TP
 .I /etc/pve-toolbox/
