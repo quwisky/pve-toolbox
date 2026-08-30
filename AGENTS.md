@@ -36,17 +36,25 @@ These instructions apply to the entire repository.
 
 ## Packaging and releases
 
-- `VERSION` and the version in `debian/changelog` must match before a release.
+- `.release-please-manifest.json`, `VERSION`, and the version in
+  `debian/changelog` must match before a release. Release Please owns version
+  changes; its workflow synchronizes the Debian changelog on the release PR.
 - The APT repository supports Debian 13 (`trixie`) / PVE 9 on `amd64`. Do not
   broaden that claim without adding and running matching validation.
 - Never commit a private signing key, signing subkey, passphrase, token, or
   revocation certificate. The only committed signing material is the public
   certificate at `keys/pve-toolbox.asc`.
-- The `APT_SIGNING_KEY` GitHub Actions secret must match the committed public
-  certificate. Keep repository trust scoped through `Signed-By`; do not add
-  instructions using the deprecated system-wide `apt-key` trust model.
-- Preserve the guarded manual-release behavior: manual releases run only from
-  `master`, and an existing version tag or release must cause a clear failure.
+- The `APT_SIGNING_KEY` secret in the `release` environment must match the
+  committed public certificate. Keep repository trust scoped through
+  `Signed-By`; do not add instructions using the deprecated system-wide
+  `apt-key` trust model.
+- `RELEASE_PLEASE_TOKEN` is a repository secret with narrowly scoped repository
+  access so release pull-request updates trigger required workflows.
+- Preserve the guarded manual-release behavior: manual requests run only from
+  `master`, require a newer stable version, and an existing version tag or
+  release must cause a clear failure.
+- Keep GitHub Releases draft until the exact tested package is attested, the
+  signed APT repository and Pages are published, and release assets verify.
 - Changes to package contents, lifecycle scripts, repository metadata, signing,
   or release automation require the package and repository tests, not only the
   lightweight local suite.

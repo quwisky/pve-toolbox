@@ -120,10 +120,22 @@ apt upgrade pve-toolbox
 
 ## Publishing a release
 
-A tag such as `v0.1.0` must match both `VERSION` and `debian/changelog`. The
-release workflow can run from that tag, or be started manually from `master`.
-A manual run derives the tag from `VERSION` and refuses any other branch or an
-existing tag.
+Google Release Please maintains one release pull request against `master` from
+Conventional Commit history. Merging that pull request is the release
+approval. It updates `CHANGELOG.md`, `VERSION`, and the release manifest; the
+workflow synchronizes the same notes into `debian/changelog` on the release
+branch.
+
+Before version 1.0, `fix` commits produce a patch release, while `feat` and
+breaking commits produce a minor release. Release notes show `feat`, `fix`,
+`perf`, `docs`, and `deps`; routine `ci`, `test`, `style`, `build`, and `chore`
+entries stay hidden unless they carry a breaking-change declaration. Weekly
+Dependabot commits use the `deps` type.
+
+The workflow also supports a guarded manual request from `master`. Supply a
+new stable version such as `0.4.2`; the request fails if the version is not
+newer or its tag or GitHub Release already exists. It still creates a release
+pull request rather than bypassing review.
 
 CI requires the portable tests, strict documentation build, and complete
 Debian 13 suite through one stable aggregate check. The Debian job builds the
@@ -131,21 +143,37 @@ Debian 13 suite through one stable aggregate check. The Debian job builds the
 the package, and carries those exact bytes through signed repository metadata,
 APT update, candidate selection, download, and installation.
 
-The release workflow requires every test group, including the terminal UI,
-both shell completions, config-backup gates, package lifecycle, and signed
-repository tests. It then builds the `.deb`, imports the dedicated
-signing subkey from the `APT_SIGNING_KEY` Actions secret, and verifies that it
-matches the public certificate committed at `keys/pve-toolbox.asc`. It updates
-the signed `trixie/main` repository on the `apt` branch, publishes both public
-key formats, then creates a GitHub Release with generated changelog notes and
-attaches the package plus its SHA-256 manifest.
+When the release pull request merges, Release Please creates the version tag
+and a draft GitHub Release. A separate reusable CI invocation builds one `.deb`
+on Debian 13 and carries its SHA-256 through every required test. Later jobs:
 
-Rerunning the same failed workflow is safe: an identical package already
-present in the APT repository is kept and later release or Pages steps
-continue. A different package with the same version is refused. A new manual
-run still refuses an existing tag or GitHub Release; only a retry attempt of
-the original run may resume it, and its tag must target the same commit.
+1. create GitHub/Sigstore build provenance for the tested package;
+2. import `APT_SIGNING_KEY` only inside the protected `release` environment;
+3. verify that key against `keys/pve-toolbox.asc` and publish signed `Release`,
+   `Release.gpg`, and `InRelease` metadata;
+4. retain and index the newest three stable package versions for rollback;
+5. deploy the combined documentation and APT repository to Pages; and
+6. attach the `.deb`, SHA-256 manifest, and provenance bundle, then publish the
+   GitHub Release last.
 
-Pages is assembled from the MkDocs site and the `apt` branch. The docs and
-release workflows share one deployment concurrency group so neither can erase
-or race the other.
+`RELEASE_PLEASE_TOKEN` is a repository secret so its pull-request updates
+trigger CI. `APT_SIGNING_KEY` is an environment secret scoped to the `release`
+environment and must match the committed public certificate. The release job
+never exposes the signing secret to build, test, provenance, Pages, or final
+GitHub Release jobs.
+
+Rerunning a failed workflow is safe. The repository publisher stages and
+verifies complete metadata before changing the `apt` checkout, restores the
+previous contents if publication fails, accepts an identical version only when
+its bytes match, and rejects same-version substitutions. The draft remains
+unpublished until all downstream jobs succeed.
+
+Verify a downloaded release package and its provenance with:
+
+```bash
+gh attestation verify pve-toolbox_0.4.2_all.deb \
+  --repo quwisky/pve-toolbox
+```
+
+Pages deployment remains serialized with normal documentation publication so
+neither workflow can race or erase the published APT repository.

@@ -8,7 +8,7 @@ ROOT=$PWD
 pass() { printf 'ok  %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 
-commands=(dpkg-deb gpg gpgv reprepro)
+commands=(apt-ftparchive dpkg-deb dpkg-scanpackages gpg gpgv gzip)
 [[ -n ${PACKAGE_DEB:-} ]] || commands+=(dpkg-buildpackage)
 [[ -z ${PACKAGE_DEB_SHA256:-} ]] || commands+=(sha256sum)
 for command in "${commands[@]}"; do
@@ -91,34 +91,50 @@ committed_fingerprint=$(gpg --batch --with-colons --show-keys keys/pve-toolbox.a
 
 mismatch_repo="$WORK/mismatch-repository"
 if ./scripts/publish-apt-repo.sh \
-    "$mismatch_repo" "$deb" "$fingerprint" keys/pve-toolbox.asc \
+    "$mismatch_repo" "$deb" "$fingerprint" keys/pve-toolbox.asc 3 \
     >/dev/null 2>&1; then
     fail "publisher accepted a mismatched public key"
 fi
+[[ ! -e $mismatch_repo && ! -L $mismatch_repo ]] \
+    || fail "publisher created a repository before validating the signing key"
 
 repo="$WORK/repository"
 ./scripts/publish-apt-repo.sh \
-    "$repo" "$deb" "$fingerprint" "$public_key" >/dev/null
+    "$repo" "$deb" "$fingerprint" "$public_key" 3 >/dev/null
+snapshot_repository() {
+    local output=$1
+    find "$repo" -path "$repo/.git" -prune -o -type f -exec sha256sum {} + \
+        | sort > "$output"
+}
 # A workflow retry after the APT branch was pushed must be a no-op, not a
 # blocker that prevents the GitHub Release or Pages steps from running.
+snapshot_repository "$WORK/repository-before-retry"
+sleep 1
 ./scripts/publish-apt-repo.sh \
-    "$repo" "$deb" "$fingerprint" "$public_key" >/dev/null \
+    "$repo" "$deb" "$fingerprint" "$public_key" 3 >/dev/null \
     || fail "repository publisher rejected an identical retry"
+snapshot_repository "$WORK/repository-after-retry"
+cmp -s "$WORK/repository-before-retry" "$WORK/repository-after-retry" \
+    || fail "identical repository retry changed published bytes"
 mkdir -p "$WORK/conflicting-package"
 dpkg-deb --raw-extract "$deb" "$WORK/conflicting-package"
 mkdir -p "$WORK/conflicting-package/usr/share/pve-toolbox"
 printf 'different build\n' > "$WORK/conflicting-package/usr/share/pve-toolbox/retry-conflict"
 conflicting_deb="$WORK/conflicting.deb"
 dpkg-deb --build "$WORK/conflicting-package" "$conflicting_deb" >/dev/null
+snapshot_repository "$WORK/repository-before-conflict"
 if ./scripts/publish-apt-repo.sh \
-    "$repo" "$conflicting_deb" "$fingerprint" "$public_key" >/dev/null 2>&1; then
+    "$repo" "$conflicting_deb" "$fingerprint" "$public_key" 3 >/dev/null 2>&1; then
     fail "repository publisher replaced an existing version with different bytes"
 fi
-expected="trixie|main|amd64: pve-toolbox $(<VERSION)"
-[[ $(reprepro --basedir "$repo" list trixie) == "$expected" ]] \
-    || fail "repository index did not contain the package"
+snapshot_repository "$WORK/repository-after-conflict"
+cmp -s "$WORK/repository-before-conflict" "$WORK/repository-after-conflict" \
+    || fail "conflicting repository publication changed published bytes"
 [[ -s $repo/dists/trixie/main/binary-amd64/Packages.gz ]] \
     || fail "repository omitted the amd64 package index"
+packages=$(gzip -dc "$repo/dists/trixie/main/binary-amd64/Packages.gz")
+[[ $packages == *"Package: pve-toolbox"* && $packages == *"Version: $(<VERSION)"* ]] \
+    || fail "repository index did not contain the package"
 cmp -s "$public_key" "$repo/pve-toolbox.asc" \
     || fail "repository omitted the armored public key"
 gpgv --keyring "$repo/pve-toolbox.gpg" \
@@ -127,6 +143,30 @@ gpgv --keyring "$repo/pve-toolbox.gpg" \
 gpgv --keyring "$repo/pve-toolbox.gpg" "$repo/dists/trixie/InRelease" \
     >/dev/null 2>&1 || fail "repository InRelease signature did not verify"
 pass "signed APT repository metadata"
+
+retention_repo="$WORK/retention-repository"
+for retained_version in 0.4.0 0.4.1 0.4.2 0.4.3; do
+    package_root="$WORK/package-$retained_version"
+    dpkg-deb --raw-extract "$deb" "$package_root"
+    sed -i "s/^Version: .*/Version: $retained_version/" \
+        "$package_root/DEBIAN/control"
+    printf '%s\n' "$retained_version" \
+        > "$package_root/usr/lib/pve-toolbox/VERSION"
+    retained_deb="$WORK/pve-toolbox_${retained_version}_all.deb"
+    dpkg-deb --build "$package_root" "$retained_deb" >/dev/null
+    ./scripts/publish-apt-repo.sh \
+        "$retention_repo" "$retained_deb" "$fingerprint" "$public_key" 3 >/dev/null
+done
+retained_packages=$(gzip -dc \
+    "$retention_repo/dists/trixie/main/binary-amd64/Packages.gz")
+mapfile -t retained_versions < <(
+    awk '$1 == "Version:" {print $2}' <<< "$retained_packages" | sort -V
+)
+[[ ${retained_versions[*]} == '0.4.1 0.4.2 0.4.3' ]] \
+    || fail "repository did not retain the newest three versions"
+[[ $(find "$retention_repo/pool" -type f -name '*.deb' | wc -l) -eq 3 ]] \
+    || fail "repository pool retained an unexpected package count"
+pass "APT repository retains exactly three versions"
 
 if [[ ${REPOSITORY_TEST_REQUIRED:-0} != 1 ]]; then
     printf 'skip APT consumer test, REPOSITORY_TEST_REQUIRED is not set\n'

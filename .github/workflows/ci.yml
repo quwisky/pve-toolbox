@@ -89,8 +89,8 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl debhelper devscripts expect \
-            git gnupg jq make reprepro rsync shellcheck tar gzip whiptail zsh
+            apt-utils build-essential ca-certificates curl debhelper devscripts \
+            dpkg-dev expect git gnupg jq make rsync shellcheck tar gzip whiptail zsh
 
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

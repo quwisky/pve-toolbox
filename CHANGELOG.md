@@ -1,0 +1,59 @@
+# Changelog
+
+## [0.4.1](https://github.com/quwisky/pve-toolbox/compare/v0.4.0...v0.4.1) (2026-08-29)
+
+- Query filtered task history through supported per-node PVE 9 endpoints.
+- Reject partial or malformed task history in doctor and task-aware modules.
+
+## [0.4.0](https://github.com/quwisky/pve-toolbox/compare/v0.3.0...v0.4.0) (2026-08-28)
+
+- Add guarded, isolated VM and container backup restore drills.
+- Default to a plan, require explicit mutation consent, retain recoverable state,
+  and delete only ownership-marked temporary guests.
+- Add a read-only, policy-driven PVE 9 upgrade readiness preflight.
+- Report repository, package, reboot, space, cluster, storage, service, and
+  recent-backup blockers with remediation context.
+- Add read-only cluster certificate expiry, hostname, and chain checks.
+- Report node reachability and failed or stale native ACME tasks.
+- Add read-only storage hygiene checks for snapshots, content, definitions,
+  ZFS objects, capacity, inodes, and LVM thin pools.
+- Distinguish orphan candidates from volumes with ambiguous ownership.
+- Add idempotent native PVE webhook, Discord, Gotify, and SMTP targets.
+- Provision owned matchers with delivery tests, protected credentials, and
+  rollback on failure.
+- Add a shared helper for custom events through Proxmox notification matchers.
+- Add read-only guest backup coverage and freshness auditing.
+- Report weak retention, excluded volumes, failed jobs, and backup storage
+  health through doctor and JSON output.
+
+## [0.3.0](https://github.com/quwisky/pve-toolbox/compare/v0.2.1...v0.3.0) (2026-08-29)
+
+- Add versioned JSON and quiet output for status, check, and doctor.
+- Standardize automation exit codes and redact sensitive result text.
+
+## [0.2.1](https://github.com/quwisky/pve-toolbox/compare/v0.2.0...v0.2.1) (2026-08-29)
+
+- Query supported per-node task history endpoints on PVE 9.
+- Treat explicitly disabled storage as informational in capacity checks.
+- Install fio when the Scrutiny performance collector is selected.
+
+## [0.2.0](https://github.com/quwisky/pve-toolbox/compare/v0.1.1...v0.2.0) (2026-08-28)
+
+- Add a read-only doctor command for host, cluster, storage, and module health
+  checks.
+- Let installed modules contribute isolated, validated health results.
+
+## [0.1.1](https://github.com/quwisky/pve-toolbox/compare/v0.1.0...v0.1.1) (2026-08-28)
+
+- Propagate module failures to command-line callers.
+- Require exact checksums for downloaded collector executables.
+- Make collector installation and release publication transactional.
+- Pin the APT repository key fingerprint during bootstrap.
+- Enforce the complete validation matrix before publishing a release.
+
+## [0.1.0](https://github.com/quwisky/pve-toolbox/releases/tag/v0.1.0) (2026-08-28)
+
+- Initial native Debian package for PVE 9 / Debian 13.
+- Add a guarded manual release path from master with generated notes.
+- Publish the committed APT signing certificate in armored and binary formats.
+- Document manual signing key and APT repository setup.
