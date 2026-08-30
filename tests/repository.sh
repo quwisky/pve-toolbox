@@ -101,16 +101,19 @@ fi
 repo="$WORK/repository"
 ./scripts/publish-apt-repo.sh \
     "$repo" "$deb" "$fingerprint" "$public_key" 3 >/dev/null
+snapshot_repository() {
+    local output=$1
+    find "$repo" -path "$repo/.git" -prune -o -type f -exec sha256sum {} + \
+        | sort > "$output"
+}
 # A workflow retry after the APT branch was pushed must be a no-op, not a
 # blocker that prevents the GitHub Release or Pages steps from running.
-find "$repo" -path "$repo/.git" -prune -o -type f -exec sha256sum {} + \
-    | sort > "$WORK/repository-before-retry"
+snapshot_repository "$WORK/repository-before-retry"
 sleep 1
 ./scripts/publish-apt-repo.sh \
     "$repo" "$deb" "$fingerprint" "$public_key" 3 >/dev/null \
     || fail "repository publisher rejected an identical retry"
-find "$repo" -path "$repo/.git" -prune -o -type f -exec sha256sum {} + \
-    | sort > "$WORK/repository-after-retry"
+snapshot_repository "$WORK/repository-after-retry"
 cmp -s "$WORK/repository-before-retry" "$WORK/repository-after-retry" \
     || fail "identical repository retry changed published bytes"
 mkdir -p "$WORK/conflicting-package"
@@ -119,14 +122,12 @@ mkdir -p "$WORK/conflicting-package/usr/share/pve-toolbox"
 printf 'different build\n' > "$WORK/conflicting-package/usr/share/pve-toolbox/retry-conflict"
 conflicting_deb="$WORK/conflicting.deb"
 dpkg-deb --build "$WORK/conflicting-package" "$conflicting_deb" >/dev/null
-find "$repo" -path "$repo/.git" -prune -o -type f -exec sha256sum {} + \
-    | sort > "$WORK/repository-before-conflict"
+snapshot_repository "$WORK/repository-before-conflict"
 if ./scripts/publish-apt-repo.sh \
     "$repo" "$conflicting_deb" "$fingerprint" "$public_key" 3 >/dev/null 2>&1; then
     fail "repository publisher replaced an existing version with different bytes"
 fi
-find "$repo" -path "$repo/.git" -prune -o -type f -exec sha256sum {} + \
-    | sort > "$WORK/repository-after-conflict"
+snapshot_repository "$WORK/repository-after-conflict"
 cmp -s "$WORK/repository-before-conflict" "$WORK/repository-after-conflict" \
     || fail "conflicting repository publication changed published bytes"
 [[ -s $repo/dists/trixie/main/binary-amd64/Packages.gz ]] \

@@ -52,6 +52,10 @@ printf '0.4.2\n' > "$version_file"
 cat > "$markdown" <<'EOF'
 # Changelog
 
+## [1.0.0](https://example.invalid/compare) (2026-08-30)
+
+* support a stable major release
+
 ## [0.4.2](https://example.invalid/compare) (2026-08-30)
 
 ### Bug Fixes
@@ -97,3 +101,11 @@ fi
 cmp -s "$WORK/before-downgrade" "$debian" \
     || fail "failed synchronization changed the Debian changelog"
 pass "Debian changelog synchronization fails closed"
+
+printf '1.0.0\n' > "$version_file"
+run_sync
+[[ $(dpkg-parsechangelog -l"$debian" -S Version) == 1.0.0 ]] \
+    || fail "synchronizer rejected a stable major version"
+grep -q '^  \* support a stable major release$' "$debian" \
+    || fail "synchronizer omitted stable major release notes"
+pass "Debian changelog synchronization accepts stable semantic versions"

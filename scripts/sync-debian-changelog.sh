@@ -21,8 +21,8 @@ for path in "$VERSION_FILE" "$MARKDOWN_CHANGELOG" "$DEBIAN_CHANGELOG"; do
 done
 
 version=$(<"$VERSION_FILE")
-[[ $version =~ ^0\.[0-9]+\.[0-9]+$ ]] \
-    || fail "VERSION must be a stable pre-1.0 semantic version"
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+    || fail "VERSION must be a stable semantic version"
 current=$(dpkg-parsechangelog -l"$DEBIAN_CHANGELOG" -S Version)
 if dpkg --compare-versions "$current" gt "$version"; then
     fail "refusing to replace newer Debian changelog version $current"

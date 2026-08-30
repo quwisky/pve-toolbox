@@ -390,7 +390,9 @@ jobs:
           test "$RELEASE_TAG" = "v$RELEASE_VERSION"
           (cd dist && sha256sum --check SHA256SUMS)
           test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_SHA"
-          test "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)" = true
+          release_is_draft=$(gh release view "$RELEASE_TAG" --json isDraft \
+            --jq .isDraft)
+          [[ $release_is_draft == true || $release_is_draft == false ]]
 
           existing=$(mktemp -d)
           cleanup() {
@@ -405,17 +407,28 @@ jobs:
           }
           trap cleanup EXIT
 
+          asset_names=$(gh release view "$RELEASE_TAG" --json assets \
+            --jq '.assets[].name')
           for asset in dist/* provenance/*; do
             name=${asset##*/}
-            if gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name' \
-              | grep -Fxq "$name"; then
+            if grep -Fxq "$name" <<< "$asset_names"; then
               gh release download "$RELEASE_TAG" --pattern "$name" --dir "$existing"
               cmp -s "$asset" "$existing/$name" || {
                 printf 'release asset exists with different bytes: %s\n' "$name" >&2
                 exit 1
               }
             else
+              if [[ $release_is_draft != true ]]; then
+                printf 'published release is missing required asset: %s\n' \
+                  "$name" >&2
+                exit 1
+              fi
               gh release upload "$RELEASE_TAG" "$asset"
             fi
           done
-          gh release edit "$RELEASE_TAG" --draft=false --latest
+          if [[ $release_is_draft == true ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --latest
+          else
+            printf 'GitHub Release is already published and verified: %s\n' \
+              "$RELEASE_TAG"
+          fi
