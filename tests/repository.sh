@@ -27,10 +27,19 @@ fi
 WORK=$(mktemp -d)
 PACKAGE_TOUCHED=0
 cleanup() {
+    status=$?
+    trap - EXIT
     if [[ $PACKAGE_TOUCHED -eq 1 ]]; then
-        dpkg --purge pve-toolbox >/dev/null 2>&1 || true
+        if ! dpkg --purge pve-toolbox >/dev/null; then
+            printf 'FAIL could not purge pve-toolbox during cleanup\n' >&2
+            status=1
+        fi
     fi
-    rm -rf "$WORK"
+    if ! rm -rf -- "$WORK"; then
+        printf 'FAIL could not remove repository-test workspace: %s\n' "$WORK" >&2
+        status=1
+    fi
+    exit "$status"
 }
 trap cleanup EXIT
 mkdir -p "$WORK/src"
