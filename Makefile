@@ -9,7 +9,9 @@ FILES := pve-toolbox $(sort $(wildcard lib/*.sh)) $(sort $(wildcard modules/*/*.
 
 lint: syntax
 	@command -v shellcheck >/dev/null || { echo "shellcheck not installed: apt install shellcheck"; exit 1; }
+	@command -v actionlint >/dev/null || { echo "actionlint not installed: https://github.com/rhysd/actionlint"; exit 1; }
 	shellcheck -x -S warning $(FILES)
+	actionlint
 
 syntax:
 	@for f in $(FILES); do bash -n $$f && echo "ok  $$f"; done

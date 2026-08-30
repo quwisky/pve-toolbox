@@ -125,9 +125,15 @@ release workflow can run from that tag, or be started manually from `master`.
 A manual run derives the tag from `VERSION` and refuses any other branch or an
 existing tag.
 
-The workflow requires every test group, including the terminal UI, both shell
-completions, config-backup gates, package lifecycle, and signed repository
-tests. It then builds the `.deb`, imports the dedicated
+CI requires the portable tests, strict documentation build, and complete
+Debian 13 suite through one stable aggregate check. The Debian job builds the
+`.deb` once, records its SHA-256 digest, verifies every runtime source is in
+the package, and carries those exact bytes through signed repository metadata,
+APT update, candidate selection, download, and installation.
+
+The release workflow requires every test group, including the terminal UI,
+both shell completions, config-backup gates, package lifecycle, and signed
+repository tests. It then builds the `.deb`, imports the dedicated
 signing subkey from the `APT_SIGNING_KEY` Actions secret, and verifies that it
 matches the public certificate committed at `keys/pve-toolbox.asc`. It updates
 the signed `trixie/main` repository on the `apt` branch, publishes both public

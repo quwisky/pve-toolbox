@@ -14,17 +14,28 @@ concurrency:
   group: pages
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
   release:
     name: Build package and publish APT repository
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: Set up Go for actionlint
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.25.x'
+          cache: false
 
       - name: Install build tools
         run: |
@@ -33,6 +44,10 @@ jobs:
             build-essential debhelper devscripts expect gnupg reprepro shellcheck \
             python3-pip rsync whiptail zsh
           pip install -r docs/requirements.txt
+          install -d "$RUNNER_TEMP/actionlint"
+          GOBIN="$RUNNER_TEMP/actionlint" \
+            go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          printf '%s\n' "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
 
       - name: Resolve release version
         run: |
@@ -145,9 +160,9 @@ jobs:
           mkdir -p site/apt
           rsync -a --exclude .git apt-repo/ site/apt/
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
 
       - id: deploy
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

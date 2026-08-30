@@ -176,12 +176,13 @@ The per-module pages list the variables each one accepts.
 
 ```bash
 make syntax    # bash -n everything
-make lint      # shellcheck everything
+make lint      # shellcheck scripts and actionlint workflows
 make test      # syntax + tests/ against throwaway dirs
 make test-tui  # drive `ui` through a pty, needs whiptail + expect
 ```
 
-CI runs these on every push and pull request, plus the tests again inside a
-`debian:13` container to match the PVE 9 host. The ui test skips wherever
-whiptail is missing, so in practice it runs in that container, where CI marks
-it required rather than skippable.
+CI runs portable tests, the strict documentation build, and the complete
+Debian 13 package suite as separate jobs behind one aggregate required check.
+The Debian job requires the terminal UI and other dependency-sensitive tests,
+then validates one `.deb` through package inspection, signed repository
+creation, APT download, and installation.
