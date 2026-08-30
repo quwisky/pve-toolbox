@@ -100,3 +100,20 @@ make test
   known gaps, and migration steps.
 - Before handoff, run `git diff --check`, confirm the working tree contains no
   unrelated files or secrets, and verify required pull-request checks pass.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specifications are tracked in GitHub Issues for
+`quwisky/pve-toolbox`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default five-role triage vocabulary. See
+`docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This repository uses a single-context domain-documentation layout. See
+`docs/agents/domain.md`.
