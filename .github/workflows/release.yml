@@ -54,12 +54,15 @@ jobs:
           current=$(<VERSION)
           dpkg --compare-versions "$current" lt "$RELEASE_AS"
           release_tag="v$RELEASE_AS"
-          if git ls-remote --exit-code --tags origin "refs/tags/$release_tag" \
-            >/dev/null 2>&1; then
+          remote_tag=$(git ls-remote --tags origin "refs/tags/$release_tag")
+          if [[ -n $remote_tag ]]; then
             printf 'release tag already exists: %s\n' "$release_tag" >&2
             exit 1
           fi
-          if gh release view "$release_tag" >/dev/null 2>&1; then
+          release_tags=$(gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[].tag_name')
+          if grep -Fxq "$release_tag" <<< "$release_tags"; then
             printf 'GitHub release already exists: %s\n' "$release_tag" >&2
             exit 1
           fi
@@ -263,7 +266,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if git ls-remote --exit-code --heads origin apt >/dev/null 2>&1; then
+          apt_ref=$(git ls-remote --heads origin refs/heads/apt)
+          if [[ -n $apt_ref ]]; then
             git clone --depth 1 --branch apt \
               "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
               apt-repo
