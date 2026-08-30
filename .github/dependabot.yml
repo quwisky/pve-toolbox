@@ -11,4 +11,6 @@ updates:
       github-actions:
         patterns:
           - '*'
+    commit-message:
+      prefix: deps
     open-pull-requests-limit: 5

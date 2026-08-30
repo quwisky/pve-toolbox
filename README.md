@@ -154,6 +154,10 @@ and install checks. The ui test is required there rather than skippable.
 Root-only package lifecycle and APT consumer checks run only when their
 required-gate variables are set, and must be used on a clean disposable host.
 
+Releases are proposed from Conventional Commits by Google Release Please.
+Merging its release pull request approves a draft-first, provenance-attested
+publication; see [APT repository and releases](docs/apt-repository.md#publishing-a-release).
+
 ```bash
 pip install -r docs/requirements.txt
 mkdocs serve

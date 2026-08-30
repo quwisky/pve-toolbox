@@ -30,6 +30,7 @@ test: syntax
 	@./tests/discord.sh
 	@./tests/config-backup.sh
 	@./tests/hardening.sh
+	@./tests/release.sh
 	@./tests/package.sh
 	@./tests/repository.sh
 	@./tests/smoke.sh
