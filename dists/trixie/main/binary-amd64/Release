@@ -1,6 +1,0 @@
-Archive: trixie
-Component: main
-Origin: pve-toolbox
-Label: pve-toolbox
-Architecture: amd64
-Description: pve-toolbox packages for PVE 9 / Debian 13

@@ -1,30 +1,34 @@
 -----BEGIN PGP SIGNED MESSAGE-----
 Hash: SHA512
 
-Origin: pve-toolbox
-Label: pve-toolbox
-Suite: trixie
-Codename: trixie
-Date: Sat, 29 Aug 2026 18:10:27 UTC
 Architectures: amd64
+Codename: trixie
 Components: main
+Date: Sun, 30 Aug 2026 18:26:27 +0000
 Description: pve-toolbox packages for PVE 9 / Debian 13
+Label: pve-toolbox
+Origin: pve-toolbox
+Suite: trixie
 MD5Sum:
- 28957429dba4e5a2719b07f2e63ed620 749 main/binary-amd64/Packages
- 824da05c0dc11c9d5c1472098753f05b 515 main/binary-amd64/Packages.gz
- 0c950f5837ba90b7bc5e8b10208d8cc3 147 main/binary-amd64/Release
+ 173677dd2f98d4a7df7d9ce670810fd6              202 Release
+ 6071aee1528a20bcdf541037f8321617             1498 main/binary-amd64/Packages
+ 31a4c42eda8f94bc9e92daf08d724c33              639 main/binary-amd64/Packages.gz
 SHA1:
- c0377ad9d9de29d04648e2faa07d795b5289ca4e 749 main/binary-amd64/Packages
- 67da98c93cd9f2edeb22d6c0d27c8e51edd4dd58 515 main/binary-amd64/Packages.gz
- 531a1dca0bb579084f64ca8e2782c6668e8f261a 147 main/binary-amd64/Release
+ 0fa278db83e0270aa9e1618d9e3368e02ee2ec1d              202 Release
+ c5aeccb87e28357d5577a136e8904f97f88ebaad             1498 main/binary-amd64/Packages
+ 08fc4b4551828b2091ab824206657b9a29c0a8e1              639 main/binary-amd64/Packages.gz
 SHA256:
- 91954a92ea9041f12561c2ac8143b7ab41fa8f86cc80076428b8446c8a09e94f 749 main/binary-amd64/Packages
- 65b82333cc1ff7edf2f60038e45947a42f15e804a9f46f04a48c965a633fa94e 515 main/binary-amd64/Packages.gz
- bb42eacdfb19a88face15d2adab9fbbfb10c0b848685cd8fe591163fded5e78e 147 main/binary-amd64/Release
+ 0aa28c3e9ee44bcf0782a5c336324b1677eb45cc1d67eb8aae5cdaaab0634086              202 Release
+ f9337d9724019b90fb1d526b170357c4b88cda6ea5256cccc4742f6522e926f8             1498 main/binary-amd64/Packages
+ 7d02ec831acdfa3a6c23ed55799dbfbbbec78f0346415bb3faf5e5f621603f20              639 main/binary-amd64/Packages.gz
+SHA512:
+ 7d23ff8580eb4ab6c83e1f7ae49b7225ceda84aeeb7546e3ba88b7fd499713e6ad3cff8039090cc7a3bbcd07ab48398e9bd16b2f40402bb0b04972ebae3fd23c              202 Release
+ 71bad43f2413b64977266bf2a30b716fbefe6d8552061de5364a988b6357629f30747faca4efd50dc58c422d93f628f05a23a1fc7ad541e07811310304178975             1498 main/binary-amd64/Packages
+ 58fd7b3c649dba55c80ed57b05d3e8445a185a8145a3d1d73c8cfccaa5118f4985fbb1021e0a5bfd7715d5b997109b11ee969dadf3f476e3047fea30b3894ec3              639 main/binary-amd64/Packages.gz
 -----BEGIN PGP SIGNATURE-----
 
-iHUEARYKAB0WIQQqmLOs65PDs5JvBs/Cms+w5x2iVAUCapMgkwAKCRDCms+w5x2i
-VC8lAQDjbHfl8T9PHOELcnELbNozIxhktiBrOIwbwIJeBA47uAEA0wbtlQaf/bI/
-kDO2rduWd2DKF7q9v9u6P/n0xdVG0A8=
-=ybM0
+iHUEARYKAB0WIQQqmLOs65PDs5JvBs/Cms+w5x2iVAUCapR10wAKCRDCms+w5x2i
+VEwNAP0U+IgcAIcutWgknEkSJkYOwaijIlAsYQlwZC3bnV6EUQD+MFxtEOio8ZOe
+WvQ/sFFPI2zIMFjA90LLmVv1FU0MDAo=
+=rBtP
 -----END PGP SIGNATURE-----
