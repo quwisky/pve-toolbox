@@ -186,3 +186,5 @@ Debian 13 package suite as separate jobs behind one aggregate required check.
 The Debian job requires the terminal UI and other dependency-sensitive tests,
 then validates one `.deb` through package inspection, signed repository
 creation, APT download, and installation.
+The package lifecycle and APT consumer mutations are opt-in required gates for
+a clean disposable root environment; a normal `make test` does not run them.

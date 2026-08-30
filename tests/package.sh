@@ -153,6 +153,10 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
         | grep -q '^installed$'; then
         fail "refusing to replace an existing pve-toolbox package"
     fi
+    for path in /usr/bin/pve-toolbox /etc/pve-toolbox /var/lib/pve-toolbox; do
+        [[ ! -e $path && ! -L $path ]] \
+            || fail "refusing to replace an existing package path: $path"
+    done
     for dependency in curl jq; do
         dpkg-query -W -f='${db:Status-Status}' "$dependency" 2>/dev/null \
             | grep -q '^installed$' || fail "$dependency must be installed for the lifecycle test"

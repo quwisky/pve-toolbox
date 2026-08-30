@@ -119,12 +119,11 @@ gpgv --keyring "$repo/pve-toolbox.gpg" "$repo/dists/trixie/InRelease" \
     >/dev/null 2>&1 || fail "repository InRelease signature did not verify"
 pass "signed APT repository metadata"
 
-if [[ $EUID -ne 0 ]]; then
-    [[ ${REPOSITORY_TEST_REQUIRED:-0} == 1 ]] \
-        && fail "the required APT consumer test must run as root"
-    printf 'skip APT consumer test, root is required\n'
+if [[ ${REPOSITORY_TEST_REQUIRED:-0} != 1 ]]; then
+    printf 'skip APT consumer test, REPOSITORY_TEST_REQUIRED is not set\n'
     exit 0
 fi
+[[ $EUID -eq 0 ]] || fail "the required APT consumer test must run as root"
 for command in apt-get apt-cache dpkg dpkg-query; do
     command -v "$command" >/dev/null 2>&1 \
         || fail "$command is required for the APT consumer test"
@@ -133,6 +132,10 @@ if dpkg-query -W -f='${db:Status-Status}' pve-toolbox 2>/dev/null \
     | grep -q '^installed$'; then
     fail "refusing to replace an existing pve-toolbox package"
 fi
+for path in /usr/bin/pve-toolbox /etc/pve-toolbox /var/lib/pve-toolbox; do
+    [[ ! -e $path && ! -L $path ]] \
+        || fail "refusing to replace an existing package path: $path"
+done
 
 apt_root="$WORK/apt-consumer"
 source_file="$apt_root/pve-toolbox.sources"

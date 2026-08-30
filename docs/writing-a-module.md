@@ -205,3 +205,6 @@ missing; `make test-tui` demands them instead. CI sets every required-test flag
 in its Debian 13 job. That job builds one `.deb` and supplies its path and
 SHA-256 digest to both the package and repository tests, including a real APT
 update, selection, download, and install.
+Those root-only lifecycle and APT consumer checks run only when their required
+gate variables are set. Run them on a clean disposable Debian 13 environment;
+they refuse existing toolbox package, binary, configuration, or state paths.

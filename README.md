@@ -151,6 +151,8 @@ strict documentation build, and complete Debian 13 package suite as separate
 jobs. One stable aggregate job requires all three. The Debian job builds one
 `.deb`, then passes that exact file through package, repository, APT download,
 and install checks. The ui test is required there rather than skippable.
+Root-only package lifecycle and APT consumer checks run only when their
+required-gate variables are set, and must be used on a clean disposable host.
 
 ```bash
 pip install -r docs/requirements.txt
