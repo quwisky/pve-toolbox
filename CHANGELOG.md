@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.4.2](https://github.com/quwisky/pve-toolbox/compare/v0.4.1...v0.4.2) (2026-08-30)
+
+
+### Bug Fixes
+
+* **release:** automate verified publishing ([#38](https://github.com/quwisky/pve-toolbox/issues/38)) ([50e9472](https://github.com/quwisky/pve-toolbox/commit/50e9472a35466af20a50818c9f773bf9f4a5c1cb))
+
+
+### Documentation
+
+* **agents:** configure engineering skills ([#36](https://github.com/quwisky/pve-toolbox/issues/36)) ([628826e](https://github.com/quwisky/pve-toolbox/commit/628826ef1fc1f629379a69e32ecf0f191923cbfe))
+
 ## [0.4.1](https://github.com/quwisky/pve-toolbox/compare/v0.4.0...v0.4.1) (2026-08-29)
 
 - Query filtered task history through supported per-node PVE 9 endpoints.
