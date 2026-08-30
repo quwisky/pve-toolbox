@@ -142,7 +142,9 @@ jobs:
           retention-days: 14
 
   required:
-    name: Required
+    # Preserve the protected-branch context while making it aggregate every
+    # authoritative validation job.
+    name: shellcheck + smoke test
     if: ${{ always() }}
     needs: [portable, docs, debian]
     runs-on: ubuntu-24.04
