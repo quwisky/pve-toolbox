@@ -5,57 +5,157 @@ on:
     branches: [master]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    outputs:
+      package-artifact:
+        description: Name of the tested Debian package artifact
+        value: ${{ jobs.debian.outputs.artifact-name }}
+      package-sha256:
+        description: SHA-256 digest of the tested Debian package
+        value: ${{ jobs.debian.outputs.package-sha256 }}
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  lint:
-    name: shellcheck + smoke test
-    runs-on: ubuntu-latest
+  portable:
+    name: Portable lint and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install shellcheck
+      - name: Set up Go for actionlint
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.25.x'
+          cache: false
+
+      - name: Install lint tools
         run: |
-          command -v shellcheck >/dev/null || {
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends shellcheck
-          }
-          shellcheck --version
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends shellcheck
+          install -d "$RUNNER_TEMP/actionlint"
+          GOBIN="$RUNNER_TEMP/actionlint" \
+            go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          printf '%s\n' "$RUNNER_TEMP/actionlint" >> "$GITHUB_PATH"
 
-      - run: make lint
+      - name: Lint
+        run: make lint
 
-      - run: make test
+      - name: Run portable tests
+        run: make test
+
+  docs:
+    name: Strict documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+
+      - name: Install documentation dependencies
+        run: pip install -r docs/requirements.txt
+
+      - name: Build documentation
+        run: mkdocs build --strict
 
   debian:
-    name: smoke test on debian 13 (pve target)
-    runs-on: ubuntu-latest
-    container: debian:13
+    name: Debian 13 package and repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    container: debian:13@sha256:6788062a1b42ac281f053ac876170b79a3eaed5d61383b8ed7eaca6c6965f3b1
+    outputs:
+      artifact-name: ${{ steps.package.outputs.artifact-name }}
+      package-sha256: ${{ steps.package.outputs.sha256 }}
     steps:
-      - name: Install build deps
+      - name: Install test and build dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            make git ca-certificates whiptail expect zsh curl jq rsync tar gzip \
-            build-essential debhelper devscripts gnupg reprepro
+            build-essential ca-certificates curl debhelper devscripts expect \
+            git gnupg jq make reprepro rsync shellcheck tar gzip whiptail zsh
 
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # TUI_TEST_REQUIRED turns a missing whiptail or expect into a failure
-      # rather than a skip. This is the job that has them, so the ui test has
-      # to run here; make test picks it up without a second pass.
-      - run: make test
+      - name: Build the Debian package once
+        id: package
+        run: |
+          version=$(<VERSION)
+          test "$version" = "$(dpkg-parsechangelog -S Version)"
+          dpkg-buildpackage --build=binary --no-sign
+
+          source_package="../pve-toolbox_${version}_all.deb"
+          test -f "$source_package"
+          install -d dist
+          package="$GITHUB_WORKSPACE/dist/pve-toolbox_${version}_all.deb"
+          install -m 0644 "$source_package" "$package"
+          sha256=$(sha256sum "$package" | awk '{print $1}')
+          printf '%s  %s\n' "$sha256" "${package##*/}" > dist/SHA256SUMS
+
+          {
+            printf 'artifact-name=pve-toolbox-deb-%s\n' "$GITHUB_SHA"
+            printf 'path=%s\n' "$package"
+            printf 'sha256=%s\n' "$sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Test the exact Debian package
         env:
-          TUI_TEST_REQUIRED: "1"
-          ZSH_TEST_REQUIRED: "1"
-          # This job installs every runner dependency, so a skipped gate test
-          # here means a broken environment, not an absent one.
-          CB_GATE_TESTS_REQUIRED: "1"
-          PACKAGING_TEST_REQUIRED: "1"
-          PACKAGING_INSTALL_TEST_REQUIRED: "1"
-          REPOSITORY_TEST_REQUIRED: "1"
+          TUI_TEST_REQUIRED: '1'
+          ZSH_TEST_REQUIRED: '1'
+          CB_GATE_TESTS_REQUIRED: '1'
+          PACKAGING_TEST_REQUIRED: '1'
+          PACKAGING_INSTALL_TEST_REQUIRED: '1'
+          REPOSITORY_TEST_REQUIRED: '1'
+          PACKAGE_DEB: ${{ steps.package.outputs.path }}
+          PACKAGE_DEB_SHA256: ${{ steps.package.outputs.sha256 }}
+        run: make test
+
+      - name: Verify package digest after tests
+        run: (cd dist && sha256sum --check SHA256SUMS)
+
+      - name: Upload the tested Debian package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.package.outputs.artifact-name }}
+          path: |
+            dist/*.deb
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+
+  required:
+    # Preserve the protected-branch context while making it aggregate every
+    # authoritative validation job.
+    name: shellcheck + smoke test
+    if: ${{ always() }}
+    needs: [portable, docs, debian]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every validation job
+        env:
+          PORTABLE_RESULT: ${{ needs.portable.result }}
+          DOCS_RESULT: ${{ needs.docs.result }}
+          DEBIAN_RESULT: ${{ needs.debian.result }}
+        run: |
+          for result in "$PORTABLE_RESULT" "$DOCS_RESULT" "$DEBIAN_RESULT"; do
+            test "$result" = success
+          done

@@ -1,33 +1,74 @@
 #!/usr/bin/env bash
 # Build a package, publish it into an ephemeral signed repository, and verify it.
-set -euo pipefail
+set -Eeuo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+ROOT=$PWD
 
 pass() { printf 'ok  %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 
-for command in dpkg-buildpackage gpg gpgv reprepro; do
+commands=(dpkg-deb gpg gpgv reprepro)
+[[ -n ${PACKAGE_DEB:-} ]] || commands+=(dpkg-buildpackage)
+[[ -z ${PACKAGE_DEB_SHA256:-} ]] || commands+=(sha256sum)
+for command in "${commands[@]}"; do
     if ! command -v "$command" >/dev/null 2>&1; then
         [[ ${REPOSITORY_TEST_REQUIRED:-0} == 1 ]] && fail "$command is required"
         printf 'skip repository test, no %s\n' "$command"
         exit 0
     fi
 done
-if ! dpkg-checkbuilddeps >/dev/null 2>&1; then
+if [[ -z ${PACKAGE_DEB:-} ]] && ! dpkg-checkbuilddeps >/dev/null 2>&1; then
     [[ ${REPOSITORY_TEST_REQUIRED:-0} == 1 ]] && fail "Debian build dependencies are missing"
     printf 'skip repository test, Debian build dependencies are missing\n'
     exit 0
 fi
 
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+PACKAGE_TOUCHED=0
+cleanup() {
+    status=$?
+    trap - EXIT
+    if [[ $PACKAGE_TOUCHED -eq 1 ]]; then
+        if ! dpkg --purge pve-toolbox >/dev/null; then
+            printf 'FAIL could not purge pve-toolbox during cleanup\n' >&2
+            status=1
+        fi
+    fi
+    if ! rm -rf -- "$WORK"; then
+        printf 'FAIL could not remove repository-test workspace: %s\n' "$WORK" >&2
+        status=1
+    fi
+    exit "$status"
+}
+trap cleanup EXIT
 mkdir -p "$WORK/src"
-tar --exclude=.git --exclude=site --exclude='*.deb' -cf - . \
-    | tar -xf - -C "$WORK/src"
-(cd "$WORK/src" && dpkg-buildpackage --build=binary --no-sign >/dev/null)
-deb=$(find "$WORK" -maxdepth 1 -name 'pve-toolbox_*_all.deb' -print -quit)
-[[ -n $deb ]] || fail "package build produced no .deb"
+if [[ -n ${PACKAGE_DEB:-} ]]; then
+    if [[ $PACKAGE_DEB == /* ]]; then
+        deb=$PACKAGE_DEB
+    else
+        deb="$ROOT/$PACKAGE_DEB"
+    fi
+    [[ -f $deb && ! -L $deb ]] || fail "prebuilt package is missing or unsafe: $deb"
+else
+    tar --exclude=.git --exclude=site --exclude='*.deb' -cf - . \
+        | tar -xf - -C "$WORK/src"
+    (cd "$WORK/src" && dpkg-buildpackage --build=binary --no-sign >/dev/null)
+    deb=$(find "$WORK" -maxdepth 1 -name 'pve-toolbox_*_all.deb' -print -quit)
+    [[ -n $deb ]] || fail "package build produced no .deb"
+fi
+
+if [[ -n ${PACKAGE_DEB_SHA256:-} ]]; then
+    [[ $PACKAGE_DEB_SHA256 =~ ^[0-9a-f]{64}$ ]] \
+        || fail "PACKAGE_DEB_SHA256 is not a lowercase SHA-256 digest"
+    actual_sha=$(sha256sum "$deb" | awk '{print $1}')
+    [[ $actual_sha == "$PACKAGE_DEB_SHA256" ]] \
+        || fail "prebuilt package digest changed before repository validation"
+fi
+[[ $(dpkg-deb --field "$deb" Package) == pve-toolbox ]] \
+    || fail "repository test received the wrong package"
+[[ $(dpkg-deb --field "$deb" Version) == "$(<VERSION)" ]] \
+    || fail "repository package version does not match VERSION"
 
 export GNUPGHOME="$WORK/gnupg"
 mkdir -m 0700 "$GNUPGHOME"
@@ -83,4 +124,61 @@ cmp -s "$public_key" "$repo/pve-toolbox.asc" \
 gpgv --keyring "$repo/pve-toolbox.gpg" \
     "$repo/dists/trixie/Release.gpg" "$repo/dists/trixie/Release" \
     >/dev/null 2>&1 || fail "repository Release signature did not verify"
-pass "signed APT repository"
+gpgv --keyring "$repo/pve-toolbox.gpg" "$repo/dists/trixie/InRelease" \
+    >/dev/null 2>&1 || fail "repository InRelease signature did not verify"
+pass "signed APT repository metadata"
+
+if [[ ${REPOSITORY_TEST_REQUIRED:-0} != 1 ]]; then
+    printf 'skip APT consumer test, REPOSITORY_TEST_REQUIRED is not set\n'
+    exit 0
+fi
+[[ $EUID -eq 0 ]] || fail "the required APT consumer test must run as root"
+for command in apt-get apt-cache dpkg dpkg-query; do
+    command -v "$command" >/dev/null 2>&1 \
+        || fail "$command is required for the APT consumer test"
+done
+if dpkg-query -W -f='${db:Status-Status}' pve-toolbox 2>/dev/null \
+    | grep -q '^installed$'; then
+    fail "refusing to replace an existing pve-toolbox package"
+fi
+for path in /usr/bin/pve-toolbox /etc/pve-toolbox /var/lib/pve-toolbox; do
+    [[ ! -e $path && ! -L $path ]] \
+        || fail "refusing to replace an existing package path: $path"
+done
+
+apt_root="$WORK/apt-consumer"
+source_file="$apt_root/pve-toolbox.sources"
+mkdir -p "$apt_root/lists/partial" "$apt_root/cache/partial" "$apt_root/download"
+printf '%s\n' \
+    'Types: deb' \
+    "URIs: file:$repo" \
+    'Suites: trixie' \
+    'Components: main' \
+    'Architectures: amd64' \
+    "Signed-By: $repo/pve-toolbox.gpg" \
+    > "$source_file"
+apt_options=(
+    -o "Dir::Etc::sourcelist=$source_file"
+    -o Dir::Etc::sourceparts=-
+    -o "Dir::State::lists=$apt_root/lists"
+    -o "Dir::Cache::archives=$apt_root/cache"
+    -o APT::Get::List-Cleanup=0
+    -o APT::Sandbox::User=root
+)
+apt-get "${apt_options[@]}" update >/dev/null
+candidate=$(apt-cache "${apt_options[@]}" policy pve-toolbox \
+    | awk '$1 == "Candidate:" {print $2}')
+[[ $candidate == "$(<VERSION)" ]] || fail "APT selected unexpected candidate $candidate"
+(cd "$apt_root/download" && apt-get "${apt_options[@]}" download pve-toolbox >/dev/null)
+downloaded=$(find "$apt_root/download" -maxdepth 1 -type f -name 'pve-toolbox_*.deb' \
+    -print -quit)
+[[ -n $downloaded ]] || fail "APT did not download pve-toolbox"
+cmp -s "$deb" "$downloaded" || fail "APT downloaded bytes differ from the tested package"
+
+PACKAGE_TOUCHED=1
+apt-get "${apt_options[@]}" --no-install-recommends -y install pve-toolbox >/dev/null
+[[ $(/usr/bin/pve-toolbox --version) == "pve-toolbox $(<VERSION)" ]] \
+    || fail "APT installed an unexpected pve-toolbox version"
+dpkg --purge pve-toolbox >/dev/null
+PACKAGE_TOUCHED=0
+pass "APT update, policy, download, and install use the tested package"

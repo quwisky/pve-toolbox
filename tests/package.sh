@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 # Build and inspect the Debian package without installing it on the test host.
-set -euo pipefail
+set -Eeuo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+ROOT=$PWD
 
 pass() { printf 'ok  %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
 
-for command in dpkg-buildpackage dpkg-deb; do
+commands=(dpkg-deb)
+[[ -n ${PACKAGE_DEB:-} ]] || commands+=(dpkg-buildpackage)
+[[ -z ${PACKAGE_DEB_SHA256:-} ]] || commands+=(sha256sum)
+for command in "${commands[@]}"; do
     if ! command -v "$command" >/dev/null 2>&1; then
         [[ ${PACKAGING_TEST_REQUIRED:-0} == 1 ]] && fail "$command is required"
         printf 'skip package test, no %s\n' "$command"
         exit 0
     fi
 done
-if ! dpkg-checkbuilddeps >/dev/null 2>&1; then
+if [[ -z ${PACKAGE_DEB:-} ]] && ! dpkg-checkbuilddeps >/dev/null 2>&1; then
     [[ ${PACKAGING_TEST_REQUIRED:-0} == 1 ]] && fail "Debian build dependencies are missing"
     printf 'skip package test, Debian build dependencies are missing\n'
     exit 0
@@ -23,47 +27,111 @@ fi
 WORK=$(mktemp -d)
 PACKAGE_TOUCHED=0
 cleanup() {
+    status=$?
+    trap - EXIT
     if [[ $PACKAGE_TOUCHED -eq 1 ]]; then
-        dpkg --purge pve-toolbox >/dev/null 2>&1 || true
+        if ! dpkg --purge pve-toolbox >/dev/null; then
+            printf 'FAIL could not purge pve-toolbox during cleanup\n' >&2
+            status=1
+        fi
     fi
-    rm -rf "$WORK"
+    if ! rm -rf -- "$WORK"; then
+        printf 'FAIL could not remove package-test workspace: %s\n' "$WORK" >&2
+        status=1
+    fi
+    exit "$status"
 }
 trap cleanup EXIT
 mkdir -p "$WORK/src"
-tar --exclude=.git --exclude=site --exclude='*.deb' -cf - . \
-    | tar -xf - -C "$WORK/src"
+if [[ -n ${PACKAGE_DEB:-} ]]; then
+    if [[ $PACKAGE_DEB == /* ]]; then
+        deb=$PACKAGE_DEB
+    else
+        deb="$ROOT/$PACKAGE_DEB"
+    fi
+    [[ -f $deb && ! -L $deb ]] || fail "prebuilt package is missing or unsafe: $deb"
+else
+    tar --exclude=.git --exclude=site --exclude='*.deb' -cf - . \
+        | tar -xf - -C "$WORK/src"
+    (cd "$WORK/src" && dpkg-buildpackage --build=binary --no-sign >/dev/null)
+    deb=$(find "$WORK" -maxdepth 1 -name 'pve-toolbox_*_all.deb' -print -quit)
+    [[ -n $deb ]] || fail "dpkg-buildpackage produced no architecture-all package"
+fi
 
-(cd "$WORK/src" && dpkg-buildpackage --build=binary --no-sign >/dev/null)
-deb=$(find "$WORK" -maxdepth 1 -name 'pve-toolbox_*_all.deb' -print -quit)
-[[ -n $deb ]] || fail "dpkg-buildpackage produced no architecture-all package"
+if [[ -n ${PACKAGE_DEB_SHA256:-} ]]; then
+    [[ $PACKAGE_DEB_SHA256 =~ ^[0-9a-f]{64}$ ]] \
+        || fail "PACKAGE_DEB_SHA256 is not a lowercase SHA-256 digest"
+    actual_sha=$(sha256sum "$deb" | awk '{print $1}')
+    [[ $actual_sha == "$PACKAGE_DEB_SHA256" ]] \
+        || fail "prebuilt package digest changed before package validation"
+fi
 
-contents=$(dpkg-deb --contents "$deb")
-for path in \
-    ./usr/bin/pve-toolbox \
-    ./usr/lib/pve-toolbox/lib/common.sh \
-    ./usr/lib/pve-toolbox/lib/doctor.sh \
-    ./usr/lib/pve-toolbox/lib/pve.sh \
-    ./usr/lib/pve-toolbox/lib/report.sh \
-    ./usr/lib/pve-toolbox/modules/backup-audit/module.sh \
-    ./usr/lib/pve-toolbox/modules/config-backup/module.sh \
-    ./usr/lib/pve-toolbox/modules/native-notifications/module.sh \
-    ./usr/lib/pve-toolbox/modules/native-notifications/pve-toolbox-native-notify \
-    ./usr/lib/pve-toolbox/modules/storage-hygiene/module.sh \
-    ./usr/lib/pve-toolbox/modules/certificate-watch/module.sh \
-    ./usr/lib/pve-toolbox/modules/upgrade-readiness/module.sh \
-    ./usr/lib/pve-toolbox/modules/upgrade-readiness/policies/pve-9.conf \
-    ./usr/lib/pve-toolbox/modules/restore-drill/module.sh \
-    ./usr/lib/pve-toolbox/modules/restore-drill/pve-toolbox-restore-drill \
-    ./usr/share/man/man1/pve-toolbox.1.gz \
-    ./usr/share/bash-completion/completions/pve-toolbox \
-    ./usr/share/zsh/vendor-completions/_pve-toolbox
-do
-    [[ $contents == *"$path"* ]] || fail "package omitted $path"
+mkdir "$WORK/control" "$WORK/root"
+dpkg-deb --control "$deb" "$WORK/control"
+dpkg-deb --extract "$deb" "$WORK/root"
+
+expected_manifest="$WORK/expected-runtime-manifest"
+actual_manifest="$WORK/actual-runtime-manifest"
+{
+    printf '%s\n' VERSION
+    for source in "$ROOT"/lib/*.sh; do
+        printf 'lib/%s\n' "${source##*/}"
+    done
+    while IFS= read -r -d '' source; do
+        printf '%s\n' "${source#"$ROOT/"}"
+    done < <(find "$ROOT/modules" -mindepth 2 -type f \
+        ! -path "$ROOT/modules/_*/*" -print0)
+} | LC_ALL=C sort > "$expected_manifest"
+find "$WORK/root/usr/lib/pve-toolbox" -type f -printf '%P\n' \
+    | LC_ALL=C sort > "$actual_manifest"
+cmp -s "$expected_manifest" "$actual_manifest" \
+    || fail "package runtime manifest differs from source"
+
+for source in "$ROOT"/lib/*.sh; do
+    target="$WORK/root/usr/lib/pve-toolbox/lib/${source##*/}"
+    cmp -s "$source" "$target" || fail "packaged lib/${source##*/} differs from source"
+    expected_mode=644
+    [[ -x $source ]] && expected_mode=755
+    [[ $(stat -c '%a' "$target") == "$expected_mode" ]] \
+        || fail "packaged lib/${source##*/} has the wrong mode"
 done
-[[ $contents != *'/modules/_template/'* ]] || fail "package shipped the module template"
-pass "package layout"
+while IFS= read -r -d '' source; do
+    relative=${source#"$ROOT/"}
+    target="$WORK/root/usr/lib/pve-toolbox/$relative"
+    cmp -s "$source" "$target" || fail "packaged $relative differs from source"
+    expected_mode=644
+    [[ -x $source ]] && expected_mode=755
+    [[ $(stat -c '%a' "$target") == "$expected_mode" ]] \
+        || fail "packaged $relative has the wrong mode"
+done < <(find "$ROOT/modules" -mindepth 2 -type f ! -path "$ROOT/modules/_*/*" -print0)
+for target in \
+    "$WORK/root/usr/bin/pve-toolbox" \
+    "$WORK/root/usr/share/man/man1/pve-toolbox.1.gz" \
+    "$WORK/root/usr/share/bash-completion/completions/pve-toolbox" \
+    "$WORK/root/usr/share/zsh/vendor-completions/_pve-toolbox"
+do
+    [[ -f $target ]] || fail "package omitted ${target#"$WORK/root"}"
+done
+cmp -s "$ROOT/pve-toolbox" "$WORK/root/usr/bin/pve-toolbox" \
+    || fail "packaged launcher differs from source"
+cmp -s "$ROOT/completions/pve-toolbox.bash" \
+    "$WORK/root/usr/share/bash-completion/completions/pve-toolbox" \
+    || fail "packaged Bash completion differs from source"
+cmp -s "$ROOT/completions/_pve-toolbox" \
+    "$WORK/root/usr/share/zsh/vendor-completions/_pve-toolbox" \
+    || fail "packaged Zsh completion differs from source"
+[[ $(<"$WORK/root/usr/lib/pve-toolbox/VERSION") == "$(<VERSION)" ]] \
+    || fail "packaged VERSION differs from source"
+[[ ! -e $WORK/root/usr/lib/pve-toolbox/modules/_template ]] \
+    || fail "package shipped the module template"
+pass "package layout matches every runtime source"
 
 control=$(dpkg-deb --field "$deb")
+expected_version=$(<VERSION)
+[[ $(dpkg-deb --field "$deb" Package) == pve-toolbox ]] \
+    || fail "package has the wrong name"
+[[ $(dpkg-deb --field "$deb" Version) == "$expected_version" ]] \
+    || fail "package version does not match VERSION"
 [[ $control == *'Architecture: all'* ]] || fail "package architecture is not all"
 [[ $control == *'Depends: curl, jq'* ]] || fail "hard dependencies are incomplete"
 [[ $control == *'Recommends: whiptail, zfsutils-linux'* ]] \
@@ -72,8 +140,6 @@ control=$(dpkg-deb --field "$deb")
     || fail "suggested dependencies are incomplete"
 pass "package metadata"
 
-mkdir "$WORK/control" "$WORK/root"
-dpkg-deb --control "$deb" "$WORK/control"
 [[ ! -e $WORK/control/conffiles ]] || fail "runtime config was declared as conffiles"
 grep -q '/usr/local/bin/pve-toolbox' "$WORK/control/postinst" \
     || fail "postinst does not warn about a shadowing checkout"
@@ -81,14 +147,12 @@ grep -q 'targets Debian 13 (trixie) / PVE 9' "$WORK/control/postinst" \
     || fail "postinst does not warn on unsupported hosts"
 grep -q '\[ "$1" = purge \]' "$WORK/control/postrm" \
     || fail "postrm does not distinguish purge from remove"
-dpkg-deb --extract "$deb" "$WORK/root"
 [[ $(stat -c '%a' "$WORK/root/etc/pve-toolbox") == 750 ]] \
     || fail "/etc/pve-toolbox is not mode 0750"
 [[ $(stat -c '%a' "$WORK/root/var/lib/pve-toolbox") == 755 ]] \
     || fail "/var/lib/pve-toolbox is not mode 0755"
 version=$(PVE_TOOLBOX_ROOT="$WORK/root/usr/lib/pve-toolbox" \
     "$WORK/root/usr/bin/pve-toolbox" --version)
-expected_version=$(<VERSION)
 [[ $version == "pve-toolbox $expected_version" ]] || fail "installed version is wrong: $version"
 pass "package runtime paths and lifecycle"
 
@@ -98,6 +162,10 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
         | grep -q '^installed$'; then
         fail "refusing to replace an existing pve-toolbox package"
     fi
+    for path in /usr/bin/pve-toolbox /etc/pve-toolbox /var/lib/pve-toolbox; do
+        [[ ! -e $path && ! -L $path ]] \
+            || fail "refusing to replace an existing package path: $path"
+    done
     for dependency in curl jq; do
         dpkg-query -W -f='${db:Status-Status}' "$dependency" 2>/dev/null \
             | grep -q '^installed$' || fail "$dependency must be installed for the lifecycle test"

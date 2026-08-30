@@ -1,55 +1,71 @@
 name: Docs
 
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [master]
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.ref == 'refs/heads/master' && 'pages' || format('docs-{0}', github.ref) }}
+  group: pages
   cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build:
-    name: mkdocs build --strict
-    runs-on: ubuntu-latest
+    name: Build published site
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' ||
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
+      - name: Check out validated source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          python-version: '3.x'
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
           cache: pip
           cache-dependency-path: docs/requirements.txt
 
-      - run: pip install -r docs/requirements.txt
+      - name: Install documentation dependencies
+        run: pip install -r docs/requirements.txt
 
-      # --strict turns broken internal links and nav typos into failures.
-      - run: mkdocs build --strict
+      - name: Build documentation
+        run: mkdocs build --strict
 
       - name: Preserve the published APT repository
-        if: github.ref == 'refs/heads/master'
         run: |
           if git ls-remote --exit-code --heads origin apt >/dev/null 2>&1; then
-            git clone --depth 1 --branch apt "${{ github.server_url }}/${{ github.repository }}.git" apt-repo
+            git clone --depth 1 --branch apt \
+              "${{ github.server_url }}/${{ github.repository }}.git" apt-repo
             mkdir -p site/apt
             rsync -a --exclude .git apt-repo/ site/apt/
           fi
 
-      - uses: actions/upload-pages-artifact@v3
-        if: github.ref == 'refs/heads/master'
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: site
 
   deploy:
     name: GitHub Pages
-    if: github.ref == 'refs/heads/master'
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       pages: write
       id-token: write
@@ -57,5 +73,6 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4
+      - name: Deploy Pages
+        id: deploy
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

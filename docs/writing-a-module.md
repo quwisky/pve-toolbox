@@ -194,12 +194,17 @@ make test
 
 `make lint` runs `shellcheck -x -S warning` over the launcher, `lib/*.sh`,
 every `modules/*/*.sh`, the bash completion and `tests/*.sh`, so a helper
-script you add is linted too. The zsh completion and `tests/tui.exp` are left
-out — neither is bash.
+script you add is linted too. It also runs `actionlint` over the GitHub Actions
+workflows. The zsh completion and `tests/tui.exp` are left out — neither is
+Bash.
 
 `make test` runs `tests/smoke.sh`, which drives the launcher in place and
 through a symlink against throwaway directories, then `tests/tui.sh`, which
 drives `ui` through a pty. The ui test skips where `expect` or `whiptail` is
-missing; `make test-tui` demands them instead. CI gets the same effect by
-setting `TUI_TEST_REQUIRED=1` on `make test` in the Debian job, which is the
-one that has them.
+missing; `make test-tui` demands them instead. CI sets every required-test flag
+in its Debian 13 job. That job builds one `.deb` and supplies its path and
+SHA-256 digest to both the package and repository tests, including a real APT
+update, selection, download, and install.
+Those root-only lifecycle and APT consumer checks run only when their required
+gate variables are set. Run them on a clean disposable Debian 13 environment;
+they refuse existing toolbox package, binary, configuration, or state paths.
