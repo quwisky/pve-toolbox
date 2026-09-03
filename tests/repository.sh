@@ -174,9 +174,12 @@ collision_repo="$WORK/timestamp-collision-repository"
 cp -a -- "$repo" "$collision_repo"
 collision_root="$WORK/timestamp-collision-package"
 dpkg-deb --raw-extract "$deb" "$collision_root"
-sed -i 's/^Version: .*/Version: 0.5.1/' "$collision_root/DEBIAN/control"
-printf '%s\n' 0.5.1 > "$collision_root/usr/lib/pve-toolbox/VERSION"
-collision_deb="$WORK/pve-toolbox_0.5.1_all.deb"
+collision_version=$(awk -F. '{printf "%d.%d.%d\n", $1, $2, $3 + 1}' VERSION)
+sed -i "s/^Version: .*/Version: $collision_version/" \
+    "$collision_root/DEBIAN/control"
+printf '%s\n' "$collision_version" \
+    > "$collision_root/usr/lib/pve-toolbox/VERSION"
+collision_deb="$WORK/pve-toolbox_${collision_version}_all.deb"
 dpkg-deb --build "$collision_root" "$collision_deb" >/dev/null
 
 collision_bin="$WORK/timestamp-collision-bin"
