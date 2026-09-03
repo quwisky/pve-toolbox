@@ -10,6 +10,7 @@
 #   pve-toolbox check [mod]...     report available updates, change nothing
 #   pve-toolbox status [mod]       detailed status
 #   pve-toolbox doctor             read-only host and module health audit
+#   pve-toolbox lxc-update [ID]...  update local running Debian/Ubuntu containers
 #   pve-toolbox uninstall <mod>...
 #   pve-toolbox link               symlink into /usr/local/bin + completions
 #   pve-toolbox self-update        git pull this checkout
@@ -17,6 +18,7 @@
 #
 # Flags: -y/--yes non-interactive, -f/--force, --json, --quiet,
 #        -V/--version, -h/--help
+# LXC update flags: --dry-run, --allow-removals, --notify (interactive only)
 #
 set -euo pipefail
 
@@ -170,6 +172,7 @@ menu() {
             "$c_bold" "$c_reset" "$c_bold" "$c_reset"
         printf '  %sx%s uninstall selected             %sq%s quit\n\n' \
             "$c_bold" "$c_reset" "$c_bold" "$c_reset"
+        printf '  %sl%s update LXC container packages\n\n' "$c_bold" "$c_reset"
 
         local reply
         read -r -p "> " reply || { echo; return 0; }
@@ -177,6 +180,7 @@ menu() {
 
         case ${reply,,} in
             q|quit|exit) return 0 ;;
+            l|lxc-update) cmd_lxc_update || warn "LXC update did not complete" ;;
             i|install)
                 [[ ${#SELECTED[@]} -eq 0 ]] && { warn "nothing selected"; continue; }
                 local m; for m in "${SELECTED[@]}"; do
@@ -234,6 +238,10 @@ menu() {
 }
 
 # --------------------------------------------------------------- commands --
+
+cmd_lxc_update() {
+    bash "$MODULE_DIR/lxc-update/run.sh" "$@"
+}
 
 cmd_list() {
     discover
@@ -476,6 +484,7 @@ cmd_ui() {
             check     "Check for updates, change nothing" \
             status    "Show detailed status" \
             uninstall "Remove installed modules" \
+            lxc-update "Update LXC container packages" \
             quit      "Exit") || { tui_clear; return 0; }
         case $choice in
             install)   ui_action "Install / reconfigure" module_install     all       off ;;
@@ -483,9 +492,28 @@ cmd_ui() {
             check)     ui_action "Check for updates"     module_update      installed on --check ;;
             status)    ui_action "Status"                module_status_long all       on  ;;
             uninstall) ui_action "Uninstall"             module_uninstall   installed off ;;
+            lxc-update) ui_lxc_update ;;
             quit)      tui_clear; return 0 ;;
         esac
     done
+}
+
+ui_lxc_update() {
+    local picked option ids="" rc=0
+    local -a flags=() targets=()
+    picked=$(tui_checklist "LXC package updates" "Choose options. Execution asks for confirmation." \
+        dry-run "Preview only (cached package indexes)" on \
+        allow-removals "Allow package removals and cleanup" off \
+        notify "Send Discord report" off) || return 0
+    while IFS= read -r option; do
+        [[ -z $option ]] || flags+=("--$option")
+    done <<<"$picked"
+    tui_clear
+    ask ids "Container IDs, space-separated; all eligible when blank" ""
+    read -r -a targets <<<"$ids"
+    cmd_lxc_update "${flags[@]}" "${targets[@]}" || rc=$?
+    [[ $rc == 0 ]] || warn "LXC update returned $rc; inspect the results above"
+    read -rsn1 -p "press any key to go back to the menu " _ || true
 }
 
 cmd_link() {
@@ -525,7 +553,7 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags>
     case ${1:-} in
         commands)
             printf '%s\n' menu ui list install update check status doctor uninstall \
-                link self-update ;;
+                lxc-update link self-update ;;
         modules)
             discover; printf '%s\n' "${MODULES[@]}" ;;
         installed)
@@ -564,12 +592,14 @@ usage() { awk 'NR < 3 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; 
 # ------------------------------------------------------------------- main --
 
 ARGS=()
+LXC_FLAGS=()
 while [[ $# -gt 0 ]]; do
     case $1 in
         -y|--yes)   ASSUME_YES=1 ;;
         -f|--force) FORCE=1 ;;
         --json)     OUTPUT_JSON=1 ;;
         --quiet)    OUTPUT_QUIET=1 ;;
+        --dry-run|--allow-removals|--notify) LXC_FLAGS+=("$1") ;;
         -V|--version) printf 'pve-toolbox %s\n' "$TOOLBOX_VERSION"; exit 0 ;;
         -h|--help)  usage; exit 0 ;;
         --)         shift; ARGS+=("$@"); break ;;
@@ -582,6 +612,8 @@ done
     || usage_error "--json and --quiet cannot be used together"
 
 command_name=${ARGS[0]:-menu}
+[[ ${#LXC_FLAGS[@]} == 0 || $command_name == lxc-update ]] \
+    || usage_error "--dry-run, --allow-removals, and --notify apply only to lxc-update"
 if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
     case $command_name in
         status|check|doctor) ;;
@@ -593,6 +625,7 @@ export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED
 
 case $command_name in
     menu)        menu ;;
+    lxc-update)  exec bash "$MODULE_DIR/lxc-update/run.sh" "${LXC_FLAGS[@]}" "${ARGS[@]:1}" ;;
     list)        cmd_list "${ARGS[@]:1}" ;;
     install)     [[ ${#ARGS[@]} -lt 2 ]] && usage_error "install needs a module name"
                  cmd_each module_install "${ARGS[@]:1}" ;;

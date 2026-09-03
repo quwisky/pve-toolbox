@@ -26,6 +26,7 @@ pve-toolbox/
 │   ├── backup-audit/        # read-only guest backup protection and freshness audit
 │   ├── certificate-watch/   # read-only cluster TLS and ACME health audit
 │   ├── config-backup/       # snapshots /etc/pve and host config, reported to Discord
+│   ├── lxc-update/          # confirmed Debian/Ubuntu container package updates
 │   ├── native-notifications/ # owned native PVE targets, matchers, and shared sender
 │   ├── restore-drill/       # guarded isolated backup restore validation
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
@@ -75,6 +76,7 @@ pve-toolbox update [mod]...    update (all installed if none given)
 pve-toolbox check [mod]...     report available updates, change nothing
 pve-toolbox status [mod]       detailed status
 pve-toolbox doctor             read-only host and module health audit
+pve-toolbox lxc-update [ID]...  update local running Debian/Ubuntu containers
 pve-toolbox uninstall <mod>...
 pve-toolbox self-update        git pull this checkout (git installs only)
 pve-toolbox --version          print the installed version
@@ -84,6 +86,12 @@ Flags: `-y` non-interactive (modules read their env vars instead of prompting),
 `-f` force, `--json` versioned output, `--quiet` exit-status-only output,
 `-V` version, `-h` help. JSON and quiet output apply to `status`, `check`, and
 `doctor`.
+
+Use `pve-toolbox lxc-update --dry-run` as root on PVE 9 to preview container
+package updates. Execution requires a terminal and confirmation; `--allow-removals`
+enables removals and cleanup, and `--notify` sends an optional Discord summary.
+Configure exclusions and the webhook with `pve-toolbox install lxc-update`.
+See [LXC package updates](docs/modules/lxc-update.md) for safeguards and limitations.
 
 `doctor` checks cluster quorum, failed units, ZFS pools, Proxmox storage,
 recent failed tasks, pending reboots, and installed module health without
@@ -104,6 +112,7 @@ without regenerating anything. See
 | --- | --- |
 | [backup-audit](https://quwisky.github.io/pve-toolbox/modules/backup-audit/) | Finds uncovered guests, stale or failed backups, excluded volumes, weak retention, and unhealthy backup storage |
 | [certificate-watch](https://quwisky.github.io/pve-toolbox/modules/certificate-watch/) | Checks cluster TLS expiry, hostname coverage, chains, reachability, and ACME task history |
+| [lxc-update](https://quwisky.github.io/pve-toolbox/modules/lxc-update/) | Updates local running Debian/Ubuntu containers with confirmation, exclusions, previews, and optional Discord reporting |
 | [config-backup](https://quwisky.github.io/pve-toolbox/modules/config-backup/) | Snapshots `/etc/pve` and host config into verified tar.gz archives on a timer |
 | [native-notifications](https://quwisky.github.io/pve-toolbox/modules/native-notifications/) | Provisions owned PVE notification targets and matchers with protected credentials and rollback |
 | [restore-drill](https://quwisky.github.io/pve-toolbox/modules/restore-drill/) | Plans and explicitly runs isolated, ownership-checked VM or container restore drills |

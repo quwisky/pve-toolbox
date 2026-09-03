@@ -27,6 +27,10 @@ _pve_toolbox() {
     done
 
     if [[ $cur == -* ]]; then
+        if [[ $cmd == lxc-update ]]; then
+            mapfile -t COMPREPLY < <(compgen -W '--dry-run --allow-removals --notify --help' -- "$cur")
+            return
+        fi
         mapfile -t COMPREPLY < <(compgen -W \
             '-y --yes -f --force --json --quiet -V --version -h --help' -- "$cur")
         return

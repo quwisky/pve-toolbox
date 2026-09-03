@@ -1,3 +1,9 @@
+pve-toolbox (0.5.0) unstable; urgency=medium
+
+  * **lxc-update:** add guarded container package updates ([2bf5fc8](https://github.com/quwisky/pve-toolbox/commit/2bf5fc8dc1d7fe802e27f7e54d54771e66db93c0))
+
+ -- Bence Nagy <quwisky@qwky.eu>  Thu, 03 Sep 2026 17:17:00 +0000
+
 pve-toolbox (0.4.2) unstable; urgency=medium
 
   * **release:** automate verified publishing ([#38](https://github.com/quwisky/pve-toolbox/issues/38)) ([50e9472](https://github.com/quwisky/pve-toolbox/commit/50e9472a35466af20a50818c9f773bf9f4a5c1cb))

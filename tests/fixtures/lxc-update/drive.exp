@@ -1,0 +1,20 @@
+set timeout 30
+log_user 0
+set mode [lindex $argv 0]
+set command [lrange $argv 1 end]
+spawn {*}$command
+expect {
+    -re {Update these containers with this policy} { send -- "y\r" }
+    eof { catch wait r; exit [lindex $r 3] }
+    timeout { puts "FAIL confirmation not reached"; exit 1 }
+}
+if {$mode == "cancel"} {
+    expect {
+        -re {ACTIVE TRANSACTION} {send -- "\003"}
+        timeout {puts "FAIL active transaction not reached"; exit 1}
+    }
+}
+expect {
+    eof {catch wait r; exit [lindex $r 3]}
+    timeout {puts "FAIL update did not finish"; exit 1}
+}
