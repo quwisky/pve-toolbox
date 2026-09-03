@@ -1,5 +1,7 @@
 pve-toolbox (0.4.2) unstable; urgency=medium
 
+  * Add guarded local LXC package updates with previews, exclusions,
+    optional cleanup, saved results, and opt-in Discord reporting.
   * **release:** automate verified publishing ([#38](https://github.com/quwisky/pve-toolbox/issues/38)) ([50e9472](https://github.com/quwisky/pve-toolbox/commit/50e9472a35466af20a50818c9f773bf9f4a5c1cb))
   * **agents:** configure engineering skills ([#36](https://github.com/quwisky/pve-toolbox/issues/36)) ([628826e](https://github.com/quwisky/pve-toolbox/commit/628826ef1fc1f629379a69e32ecf0f191923cbfe))
 

@@ -33,6 +33,13 @@ Run a read-only host, cluster, storage, and installed-module health audit.
 Exit with status 0 when healthy, 2 when warnings are present, or 1 when a
 check fails.
 .TP
+.B lxc-update [ID ...]
+Update running Debian/Ubuntu containers on the local PVE 9 host. Requires
+root and interactive confirmation. Use --dry-run for a cached preview,
+--allow-removals to enable package removals and cleanup, and --notify for
+a Discord report. Saved exclusions always apply. No automatic reboots,
+backups, rollback, or distribution upgrades. Package scripts may restart services.
+.TP
 .B uninstall module ...
 Remove modules after confirmation.
 .TP
@@ -49,6 +56,7 @@ Update a git checkout. Packaged installs use apt instead.
 .TP
 .BR \-y ", " \-\-yes
 Run non-interactively with configured values and defaults.
+Not supported for LXC update execution, which requires confirmation.
 .TP
 .BR \-f ", " \-\-force
 Force reinstall or redownload behavior where a module supports it.
@@ -67,7 +75,8 @@ Print the installed version.
 Print command usage.
 .SH EXIT STATUS
 0 indicates success, 1 an operational failure, 2 a warning, 64 invalid input,
-and 69 a report whose meaningful checks are unsupported.
+69 a report whose meaningful checks are unsupported, and 130 a cancelled LXC
+package-update run.
 .SH FILES
 .TP
 .I /etc/pve-toolbox/

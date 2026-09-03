@@ -25,6 +25,14 @@ _pve-toolbox() {
     done
 
     if [[ $words[CURRENT] == -* ]]; then
+        if [[ $cmd == lxc-update ]]; then
+            _values 'LXC update flag' \
+                '--dry-run[simulate using cached indexes without guest changes]' \
+                '--allow-removals[allow package removals and cleanup]' \
+                '--notify[send a Discord summary after execution]' \
+                '--help[show usage]'
+            return
+        fi
         _values 'flag' \
             '(-y --yes)'{-y,--yes}'[non-interactive, take defaults]' \
             '(-f --force)'{-f,--force}'[reinstall or redownload even if current]' \

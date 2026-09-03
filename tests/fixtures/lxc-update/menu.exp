@@ -1,0 +1,47 @@
+set timeout 30
+log_user 0
+if {[info exists env(LX_TUI_RECORD)]} {log_file -a -noappend $env(LX_TUI_RECORD)}
+set env(TERM) xterm
+spawn ./pve-toolbox ui
+proc need {pattern} {
+    expect {
+        -re $pattern {}
+        timeout {puts "FAIL LXC menu timeout: $pattern"; exit 1}
+        eof {puts "FAIL LXC menu closed: $pattern"; exit 1}
+    }
+}
+proc choose_lxc {} {
+    for {set i 0} {$i < 5} {incr i} {send -- "\033\[B"}
+    send -- "\r"
+}
+need {Install or reconfigure modules}
+choose_lxc
+need {Choose options}
+need {Send Discord report}
+send -- "\r"
+need {Container IDs}
+send -- "101\r"
+need {Preview only: cached package indexes}
+need {press any key to go back}
+send -- " "
+need {Install or reconfigure modules}
+choose_lxc
+need {Send Discord report}
+# Disable preview and enable the initially unchecked Discord option.
+send -- " "
+send -- "\033\[B\033\[B"
+send -- " "
+send -- "\r"
+need {Container IDs}
+send -- "101\r"
+need {Update these containers with this policy}
+send -- "y\r"
+need {Container update results}
+need {notified: LXC package update report}
+need {press any key to go back}
+send -- " "
+need {Install or reconfigure modules}
+send -- "\033"
+expect eof
+catch wait result
+exit [lindex $result 3]
