@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.5.1](https://github.com/quwisky/pve-toolbox/compare/v0.5.0...v0.5.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* **release:** deploy Pages only after publication ([#43](https://github.com/quwisky/pve-toolbox/issues/43)) ([37c2f4d](https://github.com/quwisky/pve-toolbox/commit/37c2f4dabb05c31cf2aed490818fd7051b0f93ec))
+* **release:** verify signed APT repository metadata ([#46](https://github.com/quwisky/pve-toolbox/issues/46)) ([1d9bf60](https://github.com/quwisky/pve-toolbox/commit/1d9bf608bb7174e4b1f32e63ecc7f6f7d8359bb9))
+
 ## [0.5.0](https://github.com/quwisky/pve-toolbox/compare/v0.4.2...v0.5.0) (2026-09-03)
 
 
