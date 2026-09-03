@@ -7,8 +7,13 @@ on:
     inputs:
       release_as:
         description: Stable version to propose, for example 0.4.2
-        required: true
+        required: false
         type: string
+      repair_apt:
+        description: Re-sign and publish the latest stable APT repository
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -31,11 +36,12 @@ jobs:
       pull-requests: write
     outputs:
       release-created: ${{ steps.automatic.outputs.release_created || steps.manual.outputs.release_created }}
+      repair: ${{ steps.repair.outputs.repair }}
       prs-created: ${{ steps.automatic.outputs.prs_created || steps.manual.outputs.prs_created }}
       pr: ${{ steps.automatic.outputs.pr || steps.manual.outputs.pr }}
-      tag: ${{ steps.automatic.outputs.tag_name || steps.manual.outputs.tag_name }}
-      version: ${{ steps.automatic.outputs.version || steps.manual.outputs.version }}
-      sha: ${{ steps.automatic.outputs.sha || steps.manual.outputs.sha }}
+      tag: ${{ steps.automatic.outputs.tag_name || steps.manual.outputs.tag_name || steps.repair.outputs.tag }}
+      version: ${{ steps.automatic.outputs.version || steps.manual.outputs.version || steps.repair.outputs.version }}
+      sha: ${{ steps.automatic.outputs.sha || steps.manual.outputs.sha || steps.repair.outputs.sha }}
     steps:
       - name: Check out source
         if: github.event_name == 'workflow_dispatch'
@@ -44,7 +50,7 @@ jobs:
           fetch-depth: 0
 
       - name: Guard manual release request
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.repair_apt }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_AS: ${{ inputs.release_as }}
@@ -67,6 +73,31 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve latest release for APT repair
+        if: github.event_name == 'workflow_dispatch' && inputs.repair_apt
+        id: repair
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_AS: ${{ inputs.release_as }}
+        run: |
+          test "$GITHUB_REF" = refs/heads/master
+          test -z "$RELEASE_AS"
+          latest=$(gh api "repos/$GITHUB_REPOSITORY/releases/latest")
+          tag=$(jq -r '.tag_name // empty' <<< "$latest")
+          [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version=${tag#v}
+          sha=$(git rev-list -n 1 "$tag")
+          ./scripts/verify-latest-release.sh "$tag" "$sha"
+          asset_names=$(jq -r '.assets[].name' <<< "$latest")
+          grep -Fxq "pve-toolbox_${version}_all.deb" <<< "$asset_names"
+          grep -Fxq SHA256SUMS <<< "$asset_names"
+          {
+            printf 'repair=true\n'
+            printf 'tag=%s\n' "$tag"
+            printf 'version=%s\n' "$version"
+            printf 'sha=%s\n' "$sha"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Run Release Please
         if: github.event_name == 'push'
         id: automatic
@@ -75,7 +106,7 @@ jobs:
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
       - name: Run Release Please for requested version
-        if: github.event_name == 'workflow_dispatch'
+        if: ${{ github.event_name == 'workflow_dispatch' && !inputs.repair_apt }}
         id: manual
         uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
         with:
@@ -206,7 +237,17 @@ jobs:
   publish-apt:
     name: Sign and publish APT repository
     needs: [release-please, build, attest]
-    if: needs.release-please.outputs.release-created == 'true'
+    if: |
+      always() &&
+      !cancelled() &&
+      (
+        (
+          needs.release-please.outputs.release-created == 'true' &&
+          needs.build.result == 'success' &&
+          needs.attest.result == 'success'
+        ) ||
+        needs.release-please.outputs.repair == 'true'
+      )
     outputs:
       apt-sha: ${{ steps.published-apt.outputs.sha }}
     runs-on: ubuntu-24.04
@@ -224,10 +265,26 @@ jobs:
           fetch-depth: 0
 
       - name: Download tested package
+        if: needs.release-please.outputs.release-created == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.build.outputs.package-artifact }}
           path: dist
+
+      - name: Download published package for repair
+        if: needs.release-please.outputs.repair == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          mkdir dist
+          package_name="pve-toolbox_${RELEASE_VERSION}_all.deb"
+          gh release download "$RELEASE_TAG" \
+            --pattern "$package_name" --pattern SHA256SUMS --dir dist
+          test -f "dist/$package_name"
+          test -f dist/SHA256SUMS
+          (cd dist && sha256sum --check SHA256SUMS)
 
       - name: Install repository tools
         run: |
@@ -241,14 +298,24 @@ jobs:
           RELEASE_SHA: ${{ needs.release-please.outputs.sha }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
           RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+          REPAIR_MODE: ${{ needs.release-please.outputs.repair }}
         run: |
-          test "$RELEASE_SHA" = "$GITHUB_SHA"
           test "$RELEASE_TAG" = "v$RELEASE_VERSION"
-          test "$(<VERSION)" = "$RELEASE_VERSION"
-          test "$(dpkg-parsechangelog -S Version)" = "$RELEASE_VERSION"
+          test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$RELEASE_SHA"
+          if [[ $REPAIR_MODE == true ]]; then
+            ./scripts/verify-latest-release.sh "$RELEASE_TAG" "$RELEASE_SHA"
+          else
+            test "$RELEASE_SHA" = "$GITHUB_SHA"
+            test "$(<VERSION)" = "$RELEASE_VERSION"
+            test "$(dpkg-parsechangelog -S Version)" = "$RELEASE_VERSION"
+          fi
           (cd dist && sha256sum --check SHA256SUMS)
           package="dist/pve-toolbox_${RELEASE_VERSION}_all.deb"
-          test "$(sha256sum "$package" | awk '{print $1}')" = "$EXPECTED_SHA256"
+          test "$(dpkg-deb --field "$package" Package)" = pve-toolbox
+          test "$(dpkg-deb --field "$package" Version)" = "$RELEASE_VERSION"
+          if [[ $REPAIR_MODE != true ]]; then
+            test "$(sha256sum "$package" | awk '{print $1}')" = "$EXPECTED_SHA256"
+          fi
 
       - name: Import repository signing key
         env:
@@ -284,6 +351,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
           RELEASE_VERSION: ${{ needs.release-please.outputs.version }}
+          REPAIR_MODE: ${{ needs.release-please.outputs.repair }}
         run: |
           ./scripts/publish-apt-repo.sh \
             apt-repo "dist/pve-toolbox_${RELEASE_VERSION}_all.deb" \
@@ -295,7 +363,12 @@ jobs:
           if git -C apt-repo diff --cached --quiet; then
             printf 'APT repository already contains %s\n' "$RELEASE_TAG"
           else
-            git -C apt-repo commit -m "chore(repo): publish $RELEASE_TAG"
+            if [[ $REPAIR_MODE == true ]]; then
+              message="chore(repo): repair $RELEASE_TAG metadata"
+            else
+              message="chore(repo): publish $RELEASE_TAG"
+            fi
+            git -C apt-repo commit -m "$message"
             git -C apt-repo push origin HEAD:apt
           fi
 
@@ -410,16 +483,25 @@ jobs:
   pages-build:
     name: Assemble release Pages
     needs: [release-please, publish-apt, publish-release]
-    if: needs.release-please.outputs.release-created == 'true'
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.publish-apt.result == 'success' &&
+      (
+        (
+          needs.release-please.outputs.release-created == 'true' &&
+          needs.publish-release.result == 'success'
+        ) ||
+        needs.release-please.outputs.repair == 'true'
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: read
     steps:
-      - name: Check out release source
+      - name: Check out workflow source and tags
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.sha }}
           fetch-depth: 0
 
       - name: Verify latest published release before assembly
@@ -429,19 +511,27 @@ jobs:
           RELEASE_TAG: ${{ needs.release-please.outputs.tag }}
         run: ./scripts/verify-latest-release.sh "$RELEASE_TAG" "$RELEASE_SHA"
 
+      - name: Check out release source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.release-please.outputs.sha }}
+          path: release-source
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.13'
           cache: pip
-          cache-dependency-path: docs/requirements.txt
+          cache-dependency-path: release-source/docs/requirements.txt
 
       - name: Build documentation
+        working-directory: release-source
         run: |
           pip install -r docs/requirements.txt
           mkdocs build --strict
 
       - name: Include published APT repository
+        working-directory: release-source
         env:
           APT_SHA: ${{ needs.publish-apt.outputs.apt-sha }}
         run: |
@@ -458,12 +548,22 @@ jobs:
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
-          path: site
+          path: release-source/site
 
   pages-deploy:
     name: Deploy release Pages
     needs: [release-please, publish-release, pages-build]
-    if: needs.release-please.outputs.release-created == 'true'
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.pages-build.result == 'success' &&
+      (
+        (
+          needs.release-please.outputs.release-created == 'true' &&
+          needs.publish-release.result == 'success'
+        ) ||
+        needs.release-please.outputs.repair == 'true'
+      )
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     concurrency:
@@ -477,10 +577,9 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - name: Check out release source and tags
+      - name: Check out workflow source and tags
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.release-please.outputs.sha }}
           fetch-depth: 0
 
       - name: Verify latest published release before deployment

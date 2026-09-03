@@ -52,6 +52,7 @@ pages_writers=$(grep -El '^[[:space:]]+pages: write$' \
     || fail "release.yml must contain exactly one Pages deployment"
 
 publish_release_job=$(workflow_job publish-release)
+publish_apt_job=$(workflow_job publish-apt)
 pages_build_job=$(workflow_job pages-build)
 pages_deploy_job=$(workflow_job pages-deploy)
 grep -Fqx '    needs: [release-please, build, attest, publish-apt]' \
@@ -64,12 +65,24 @@ grep -Fqx '    needs: [release-please, publish-release, pages-build]' \
     <<< "$pages_deploy_job" \
     || fail "Pages deployment does not require a published release"
 [[ $(grep -Fc './scripts/verify-latest-release.sh "$RELEASE_TAG" "$RELEASE_SHA"' \
-    .github/workflows/release.yml) -eq 3 ]] \
+    .github/workflows/release.yml) -eq 4 ]] \
     || fail "release and Pages jobs do not share the latest-release guard"
 grep -Fq 'APT_SHA: ${{ needs.publish-apt.outputs.apt-sha }}' \
     <<< "$pages_build_job" \
     || fail "Pages does not consume the release APT repository commit"
-pass "Pages publication is release-only and ordered after publication"
+grep -Fq "needs.release-please.outputs.repair == 'true'" \
+    <<< "$publish_apt_job" \
+    || fail "APT publisher does not accept an explicit repair request"
+grep -Fq 'gh release download "$RELEASE_TAG"' <<< "$publish_apt_job" \
+    || fail "APT repair does not use published release assets"
+[[ $(grep -Fc './scripts/publish-apt-repo.sh' <<< "$publish_apt_job") -eq 1 ]] \
+    || fail "APT repair does not use the verified repository publisher"
+grep -Fq 'repair_apt:' .github/workflows/release.yml \
+    || fail "release workflow does not expose the APT repair input"
+grep -Fq "needs.release-please.outputs.repair == 'true'" \
+    <<< "$pages_build_job$pages_deploy_job" \
+    || fail "Pages does not deploy a repaired APT repository"
+pass "Pages publication and guarded APT repair preserve release ordering"
 
 WORK=$(mktemp -d)
 cleanup() {
