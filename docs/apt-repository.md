@@ -152,9 +152,12 @@ on Debian 13 and carries its SHA-256 through every required test. Later jobs:
 3. verify that key against `keys/pve-toolbox.asc` and publish signed `Release`,
    `Release.gpg`, and `InRelease` metadata;
 4. retain and index the newest three stable package versions for rollback;
-5. deploy the combined documentation and APT repository to Pages; and
-6. attach the `.deb`, SHA-256 manifest, and provenance bundle, then publish the
-   GitHub Release last.
+5. attach the `.deb`, SHA-256 manifest, and provenance bundle, publish the
+   GitHub Release, and read it back to verify its tag, commit, assets, and
+   latest stable status; and
+6. build the documentation from that release commit, include the exact signed
+   APT repository commit, recheck that the release is still latest, and deploy
+   the combined site to Pages.
 
 `RELEASE_PLEASE_TOKEN` is a repository secret so its pull-request updates
 trigger CI. `APT_SIGNING_KEY` is an environment secret scoped to the `release`
@@ -165,8 +168,10 @@ GitHub Release jobs.
 Rerunning a failed workflow is safe. The repository publisher stages and
 verifies complete metadata before changing the `apt` checkout, restores the
 previous contents if publication fails, accepts an identical version only when
-its bytes match, and rejects same-version substitutions. The draft remains
-unpublished until all downstream jobs succeed.
+its bytes match, and rejects same-version substitutions. Pages runs only after
+the GitHub Release is public and verified. A Pages failure leaves that valid
+release published so the failed jobs can be rerun. An older release run cannot
+replace Pages after a newer stable release is public.
 
 Verify a downloaded release package and its provenance with:
 
@@ -175,5 +180,6 @@ gh attestation verify pve-toolbox_0.4.2_all.deb \
   --repo quwisky/pve-toolbox
 ```
 
-Pages deployment remains serialized with normal documentation publication so
-neither workflow can race or erase the published APT repository.
+The release workflow is the only Pages publisher. Documentation changes on
+`master` are validated by CI but remain unpublished until the next successful
+release.
