@@ -20,7 +20,7 @@ fail() {
 }
 
 for command in apt-ftparchive awk chmod cmp cp date dpkg-deb dpkg-scanpackages \
-    find gpg gpgv gzip install mktemp realpath rsync sort; do
+    find gpg gpgv gzip install mktemp realpath rsync sha256sum sort stat; do
     command -v "$command" >/dev/null 2>&1 || fail "$command is required"
 done
 [[ -f $deb && ! -L $deb ]] || fail "package is missing or unsafe: $deb"
@@ -147,6 +147,7 @@ mkdir -p "$index_dir"
 gzip -n -9 -c "$index_dir/Packages" > "$index_dir/Packages.gz"
 
 release_dir="$stage/dists/trixie"
+release_file="$work/Release"
 key_epoch=$(gpg --batch --with-colons --list-secret-keys "$fingerprint" \
     | awk -F: '$1 == "sec" { print $6; exit }')
 [[ $key_epoch =~ ^[0-9]+$ ]] || fail "signing key has no creation timestamp"
@@ -161,7 +162,8 @@ apt-ftparchive \
     -o APT::FTPArchive::Release::Components=main \
     -o "APT::FTPArchive::Release::Date=$release_date" \
     -o 'APT::FTPArchive::Release::Description=pve-toolbox packages for PVE 9 / Debian 13' \
-    release "$release_dir" > "$release_dir/Release"
+    release "$release_dir" > "$release_file"
+install -m 0644 "$release_file" "$release_dir/Release"
 gpg --batch --yes --faked-system-time "$release_epoch" \
     --local-user "$fingerprint" --clearsign \
     --output "$release_dir/InRelease" "$release_dir/Release"
@@ -171,21 +173,121 @@ gpg --batch --yes --faked-system-time "$release_epoch" \
 install -m 0644 "$public_key" "$stage/pve-toolbox.asc"
 gpg --batch --yes --dearmor \
     --output "$stage/pve-toolbox.gpg" "$public_key"
-gpgv --keyring "$stage/pve-toolbox.gpg" \
-    "$release_dir/Release.gpg" "$release_dir/Release" >/dev/null 2>&1 \
-    || fail "staged Release signature did not verify"
-gpgv --keyring "$stage/pve-toolbox.gpg" "$release_dir/InRelease" \
-    >/dev/null 2>&1 || fail "staged InRelease signature did not verify"
+
+verify_repository() {
+    local repository=$1
+    local release_root="$repository/dists/trixie"
+    local release="$release_root/Release"
+    local keyring="$repository/pve-toolbox.gpg"
+    local verified_release="$work/verified-InRelease"
+    local required entry expected_hash expected_size relative index
+    local actual_hash actual_size
+    local packages_seen=0
+    local packages_gz_seen=0
+    local -a sha256_entries=()
+
+    for required in "$release" "$release_root/InRelease" \
+        "$release_root/Release.gpg" "$keyring"; do
+        [[ -f $required && ! -L $required ]] || {
+            printf 'repository metadata is missing or unsafe: %s\n' "$required" >&2
+            return 1
+        }
+    done
+    gpgv --keyring "$keyring" "$release_root/Release.gpg" "$release" \
+        >/dev/null 2>&1 || {
+        printf 'repository Release signature did not verify\n' >&2
+        return 1
+    }
+    rm -f -- "$verified_release"
+    gpgv --keyring "$keyring" --output "$verified_release" \
+        "$release_root/InRelease" >/dev/null 2>&1 || {
+        printf 'repository InRelease signature did not verify\n' >&2
+        return 1
+    }
+    cmp -s "$release" "$verified_release" || {
+        printf 'repository InRelease payload does not match Release\n' >&2
+        return 1
+    }
+    rm -f -- "$verified_release" || {
+        printf 'could not remove verified InRelease payload\n' >&2
+        return 1
+    }
+
+    mapfile -t sha256_entries < <(awk '
+        $1 == "SHA256:" { in_sha256 = 1; next }
+        in_sha256 && /^[A-Z][A-Za-z0-9-]*:/ { in_sha256 = 0 }
+        in_sha256 && NF == 3 { print }
+    ' "$release")
+    [[ ${#sha256_entries[@]} -eq 2 ]] || {
+        printf 'repository Release has an unexpected SHA256 index set\n' >&2
+        return 1
+    }
+    for entry in "${sha256_entries[@]}"; do
+        read -r expected_hash expected_size relative <<< "$entry"
+        case "$relative" in
+            main/binary-amd64/Packages)
+                packages_seen=1
+                ;;
+            main/binary-amd64/Packages.gz)
+                packages_gz_seen=1
+                ;;
+            *)
+                printf 'repository Release references an unexpected index: %s\n' \
+                    "$relative" >&2
+                return 1
+                ;;
+        esac
+        [[ $expected_hash =~ ^[0-9a-fA-F]{64}$ \
+            && $expected_size =~ ^[0-9]+$ ]] || {
+            printf 'repository Release has invalid index metadata: %s\n' \
+                "$relative" >&2
+            return 1
+        }
+        index="$release_root/$relative"
+        [[ -f $index && ! -L $index ]] || {
+            printf 'repository index is missing or unsafe: %s\n' "$index" >&2
+            return 1
+        }
+        actual_hash=$(sha256sum "$index" | awk '{print $1}')
+        actual_size=$(stat -c %s "$index")
+        [[ ${expected_hash,,} == "$actual_hash" \
+            && $expected_size == "$actual_size" ]] || {
+            printf 'repository Release does not match index: %s\n' "$relative" >&2
+            return 1
+        }
+    done
+    [[ $packages_seen -eq 1 && $packages_gz_seen -eq 1 ]] || {
+        printf 'repository Release omits a required package index\n' >&2
+        return 1
+    }
+}
+
+verify_repository "$stage" || fail "staged repository metadata did not verify"
+
+restore_repository() {
+    if [[ $repo_exists -eq 0 ]]; then
+        rm -rf -- "$repo_abs"
+    else
+        rsync -a --checksum --delete --exclude '.git/' "$backup/" "$repo_abs/"
+    fi
+}
 
 if [[ $repo_exists -eq 0 ]]; then
     mkdir -- "$repo_abs"
 else
-    rsync -a --exclude '.git/' "$repo_abs/" "$backup/"
+    rsync -a --checksum --exclude '.git/' "$repo_abs/" "$backup/"
 fi
-if ! rsync -a --delete --exclude '.git/' "$stage/" "$repo_abs/"; then
+if ! rsync -a --checksum --delete --exclude '.git/' "$stage/" "$repo_abs/"; then
     printf 'error: repository update failed; restoring previous contents\n' >&2
-    if ! rsync -a --delete --exclude '.git/' "$backup/" "$repo_abs/"; then
+    if ! restore_repository; then
         fail "repository update and rollback both failed"
     fi
     fail "repository update failed and was rolled back"
+fi
+if ! verify_repository "$repo_abs"; then
+    printf 'error: published repository validation failed; restoring previous contents\n' >&2
+    if ! restore_repository; then
+        fail "repository validation and rollback both failed"
+    fi
+    fail "repository validation failed and was rolled back"
 fi

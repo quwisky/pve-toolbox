@@ -137,6 +137,13 @@ new stable version such as `0.4.2`; the request fails if the version is not
 newer or its tag or GitHub Release already exists. It still creates a release
 pull request rather than bypassing review.
 
+To repair repository metadata for the current release, manually run the same
+workflow from `master`, leave `release_as` empty, and select `repair_apt`. The
+repair refuses any other branch or a simultaneous release request. It verifies
+the latest public stable tag and commit, downloads that release's exact `.deb`
+and SHA-256 manifest, then uses the protected signing environment to rebuild
+the repository metadata. It does not create a version, tag, or GitHub Release.
+
 CI requires the portable tests, strict documentation build, and complete
 Debian 13 suite through one stable aggregate check. The Debian job builds the
 `.deb` once, records its SHA-256 digest, verifies every runtime source is in
@@ -168,15 +175,19 @@ GitHub Release jobs.
 Rerunning a failed workflow is safe. The repository publisher stages and
 verifies complete metadata before changing the `apt` checkout, restores the
 previous contents if publication fails, accepts an identical version only when
-its bytes match, and rejects same-version substitutions. Pages runs only after
-the GitHub Release is public and verified. A Pages failure leaves that valid
-release published so the failed jobs can be rerun. An older release run cannot
-replace Pages after a newer stable release is public.
+its bytes match, and rejects same-version substitutions. Repository replacement
+compares file contents even when sizes and timestamps match, then verifies the
+published signatures and the signed size and SHA-256 of each package index. A
+mismatch fails the job and restores the previous repository before Git can push
+it. A repair deploys Pages from the exact repaired APT commit only after the
+target release is confirmed as the latest public stable release. A Pages
+failure leaves that valid release published so the failed jobs can be rerun. An
+older release run cannot replace Pages after a newer stable release is public.
 
 Verify a downloaded release package and its provenance with:
 
 ```bash
-gh attestation verify pve-toolbox_0.4.2_all.deb \
+gh attestation verify pve-toolbox_0.5.0_all.deb \
   --repo quwisky/pve-toolbox
 ```
 

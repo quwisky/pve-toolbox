@@ -102,18 +102,41 @@ repo="$WORK/repository"
 ./scripts/publish-apt-repo.sh \
     "$repo" "$deb" "$fingerprint" "$public_key" 3 >/dev/null
 snapshot_repository() {
-    local output=$1
-    find "$repo" -path "$repo/.git" -prune -o -type f -exec sha256sum {} + \
-        | sort > "$output"
+    local repository=$1
+    local output=$2
+    (
+        cd "$repository"
+        find . -path ./.git -prune -o -type f -exec sha256sum {} + | sort
+    ) > "$output"
+}
+
+verify_release_indexes() {
+    local repository=$1
+    local release="$repository/dists/trixie/Release"
+    local relative index expected actual
+
+    for relative in \
+        main/binary-amd64/Packages \
+        main/binary-amd64/Packages.gz; do
+        index="$repository/dists/trixie/$relative"
+        expected=$(awk -v target="$relative" '
+            $1 == "SHA256:" { in_sha256 = 1; next }
+            in_sha256 && /^[A-Z][A-Za-z0-9-]*:/ { in_sha256 = 0 }
+            in_sha256 && $3 == target { print $1, $2; exit }
+        ' "$release")
+        actual="$(sha256sum "$index" | awk '{print $1}') $(stat -c %s "$index")"
+        [[ -n $expected && $expected == "$actual" ]] \
+            || fail "Release metadata does not match $relative"
+    done
 }
 # A workflow retry after the APT branch was pushed must be a no-op, not a
 # blocker that prevents the GitHub Release or Pages steps from running.
-snapshot_repository "$WORK/repository-before-retry"
+snapshot_repository "$repo" "$WORK/repository-before-retry"
 sleep 1
 ./scripts/publish-apt-repo.sh \
     "$repo" "$deb" "$fingerprint" "$public_key" 3 >/dev/null \
     || fail "repository publisher rejected an identical retry"
-snapshot_repository "$WORK/repository-after-retry"
+snapshot_repository "$repo" "$WORK/repository-after-retry"
 cmp -s "$WORK/repository-before-retry" "$WORK/repository-after-retry" \
     || fail "identical repository retry changed published bytes"
 mkdir -p "$WORK/conflicting-package"
@@ -122,12 +145,12 @@ mkdir -p "$WORK/conflicting-package/usr/share/pve-toolbox"
 printf 'different build\n' > "$WORK/conflicting-package/usr/share/pve-toolbox/retry-conflict"
 conflicting_deb="$WORK/conflicting.deb"
 dpkg-deb --build "$WORK/conflicting-package" "$conflicting_deb" >/dev/null
-snapshot_repository "$WORK/repository-before-conflict"
+snapshot_repository "$repo" "$WORK/repository-before-conflict"
 if ./scripts/publish-apt-repo.sh \
     "$repo" "$conflicting_deb" "$fingerprint" "$public_key" 3 >/dev/null 2>&1; then
     fail "repository publisher replaced an existing version with different bytes"
 fi
-snapshot_repository "$WORK/repository-after-conflict"
+snapshot_repository "$repo" "$WORK/repository-after-conflict"
 cmp -s "$WORK/repository-before-conflict" "$WORK/repository-after-conflict" \
     || fail "conflicting repository publication changed published bytes"
 [[ -s $repo/dists/trixie/main/binary-amd64/Packages.gz ]] \
@@ -144,6 +167,101 @@ gpgv --keyring "$repo/pve-toolbox.gpg" "$repo/dists/trixie/InRelease" \
     >/dev/null 2>&1 || fail "repository InRelease signature did not verify"
 pass "signed APT repository metadata"
 
+# A freshly cloned repository and newly generated metadata can have identical
+# timestamps and sizes even when their contents differ. Reproduce that
+# filesystem state at the publisher boundary rather than relying on timing.
+collision_repo="$WORK/timestamp-collision-repository"
+cp -a -- "$repo" "$collision_repo"
+collision_root="$WORK/timestamp-collision-package"
+dpkg-deb --raw-extract "$deb" "$collision_root"
+sed -i 's/^Version: .*/Version: 0.5.1/' "$collision_root/DEBIAN/control"
+printf '%s\n' 0.5.1 > "$collision_root/usr/lib/pve-toolbox/VERSION"
+collision_deb="$WORK/pve-toolbox_0.5.1_all.deb"
+dpkg-deb --build "$collision_root" "$collision_deb" >/dev/null
+
+collision_bin="$WORK/timestamp-collision-bin"
+mkdir "$collision_bin"
+cat > "$collision_bin/apt-ftparchive" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+"$REAL_APT_FTPARCHIVE" "$@"
+touch -r "$PUBLISH_COLLISION_REPO/dists/trixie/Release" /proc/self/fd/1
+EOF
+cat > "$collision_bin/gpg" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+args=("$@")
+output=
+for ((index = 0; index < ${#args[@]}; index++)); do
+    if [[ ${args[$index]} == --output ]]; then
+        output=${args[$((index + 1))]}
+        break
+    fi
+done
+"$REAL_GPG" "$@"
+if [[ -n $output ]]; then
+    published="$PUBLISH_COLLISION_REPO/dists/trixie/${output##*/}"
+    [[ ! -f $published ]] || touch -r "$published" "$output"
+fi
+EOF
+chmod +x "$collision_bin/apt-ftparchive" "$collision_bin/gpg"
+
+real_apt_ftparchive=$(command -v apt-ftparchive)
+real_gpg=$(command -v gpg)
+PATH="$collision_bin:$PATH" \
+REAL_APT_FTPARCHIVE="$real_apt_ftparchive" \
+REAL_GPG="$real_gpg" \
+PUBLISH_COLLISION_REPO="$collision_repo" \
+    ./scripts/publish-apt-repo.sh \
+    "$collision_repo" "$collision_deb" "$fingerprint" "$public_key" 3 \
+    >/dev/null
+verify_release_indexes "$collision_repo"
+gpgv --keyring "$collision_repo/pve-toolbox.gpg" \
+    "$collision_repo/dists/trixie/Release.gpg" \
+    "$collision_repo/dists/trixie/Release" >/dev/null 2>&1 \
+    || fail "timestamp collision left an invalid detached Release signature"
+gpgv --keyring "$collision_repo/pve-toolbox.gpg" \
+    "$collision_repo/dists/trixie/InRelease" >/dev/null 2>&1 \
+    || fail "timestamp collision left an invalid InRelease signature"
+pass "APT publication replaces same-size metadata with matching timestamps"
+
+validation_repo="$WORK/post-copy-validation-repository"
+cp -a -- "$repo" "$validation_repo"
+snapshot_repository "$validation_repo" \
+    "$WORK/validation-repository-before-failure"
+validation_bin="$WORK/post-copy-validation-bin"
+mkdir "$validation_bin"
+cat > "$validation_bin/rsync" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+args=("$@")
+source=${args[$((${#args[@]} - 2))]}
+destination=${args[$((${#args[@]} - 1))]}
+if [[ ${source%/} == */stage && ${destination%/} == "$PUBLISH_VALIDATION_REPO" ]]; then
+    "$REAL_RSYNC" \
+        --exclude dists/trixie/InRelease \
+        "$@"
+else
+    "$REAL_RSYNC" "$@"
+fi
+EOF
+chmod +x "$validation_bin/rsync"
+real_rsync=$(command -v rsync)
+if PATH="$validation_bin:$PATH" \
+    REAL_RSYNC="$real_rsync" \
+    PUBLISH_VALIDATION_REPO="$validation_repo" \
+        ./scripts/publish-apt-repo.sh \
+        "$validation_repo" "$collision_deb" "$fingerprint" "$public_key" 3 \
+        >/dev/null 2>&1; then
+    fail "publisher accepted mismatched metadata after repository update"
+fi
+snapshot_repository "$validation_repo" \
+    "$WORK/validation-repository-after-failure"
+cmp -s "$WORK/validation-repository-before-failure" \
+    "$WORK/validation-repository-after-failure" \
+    || fail "publisher did not roll back a mismatched repository update"
+pass "APT publication validates final metadata and rolls back mismatches"
+
 retention_repo="$WORK/retention-repository"
 for retained_version in 0.4.0 0.4.1 0.4.2 0.4.3; do
     package_root="$WORK/package-$retained_version"
@@ -157,6 +275,7 @@ for retained_version in 0.4.0 0.4.1 0.4.2 0.4.3; do
     ./scripts/publish-apt-repo.sh \
         "$retention_repo" "$retained_deb" "$fingerprint" "$public_key" 3 >/dev/null
 done
+verify_release_indexes "$retention_repo"
 retained_packages=$(gzip -dc \
     "$retention_repo/dists/trixie/main/binary-amd64/Packages.gz")
 mapfile -t retained_versions < <(
