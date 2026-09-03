@@ -239,9 +239,7 @@ source=${args[$((${#args[@]} - 2))]}
 destination=${args[$((${#args[@]} - 1))]}
 if [[ ${source%/} == */stage && ${destination%/} == "$PUBLISH_VALIDATION_REPO" ]]; then
     "$REAL_RSYNC" \
-        --exclude dists/trixie/Release \
         --exclude dists/trixie/InRelease \
-        --exclude dists/trixie/Release.gpg \
         "$@"
 else
     "$REAL_RSYNC" "$@"

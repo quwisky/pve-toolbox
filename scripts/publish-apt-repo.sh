@@ -179,7 +179,8 @@ verify_repository() {
     local release_root="$repository/dists/trixie"
     local release="$release_root/Release"
     local keyring="$repository/pve-toolbox.gpg"
-    local entry expected_hash expected_size relative index
+    local verified_release="$work/verified-InRelease"
+    local required entry expected_hash expected_size relative index
     local actual_hash actual_size
     local packages_seen=0
     local packages_gz_seen=0
@@ -197,8 +198,18 @@ verify_repository() {
         printf 'repository Release signature did not verify\n' >&2
         return 1
     }
-    gpgv --keyring "$keyring" "$release_root/InRelease" >/dev/null 2>&1 || {
+    rm -f -- "$verified_release"
+    gpgv --keyring "$keyring" --output "$verified_release" \
+        "$release_root/InRelease" >/dev/null 2>&1 || {
         printf 'repository InRelease signature did not verify\n' >&2
+        return 1
+    }
+    cmp -s "$release" "$verified_release" || {
+        printf 'repository InRelease payload does not match Release\n' >&2
+        return 1
+    }
+    rm -f -- "$verified_release" || {
+        printf 'could not remove verified InRelease payload\n' >&2
         return 1
     }
 
