@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+ROOT=$PWD
 
 pass() { printf 'ok  %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
@@ -33,6 +34,43 @@ while IFS= read -r action; do
 done < <(sed -n 's/^[[:space:]]*uses:[[:space:]]*//p' .github/workflows/*.yml)
 pass "release metadata and workflow pins are consistent"
 
+workflow_job() {
+    local job=$1
+    awk -v job="$job" '
+        $0 == "  " job ":" { found = 1 }
+        found && $0 ~ /^  [A-Za-z0-9_-]+:$/ && $0 != "  " job ":" { exit }
+        found { print }
+        END { if (!found) exit 1 }
+    ' .github/workflows/release.yml
+}
+
+pages_writers=$(grep -El '^[[:space:]]+pages: write$' \
+    .github/workflows/*.yml || true)
+[[ $pages_writers == .github/workflows/release.yml ]] \
+    || fail "release.yml must be the only Pages writer"
+[[ $(grep -Fc 'actions/deploy-pages@' .github/workflows/release.yml) -eq 1 ]] \
+    || fail "release.yml must contain exactly one Pages deployment"
+
+publish_release_job=$(workflow_job publish-release)
+pages_build_job=$(workflow_job pages-build)
+pages_deploy_job=$(workflow_job pages-deploy)
+grep -Fqx '    needs: [release-please, build, attest, publish-apt]' \
+    <<< "$publish_release_job" \
+    || fail "GitHub Release publication has unexpected prerequisites"
+grep -Fqx '    needs: [release-please, publish-apt, publish-release]' \
+    <<< "$pages_build_job" \
+    || fail "Pages assembly does not require a published release"
+grep -Fqx '    needs: [release-please, publish-release, pages-build]' \
+    <<< "$pages_deploy_job" \
+    || fail "Pages deployment does not require a published release"
+[[ $(grep -Fc './scripts/verify-latest-release.sh "$RELEASE_TAG" "$RELEASE_SHA"' \
+    .github/workflows/release.yml) -eq 3 ]] \
+    || fail "release and Pages jobs do not share the latest-release guard"
+grep -Fq 'APT_SHA: ${{ needs.publish-apt.outputs.apt-sha }}' \
+    <<< "$pages_build_job" \
+    || fail "Pages does not consume the release APT repository commit"
+pass "Pages publication is release-only and ordered after publication"
+
 WORK=$(mktemp -d)
 cleanup() {
     status=$?
@@ -44,6 +82,59 @@ cleanup() {
     exit "$status"
 }
 trap cleanup EXIT
+
+mkdir -p "$WORK/bin" "$WORK/release-repo"
+cat > "$WORK/bin/gh" <<'EOF'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+[[ $1 == api ]]
+case $2 in
+    repos/example/repo/releases/tags/v1.2.3)
+        printf '{"tag_name":"v1.2.3","draft":%s,"prerelease":false,"published_at":"2026-09-03T18:00:00Z"}\n' \
+            "${MOCK_RELEASE_DRAFT:-false}"
+        ;;
+    repos/example/repo/releases/latest)
+        printf '%s\n' "${MOCK_LATEST_TAG:-v1.2.3}"
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+EOF
+chmod 0755 "$WORK/bin/gh"
+git -C "$WORK/release-repo" init -q
+git -C "$WORK/release-repo" config user.name test
+git -C "$WORK/release-repo" config user.email test@example.invalid
+printf 'release\n' > "$WORK/release-repo/content"
+git -C "$WORK/release-repo" add content
+git -C "$WORK/release-repo" commit -qm release
+git -C "$WORK/release-repo" tag v1.2.3
+release_sha=$(git -C "$WORK/release-repo" rev-parse HEAD)
+(
+    cd "$WORK/release-repo"
+    PATH="$WORK/bin:$PATH" GITHUB_REPOSITORY=example/repo \
+        "$ROOT/scripts/verify-latest-release.sh" v1.2.3 "$release_sha" \
+        >/dev/null
+)
+if (
+    cd "$WORK/release-repo"
+    PATH="$WORK/bin:$PATH" GITHUB_REPOSITORY=example/repo \
+        MOCK_LATEST_TAG=v1.2.4 \
+        "$ROOT/scripts/verify-latest-release.sh" v1.2.3 "$release_sha" \
+        >/dev/null 2>&1
+); then
+    fail "latest-release guard accepted a stale release"
+fi
+if (
+    cd "$WORK/release-repo"
+    PATH="$WORK/bin:$PATH" GITHUB_REPOSITORY=example/repo \
+        MOCK_RELEASE_DRAFT=true \
+        "$ROOT/scripts/verify-latest-release.sh" v1.2.3 "$release_sha" \
+        >/dev/null 2>&1
+); then
+    fail "latest-release guard accepted a draft release"
+fi
+pass "latest-release guard rejects draft and stale releases"
 
 version_file="$WORK/VERSION"
 markdown="$WORK/CHANGELOG.md"

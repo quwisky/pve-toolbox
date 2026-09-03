@@ -1,7 +1,7 @@
 # pve-toolbox
 
 [![CI](https://github.com/quwisky/pve-toolbox/actions/workflows/ci.yml/badge.svg)](https://github.com/quwisky/pve-toolbox/actions/workflows/ci.yml)
-[![Docs](https://github.com/quwisky/pve-toolbox/actions/workflows/docs.yml/badge.svg)](https://github.com/quwisky/pve-toolbox/actions/workflows/docs.yml)
+[![Release](https://github.com/quwisky/pve-toolbox/actions/workflows/release.yml/badge.svg)](https://github.com/quwisky/pve-toolbox/actions/workflows/release.yml)
 
 Custom Proxmox VE host scripts behind one interactive launcher.
 
