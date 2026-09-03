@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.5.0](https://github.com/quwisky/pve-toolbox/compare/v0.4.2...v0.5.0) (2026-09-03)
+
+
+### Features
+
+* **lxc-update:** add guarded container package updates ([#40](https://github.com/quwisky/pve-toolbox/issues/40)) ([38da29b](https://github.com/quwisky/pve-toolbox/commit/38da29b580aa53c2e944456eb1eaaf988e46046d))
+
+
+### Bug Fixes
+
+* **release:** restore Release Please version ownership ([#42](https://github.com/quwisky/pve-toolbox/issues/42)) ([7503d56](https://github.com/quwisky/pve-toolbox/commit/7503d56be5437be8c54c3a4aaaa5f385a4655aad))
+
 ## [0.4.2](https://github.com/quwisky/pve-toolbox/compare/v0.4.1...v0.4.2) (2026-08-30)
 
 
