@@ -48,7 +48,7 @@ trap cleanup EXIT
 version_file="$WORK/VERSION"
 markdown="$WORK/CHANGELOG.md"
 debian="$WORK/changelog"
-printf '0.5.0\n' > "$version_file"
+printf '0.4.2\n' > "$version_file"
 cat > "$markdown" <<'EOF'
 # Changelog
 
@@ -56,7 +56,7 @@ cat > "$markdown" <<'EOF'
 
 * support a stable major release
 
-## [0.5.0](https://example.invalid/compare) (2026-09-03)
+## [0.4.2](https://example.invalid/compare) (2026-08-30)
 
 ### Bug Fixes
 
@@ -67,7 +67,13 @@ cat > "$markdown" <<'EOF'
 
 * old notes
 EOF
-cp debian/changelog "$debian"
+cat > "$debian" <<'EOF'
+pve-toolbox (0.4.1) unstable; urgency=medium
+
+  * Retain historical package notes.
+
+ -- Bence Nagy <quwisky@qwky.eu>  Fri, 29 Aug 2026 19:47:00 +0200
+EOF
 
 run_sync() {
     VERSION_FILE="$version_file" \
@@ -78,7 +84,7 @@ run_sync() {
 }
 
 run_sync
-[[ $(dpkg-parsechangelog -l"$debian" -S Version) == 0.5.0 ]] \
+[[ $(dpkg-parsechangelog -l"$debian" -S Version) == 0.4.2 ]] \
     || fail "synchronizer did not set the release version"
 grep -q '^  \* reject an unsafe release input$' "$debian" \
     || fail "synchronizer omitted generated notes"
@@ -89,11 +95,11 @@ grep -q '^ -- Bence Nagy <quwisky@qwky.eu>  Sun, 30 Aug 2026 18:00:00 +0000$' \
 cp "$debian" "$WORK/first-run"
 run_sync
 cmp -s "$WORK/first-run" "$debian" || fail "synchronizer is not idempotent"
-[[ $(grep -c '^pve-toolbox (0.5.0) ' "$debian") -eq 1 ]] \
+[[ $(grep -c '^pve-toolbox (0.4.2) ' "$debian") -eq 1 ]] \
     || fail "synchronizer duplicated the current release"
 pass "Debian changelog synchronization is deterministic"
 
-printf '0.4.2\n' > "$version_file"
+printf '0.4.0\n' > "$version_file"
 cp "$debian" "$WORK/before-downgrade"
 if run_sync >/dev/null 2>&1; then
     fail "synchronizer accepted a version downgrade"
