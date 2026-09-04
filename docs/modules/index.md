@@ -9,7 +9,6 @@ launcher discovers them at runtime; directories starting with `_` are skipped.
 | [certificate-watch](certificate-watch.md) | `monitoring tls certificate acme notify` | yes | none; contributes doctor checks |
 | [config-backup](config-backup.md) | `backup config notify` | yes | `pve-config-backup` |
 | [lxc-update](lxc-update.md) | `lxc upgrade apt notify schedule` | yes | `pve-toolbox-lxc-update` when scheduled |
-| [native-notifications](native-notifications.md) | `monitoring notify webhook smtp gotify` | yes | `pve-toolbox-native-notify` |
 | [restore-drill](restore-drill.md) | `backup restore audit isolation notify` | yes | `pve-toolbox-restore-drill` |
 | [storage-hygiene](storage-hygiene.md) | `storage audit monitoring zfs lvm` | yes | none; contributes doctor checks |
 | [upgrade-readiness](upgrade-readiness.md) | `upgrade audit monitoring backup apt` | yes | none; contributes doctor checks |

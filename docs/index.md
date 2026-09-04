@@ -22,7 +22,6 @@ pve-toolbox/
 │   ├── backup-audit/
 │   ├── certificate-watch/
 │   ├── config-backup/
-│   ├── native-notifications/
 │   ├── restore-drill/
 │   ├── scrutiny-collectors/
 │   ├── storage-hygiene/
@@ -41,7 +40,6 @@ pve-toolbox/
 | [backup-audit](modules/backup-audit.md) | Read-only guest backup coverage, freshness, retention, and storage audit |
 | [certificate-watch](modules/certificate-watch.md) | Read-only cluster certificate, chain, hostname, and ACME health audit |
 | [config-backup](modules/config-backup.md) | Timestamped snapshots of `/etc/pve` and host config, reported to Discord |
-| [native-notifications](modules/native-notifications.md) | Owned native PVE targets and matchers with protected secrets and tested delivery |
 | [restore-drill](modules/restore-drill.md) | Guarded, isolated backup restore validation with recoverable cleanup |
 | [storage-hygiene](modules/storage-hygiene.md) | Read-only snapshots, content ownership, storage definitions, and capacity audit |
 | [upgrade-readiness](modules/upgrade-readiness.md) | Policy-driven, read-only PVE upgrade blocker and risk preflight |

@@ -27,7 +27,6 @@ pve-toolbox/
 │   ├── certificate-watch/   # read-only cluster TLS and ACME health audit
 │   ├── config-backup/       # snapshots /etc/pve and host config, reported to Discord
 │   ├── lxc-update/          # confirmed or scheduled container package updates
-│   ├── native-notifications/ # owned native PVE targets and matchers
 │   ├── restore-drill/       # guarded isolated backup restore validation
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
 │   ├── storage-hygiene/     # read-only snapshot, content, and capacity audit
@@ -58,7 +57,10 @@ restarting package-managed services; failed or interrupted migrations restore
 the prior files and remain retryable.
 When an upgrade transfers a toolbox-managed notification target and matcher to
 PVE ownership, it preserves the PVE objects and protected credentials, tests
-delivery, and then removes the obsolete toolbox copy of their configuration.
+delivery, and then removes the obsolete provisioning module and its private
+state. Manage notification targets and matchers in PVE; the package retains
+the independent `pve-toolbox-native-notify` sender. See
+[Native notifications](https://quwisky.github.io/pve-toolbox/native-notifications/).
 The trusted repository signing key has fingerprint
 `C354 8BC5 2A3D 5375 57DB 2A7F 84A4 3B72 AE04 34F2`.
 
@@ -125,7 +127,6 @@ without regenerating anything. See
 | [certificate-watch](https://quwisky.github.io/pve-toolbox/modules/certificate-watch/) | Checks cluster TLS expiry, hostname coverage, chains, reachability, and ACME task history |
 | [lxc-update](https://quwisky.github.io/pve-toolbox/modules/lxc-update/) | Updates local running Debian/Ubuntu containers through confirmed runs or an opt-in safe schedule, with exclusions, previews, and optional Discord reporting |
 | [config-backup](https://quwisky.github.io/pve-toolbox/modules/config-backup/) | Snapshots `/etc/pve` and host config into verified tar.gz archives on a timer |
-| [native-notifications](https://quwisky.github.io/pve-toolbox/modules/native-notifications/) | Provisions owned PVE notification targets and matchers with protected credentials and rollback |
 | [restore-drill](https://quwisky.github.io/pve-toolbox/modules/restore-drill/) | Plans and explicitly runs isolated, ownership-checked VM or container restore drills |
 | [storage-hygiene](https://quwisky.github.io/pve-toolbox/modules/storage-hygiene/) | Audits old snapshots, unreferenced-looking storage, stale content, and capacity pressure without cleanup |
 | [upgrade-readiness](https://quwisky.github.io/pve-toolbox/modules/upgrade-readiness/) | Reports repository, package, space, cluster, service, storage, and backup blockers before upgrades |
