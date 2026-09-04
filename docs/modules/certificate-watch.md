@@ -64,8 +64,9 @@ if jq -e '.results[] | select(.id | startswith("module.certificate-watch."))
 fi
 ```
 
-The helper is installed by `native-notifications`. Sending remains an explicit
-monitoring action; running doctor alone never sends anything.
+The Debian package installs the helper independently of notification target
+provisioning. Sending remains an explicit monitoring action; running doctor
+alone never sends anything.
 
 ## Limitations
 

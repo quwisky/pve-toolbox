@@ -281,12 +281,12 @@ printf '%s\n' \
     'sub notify { my ($severity, $template, $data, $fields) = @_; print join("|", $severity, $template, $data->{title}, $data->{message}, $fields->{type}); }' \
     '1;' > "$fake_perl/PVE/Notify.pm"
 helper_output=$(PERL5LIB="$fake_perl" \
-    "$ROOT/modules/native-notifications/pve-toolbox-native-notify" \
+    "$ROOT/scripts/pve-toolbox-native-notify" \
     warning 'quoted "title"' $'line one\nline two')
 [[ $helper_output == $'warning|pve-toolbox|quoted "title"|line one\nline two|pve-toolbox' ]] \
     || fail "shared helper mangled notification data: $helper_output"
 rc=0
-PERL5LIB="$fake_perl" "$ROOT/modules/native-notifications/pve-toolbox-native-notify" \
+PERL5LIB="$fake_perl" "$ROOT/scripts/pve-toolbox-native-notify" \
     critical title message >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 64 ]] || fail "shared helper accepted an invalid severity"
 pass "shared helper uses the native matcher path safely"

@@ -27,7 +27,7 @@ pve-toolbox/
 │   ├── certificate-watch/   # read-only cluster TLS and ACME health audit
 │   ├── config-backup/       # snapshots /etc/pve and host config, reported to Discord
 │   ├── lxc-update/          # confirmed or scheduled container package updates
-│   ├── native-notifications/ # owned native PVE targets, matchers, and shared sender
+│   ├── native-notifications/ # owned native PVE targets and matchers
 │   ├── restore-drill/       # guarded isolated backup restore validation
 │   ├── scrutiny-collectors/ # SMART/ZFS/MDADM collectors for a remote Scrutiny
 │   ├── storage-hygiene/     # read-only snapshot, content, and capacity audit
@@ -35,6 +35,8 @@ pve-toolbox/
 │   ├── zfs-scrub/           # scheduled scrub per pool, reported to Discord
 │   └── zfs-replication/     # syncoid jobs on a timer, reported to Discord
 ├── migrations/              # ordered package configuration migrations
+├── scripts/                 # package helpers and installation scripts
+├── share/                   # package-owned notification templates
 ├── completions/             # bash + zsh completion, installed by `link`
 ├── tests/                   # what `make test` runs, incl. a driven ui test
 ├── docs/                    # mkdocs-material sources
@@ -54,6 +56,9 @@ fingerprint, configures the signed `trixie` repository, and installs the
 Package upgrades back up and migrate older toolbox configuration before
 restarting package-managed services; failed or interrupted migrations restore
 the prior files and remain retryable.
+When an upgrade transfers a toolbox-managed notification target and matcher to
+PVE ownership, it preserves the PVE objects and protected credentials, tests
+delivery, and then removes the obsolete toolbox copy of their configuration.
 The trusted repository signing key has fingerprint
 `C354 8BC5 2A3D 5375 57DB 2A7F 84A4 3B72 AE04 34F2`.
 

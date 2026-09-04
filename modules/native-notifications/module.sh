@@ -28,6 +28,22 @@ NT_ERROR=""
 
 _nt_dir() { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}" "$MODULE_NAME"; }
 _nt_src() { printf '%s/%s' "$(_nt_dir)" "$1"; }
+_nt_helper_src() {
+    local root=${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}
+    if [[ -f $root/scripts/$NT_HELPER ]]; then
+        printf '%s/scripts/%s' "$root" "$NT_HELPER"
+    else
+        printf '/usr/bin/%s' "$NT_HELPER"
+    fi
+}
+_nt_template_src() {
+    local root=${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}
+    if [[ -f $root/share/notification-templates/$1 ]]; then
+        printf '%s/share/notification-templates/%s' "$root" "$1"
+    else
+        printf '/usr/share/pve-toolbox/notification-templates/%s' "$1"
+    fi
+}
 _nt_template_dir() { printf '%s' "${NT_TEMPLATE_DIR:-/etc/pve/notification-templates/default}"; }
 _nt_pve_dir() { printf '%s' "${NT_PVE_DIR:-/etc/pve}"; }
 
@@ -283,9 +299,9 @@ _nt_install_assets() {
     local template_dir file
     template_dir=$(_nt_template_dir)
     mkdir -p "$TOOLBOX_BIN_DIR" "$template_dir"
-    install -m 0755 "$(_nt_src "$NT_HELPER")" "$TOOLBOX_BIN_DIR/$NT_HELPER"
+    install -m 0755 "$(_nt_helper_src)" "$TOOLBOX_BIN_DIR/$NT_HELPER"
     for file in "${NT_TEMPLATE_FILES[@]}"; do
-        install -m 0644 "$(_nt_src "$file")" "$template_dir/$file"
+        install -m 0644 "$(_nt_template_src "$file")" "$template_dir/$file"
     done
 }
 
@@ -349,9 +365,9 @@ _nt_assets_owned_or_absent() {
 _nt_assets_current() {
     local template_dir file
     template_dir=$(_nt_template_dir)
-    cmp -s "$(_nt_src "$NT_HELPER")" "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
+    cmp -s "$(_nt_helper_src)" "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
     for file in "${NT_TEMPLATE_FILES[@]}"; do
-        cmp -s "$(_nt_src "$file")" "$template_dir/$file" || return 1
+        cmp -s "$(_nt_template_src "$file")" "$template_dir/$file" || return 1
     done
 }
 
