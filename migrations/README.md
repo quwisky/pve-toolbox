@@ -5,9 +5,10 @@ Files named `NNN-description.sh` in this directory are installed under
 package upgrades. They are trusted package code and must be side-effect free
 when sourced.
 
-Each fragment defines two indexed arrays and one function:
+Each fragment defines a target version, two indexed arrays, and one function:
 
 ```bash
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=(/etc/pve-toolbox/example.conf)
 MIGRATION_UNITS=(pve-toolbox-example.timer)
 
@@ -16,6 +17,11 @@ migration_apply() {
     printf 'FORMAT=current\n' > /etc/pve-toolbox/example.conf
 }
 ```
+
+`MIGRATION_TARGET_VERSION` is the first package version whose existing
+installations need the migration. The runner applies the fragment only when
+the previously installed Debian version is older. This keeps configuration
+created by a fresh install from being migrated on a later upgrade.
 
 `MIGRATION_FILES` lists every regular file the migration may replace or create
 directly under `/etc/pve-toolbox` or `/var/lib/pve-toolbox`. The runner's own

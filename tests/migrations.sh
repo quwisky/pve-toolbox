@@ -25,12 +25,36 @@ run_migrations 0.5.0
     || fail "an empty upgrade created migration data"
 pass "an upgrade with no migrations is a no-op"
 
+mkdir -p "$WORK/fresh-migrations" "$WORK/fresh-config"
+printf 'FORMAT=current\n' > "$WORK/fresh-config/current.conf"
+cat > "$WORK/fresh-migrations/005-already-current.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.5.0
+MIGRATION_FILES=("$PVE_TOOLBOX_CONF_DIR/current.conf")
+MIGRATION_UNITS=()
+migration_apply() { printf 'FORMAT=incorrect\n' > "$PVE_TOOLBOX_CONF_DIR/current.conf"; }
+MIGRATION
+chmod 0644 "$WORK/fresh-migrations/005-already-current.sh"
+env \
+    PVE_TOOLBOX_MIGRATION_DIR="$WORK/fresh-migrations" \
+    PVE_TOOLBOX_CONF_DIR="$WORK/fresh-config" \
+    PVE_TOOLBOX_STATE_DIR="$WORK/fresh-state" \
+    PVE_TOOLBOX_MIGRATION_BACKUP_DIR="$WORK/fresh-backups" \
+    PVE_TOOLBOX_RUN_DIR="$WORK/fresh-run" \
+    "$ROOT/scripts/run-migrations.sh" 0.5.0 >/dev/null
+[[ $(<"$WORK/fresh-config/current.conf") == FORMAT=current \
+    && ! -e $WORK/fresh-backups ]] \
+    || fail "a migration bundled with the installed version ran later"
+grep -Fxq 005-already-current "$WORK/fresh-state/migrations.state" \
+    || fail "an inapplicable migration was not marked complete"
+pass "migrations already included by the previous version are skipped"
+
 mkdir -p "$WORK/config" "$WORK/state"
 printf 'FORMAT=old\n' > "$WORK/config/example.conf"
 chmod 0600 "$WORK/config/example.conf"
 printf 'CACHE=old\n' > "$WORK/state/example.state"
 chmod 0644 "$WORK/state/example.state"
 cat > "$WORK/migrations/010-example.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=(
     "$PVE_TOOLBOX_CONF_DIR/example.conf"
     "$PVE_TOOLBOX_STATE_DIR/example.state"
@@ -80,6 +104,7 @@ pass "completed transactions tolerate interruption during finalization"
 printf 'VALUE=original\n' > "$WORK/config/failing.conf"
 chmod 0640 "$WORK/config/failing.conf"
 cat > "$WORK/migrations/020-failing.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=("$PVE_TOOLBOX_CONF_DIR/failing.conf")
 MIGRATION_UNITS=()
 migration_apply() {
@@ -114,6 +139,7 @@ pass "failed migrations roll back and can be retried"
 
 printf 'VALUE=before-interruption\n' > "$WORK/config/interrupted.conf"
 cat > "$WORK/migrations/030-interrupted.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=("$PVE_TOOLBOX_CONF_DIR/interrupted.conf")
 MIGRATION_UNITS=()
 migration_apply() {
@@ -165,7 +191,9 @@ cat > "$WORK/bin/systemctl" <<'SYSTEMCTL'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$PVE_TOOLBOX_SYSTEMCTL_LOG"
 case $1 in
-    is-enabled|is-active) exit 0 ;;
+    is-enabled) [[ ${PVE_TOOLBOX_FAIL_DISABLE:-0} == 1 ]] && exit 1; exit 0 ;;
+    is-active) exit 0 ;;
+    disable) [[ ${PVE_TOOLBOX_FAIL_DISABLE:-0} == 1 ]] && exit 1; exit 0 ;;
     stop|daemon-reload|enable|start) exit 0 ;;
     *) exit 1 ;;
 esac
@@ -177,6 +205,7 @@ export PATH
 
 printf 'VALUE=unit-original\n' > "$WORK/config/unit.conf"
 cat > "$WORK/migrations/040-unit-failure.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=("$PVE_TOOLBOX_CONF_DIR/unit.conf")
 MIGRATION_UNITS=(pve-toolbox-example.timer)
 migration_apply() {
@@ -199,6 +228,7 @@ pass "failed migrations restore declared unit state"
 
 rm -f -- "$WORK/migrations/040-unit-failure.sh"
 cat > "$WORK/migrations/045-unit-success.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=("$PVE_TOOLBOX_CONF_DIR/unit.conf")
 MIGRATION_UNITS=(pve-toolbox-example.timer)
 migration_apply() {
@@ -216,7 +246,28 @@ run_migrations 0.5.0 >/dev/null
 pass "successful migrations restore declared unit state"
 
 rm -f -- "$WORK/migrations/045-unit-success.sh"
+printf 'VALUE=restore-original\n' > "$WORK/config/restore-unit.conf"
+cat > "$WORK/migrations/047-unit-restore-failure.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
+MIGRATION_FILES=("$PVE_TOOLBOX_CONF_DIR/restore-unit.conf")
+MIGRATION_UNITS=(pve-toolbox-disabled.timer)
+migration_apply() {
+    printf 'VALUE=restore-partial\n' > "$PVE_TOOLBOX_CONF_DIR/restore-unit.conf"
+}
+MIGRATION
+chmod 0644 "$WORK/migrations/047-unit-restore-failure.sh"
+export PVE_TOOLBOX_FAIL_DISABLE=1
+if run_migrations 0.5.0 >/dev/null 2>&1; then
+    fail "a unit restoration failure was reported as successful"
+fi
+unset PVE_TOOLBOX_FAIL_DISABLE
+[[ $(<"$WORK/config/restore-unit.conf") == VALUE=restore-original ]] \
+    || fail "unit restoration failure did not restore configuration"
+pass "unit restoration failures stop and roll back migration"
+
+rm -f -- "$WORK/migrations/047-unit-restore-failure.sh"
 cat > "$WORK/migrations/050-lock.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=()
 MIGRATION_UNITS=()
 migration_apply() {
@@ -242,6 +293,7 @@ done
     || { kill "$locking_pid" 2>/dev/null || true; fail "locking fixture never entered migration"; }
 mkdir -p "$WORK/second-migrations"
 cat > "$WORK/second-migrations/001-noop.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=()
 MIGRATION_UNITS=()
 migration_apply() { :; }
@@ -265,11 +317,13 @@ pass "concurrent migration runners are rejected"
 
 mkdir -p "$WORK/order-migrations"
 cat > "$WORK/order-migrations/070-later.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=()
 MIGRATION_UNITS=()
 migration_apply() { printf 'later\n' >> "$PVE_TOOLBOX_STATE_DIR/order"; }
 MIGRATION
 cat > "$WORK/order-migrations/060-earlier.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=()
 MIGRATION_UNITS=()
 migration_apply() { printf 'earlier\n' >> "$PVE_TOOLBOX_STATE_DIR/order"; }
@@ -288,6 +342,7 @@ pass "pending migrations run in filename order"
 
 mkdir -p "$WORK/unsafe-migrations"
 cat > "$WORK/unsafe-migrations/080-writable.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=()
 MIGRATION_UNITS=()
 migration_apply() { : > "$PVE_TOOLBOX_STATE_DIR/unsafe-applied"; }
@@ -326,3 +381,50 @@ unsafe_output=$(env \
 [[ $(stat -c '%a' "$WORK/unsafe-backup-target") == 755 ]] \
     || fail "an unsafe backup target was mutated"
 pass "unsafe transaction directories are rejected"
+
+mkdir -p "$WORK/result-migrations" "$WORK/result-config"
+printf 'outside\n' > "$WORK/outside-result"
+cat > "$WORK/result-migrations/090-unsafe-result.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
+MIGRATION_FILES=("$PVE_TOOLBOX_CONF_DIR/result.conf")
+MIGRATION_UNITS=()
+migration_apply() { ln -s "$WORK/outside-result" "$PVE_TOOLBOX_CONF_DIR/result.conf"; }
+MIGRATION
+chmod 0644 "$WORK/result-migrations/090-unsafe-result.sh"
+result_output=""
+result_rc=0
+result_output=$(env \
+    WORK="$WORK" \
+    PVE_TOOLBOX_MIGRATION_DIR="$WORK/result-migrations" \
+    PVE_TOOLBOX_CONF_DIR="$WORK/result-config" \
+    PVE_TOOLBOX_STATE_DIR="$WORK/result-state" \
+    PVE_TOOLBOX_MIGRATION_BACKUP_DIR="$WORK/result-backups" \
+    PVE_TOOLBOX_RUN_DIR="$WORK/result-run" \
+    "$ROOT/scripts/run-migrations.sh" 0.5.0 2>&1) || result_rc=$?
+[[ $result_rc -ne 0 && $result_output == *'unsafe migration result'* \
+    && ! -e $WORK/result-config/result.conf ]] \
+    || fail "an unsafe migration result was accepted or not rolled back"
+pass "unsafe migration results are rejected and rolled back"
+
+mkdir -p "$WORK/real-migration-dir"
+cat > "$WORK/real-migration-dir/100-symlinked-directory.sh" <<'MIGRATION'
+MIGRATION_TARGET_VERSION=0.6.0
+MIGRATION_FILES=()
+MIGRATION_UNITS=()
+migration_apply() { : > "$PVE_TOOLBOX_STATE_DIR/symlinked-dir-applied"; }
+MIGRATION
+chmod 0644 "$WORK/real-migration-dir/100-symlinked-directory.sh"
+ln -s "$WORK/real-migration-dir" "$WORK/symlinked-migration-dir"
+directory_output=""
+directory_rc=0
+directory_output=$(env \
+    PVE_TOOLBOX_MIGRATION_DIR="$WORK/symlinked-migration-dir" \
+    PVE_TOOLBOX_CONF_DIR="$WORK/directory-config" \
+    PVE_TOOLBOX_STATE_DIR="$WORK/directory-state" \
+    PVE_TOOLBOX_MIGRATION_BACKUP_DIR="$WORK/directory-backups" \
+    PVE_TOOLBOX_RUN_DIR="$WORK/directory-run" \
+    "$ROOT/scripts/run-migrations.sh" 0.5.0 2>&1) || directory_rc=$?
+[[ $directory_rc -ne 0 && $directory_output == *'unsafe migration directory'* \
+    && ! -e $WORK/directory-state/symlinked-dir-applied ]] \
+    || fail "a symlinked migration directory was accepted"
+pass "symlinked migration directories are rejected"

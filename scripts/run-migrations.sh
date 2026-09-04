@@ -15,7 +15,14 @@ BACKUP_ROOT=${PVE_TOOLBOX_MIGRATION_BACKUP_DIR:-/var/backups/pve-toolbox/migrati
 RUN_DIR=${PVE_TOOLBOX_RUN_DIR:-/run/pve-toolbox}
 PREVIOUS_VERSION=$1
 
-[[ -d $MIGRATION_DIR ]] || exit 0
+if [[ ! -e $MIGRATION_DIR && ! -L $MIGRATION_DIR ]]; then
+    exit 0
+fi
+[[ -d $MIGRATION_DIR && ! -L $MIGRATION_DIR ]] || {
+    printf 'pve-toolbox: refusing unsafe migration directory: %s\n' \
+        "$MIGRATION_DIR" >&2
+    exit 1
+}
 
 shopt -s nullglob
 migrations=("$MIGRATION_DIR"/*.sh)
@@ -23,6 +30,10 @@ migrations=("$MIGRATION_DIR"/*.sh)
 
 command -v flock >/dev/null 2>&1 \
     || { printf 'pve-toolbox: flock is required to run package migrations\n' >&2; exit 69; }
+command -v dpkg >/dev/null 2>&1 \
+    || { printf 'pve-toolbox: dpkg is required to run package migrations\n' >&2; exit 69; }
+dpkg --validate-version "$PREVIOUS_VERSION" >/dev/null 2>&1 \
+    || { printf 'pve-toolbox: invalid previous package version: %s\n' "$PREVIOUS_VERSION" >&2; exit 1; }
 
 ensure_safe_directory() {
     local path=$1 mode=$2
@@ -136,6 +147,17 @@ preserve_file_metadata() {
     done < "$backup/manifest"
 }
 
+validate_file_results() {
+    local path
+    for path in "${MIGRATION_FILES[@]}"; do
+        managed_file_path "$path" || return 1
+        if [[ -L $path || ( -e $path && ! -f $path ) ]]; then
+            printf 'pve-toolbox: unsafe migration result: %s\n' "$path" >&2
+            return 1
+        fi
+    done
+}
+
 restore_files() {
     local backup=$1 kind path relative
     [[ $backup == "$BACKUP_ROOT/"* && -d $backup && ! -L $backup \
@@ -166,17 +188,32 @@ restore_files() {
 restore_units() {
     local backup=$1 unit enabled active failed=0
     [[ -s $backup/units ]] || return 0
-    systemctl daemon-reload >/dev/null 2>&1 || return 1
+    systemctl daemon-reload >/dev/null 2>&1 || {
+        printf 'pve-toolbox: could not reload systemd during unit restoration\n' >&2
+        return 1
+    }
     while IFS=$'\t' read -r unit enabled active; do
         if [[ $enabled -eq 1 ]]; then
-            systemctl enable "$unit" >/dev/null 2>&1 || failed=1
+            systemctl enable "$unit" >/dev/null 2>&1 || {
+                printf 'pve-toolbox: could not restore enabled unit: %s\n' "$unit" >&2
+                failed=1
+            }
         else
-            systemctl disable "$unit" >/dev/null 2>&1 || true
+            systemctl disable "$unit" >/dev/null 2>&1 || {
+                printf 'pve-toolbox: could not restore disabled unit: %s\n' "$unit" >&2
+                failed=1
+            }
         fi
         if [[ $active -eq 1 ]]; then
-            systemctl start "$unit" >/dev/null 2>&1 || failed=1
+            systemctl start "$unit" >/dev/null 2>&1 || {
+                printf 'pve-toolbox: could not restore active unit: %s\n' "$unit" >&2
+                failed=1
+            }
         else
-            systemctl stop "$unit" >/dev/null 2>&1 || true
+            systemctl stop "$unit" >/dev/null 2>&1 || {
+                printf 'pve-toolbox: could not restore inactive unit: %s\n' "$unit" >&2
+                failed=1
+            }
         fi
     done < "$backup/units"
     [[ $failed -eq 0 ]]
@@ -231,7 +268,7 @@ migration_failed() {
 }
 
 run_migration() {
-    local file=$1 id backup mode
+    local file=$1 id backup mode declaration
     id=${file##*/}; id=${id%.sh}
     [[ $id =~ ^[0-9][0-9A-Za-z._-]*$ ]] \
         || { printf 'pve-toolbox: invalid migration filename: %s\n' "${file##*/}" >&2; return 1; }
@@ -243,16 +280,26 @@ run_migration() {
         || { printf 'pve-toolbox: migration is group/world writable: %s\n' "$file" >&2; return 1; }
 
     unset -f migration_apply 2>/dev/null || true
-    unset MIGRATION_FILES MIGRATION_UNITS
+    unset MIGRATION_TARGET_VERSION MIGRATION_FILES MIGRATION_UNITS
+    declare -g MIGRATION_TARGET_VERSION=
     declare -ag MIGRATION_FILES=() MIGRATION_UNITS=()
     # Package-owned migration fragments only define metadata and migration_apply.
     # shellcheck source=/dev/null
     source "$file"
     declare -F migration_apply >/dev/null \
         || { printf 'pve-toolbox: migration has no migration_apply: %s\n' "$file" >&2; return 1; }
+    declaration=$(declare -p MIGRATION_TARGET_VERSION 2>/dev/null)
+    [[ $declaration == 'declare -- '* && -n $MIGRATION_TARGET_VERSION ]] \
+        || { printf 'pve-toolbox: migration has no target version: %s\n' "$file" >&2; return 1; }
+    dpkg --validate-version "$MIGRATION_TARGET_VERSION" >/dev/null 2>&1 \
+        || { printf 'pve-toolbox: migration has invalid target version: %s\n' "$file" >&2; return 1; }
     [[ $(declare -p MIGRATION_FILES 2>/dev/null) == 'declare -a '* \
         && $(declare -p MIGRATION_UNITS 2>/dev/null) == 'declare -a '* ]] \
         || { printf 'pve-toolbox: migration metadata must use indexed arrays: %s\n' "$file" >&2; return 1; }
+    if dpkg --compare-versions "$PREVIOUS_VERSION" ge "$MIGRATION_TARGET_VERSION"; then
+        record_completed "$id"
+        return 0
+    fi
 
     ensure_safe_directory "$BACKUP_ROOT" 0700
     backup="$BACKUP_ROOT/$id-$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -275,7 +322,8 @@ run_migration() {
         migration_failed "$id" "$backup" 1
         return 1
     fi
-    if ! preserve_file_metadata "$backup" \
+    if ! validate_file_results \
+        || ! preserve_file_metadata "$backup" \
         || ! restore_units "$backup" \
         || ! record_completed "$id"; then
         migration_failed "$id" "$backup" 1

@@ -208,7 +208,9 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
     sed -i "s/^Version: .*/Version: $success_version/" \
         "$WORK/upgrade-success/DEBIAN/control"
     rm -f -- "$WORK/upgrade-success/DEBIAN/md5sums"
-    cat > "$WORK/upgrade-success/usr/lib/pve-toolbox/migrations/900-package-test.sh" <<'MIGRATION'
+    success_migration="$WORK/upgrade-success/usr/lib/pve-toolbox/migrations/900-package-test.sh"
+    printf 'MIGRATION_TARGET_VERSION=%q\n' "$success_version" > "$success_migration"
+    cat >> "$success_migration" <<'MIGRATION'
 MIGRATION_FILES=(/etc/pve-toolbox/migration-test.conf)
 MIGRATION_UNITS=()
 migration_apply() {
@@ -219,8 +221,7 @@ migration_apply() {
     printf 'applied\n' >> /var/lib/pve-toolbox/migration-test.calls
 }
 MIGRATION
-    chmod 0644 \
-        "$WORK/upgrade-success/usr/lib/pve-toolbox/migrations/900-package-test.sh"
+    chmod 0644 "$success_migration"
     dpkg-deb --build "$WORK/upgrade-success" "$WORK/upgrade-success.deb" >/dev/null
     BACKUP_TOUCHED=1
     dpkg -i "$WORK/upgrade-success.deb" >/dev/null
@@ -247,7 +248,9 @@ MIGRATION
     sed -i "s/^Version: .*/Version: $retry_version/" \
         "$WORK/upgrade-retry/DEBIAN/control"
     rm -f -- "$WORK/upgrade-retry/DEBIAN/md5sums"
-    cat > "$WORK/upgrade-retry/usr/lib/pve-toolbox/migrations/910-package-retry.sh" <<'MIGRATION'
+    retry_migration="$WORK/upgrade-retry/usr/lib/pve-toolbox/migrations/910-package-retry.sh"
+    printf 'MIGRATION_TARGET_VERSION=%q\n' "$retry_version" > "$retry_migration"
+    cat >> "$retry_migration" <<'MIGRATION'
 MIGRATION_FILES=(/etc/pve-toolbox/migration-retry.conf)
 MIGRATION_UNITS=()
 migration_apply() {
@@ -256,8 +259,7 @@ migration_apply() {
     printf 'RETRY=current\n' > /etc/pve-toolbox/migration-retry.conf
 }
 MIGRATION
-    chmod 0644 \
-        "$WORK/upgrade-retry/usr/lib/pve-toolbox/migrations/910-package-retry.sh"
+    chmod 0644 "$retry_migration"
     dpkg-deb --build "$WORK/upgrade-retry" "$WORK/upgrade-retry.deb" >/dev/null
     retry_output=""
     retry_rc=0
@@ -279,6 +281,60 @@ MIGRATION
     grep -Fxq 910-package-retry /var/lib/pve-toolbox/migrations.state \
         || fail "retried package migration was not recorded"
     pass "dpkg upgrades migrate, roll back, and retry configuration"
+
+    printf 'INTERRUPTED=old\n' > /etc/pve-toolbox/migration-interrupted.conf
+    chmod 0640 /etc/pve-toolbox/migration-interrupted.conf
+    dpkg-deb --raw-extract "$deb" "$WORK/upgrade-interrupted"
+    interrupted_version="${expected_version}+migrationtest3"
+    sed -i "s/^Version: .*/Version: $interrupted_version/" \
+        "$WORK/upgrade-interrupted/DEBIAN/control"
+    rm -f -- "$WORK/upgrade-interrupted/DEBIAN/md5sums"
+    interrupted_migration="$WORK/upgrade-interrupted/usr/lib/pve-toolbox/migrations/920-package-interrupted.sh"
+    printf 'MIGRATION_TARGET_VERSION=%q\n' "$interrupted_version" \
+        > "$interrupted_migration"
+    cat >> "$interrupted_migration" <<'MIGRATION'
+MIGRATION_FILES=(/etc/pve-toolbox/migration-interrupted.conf)
+MIGRATION_UNITS=()
+migration_apply() {
+    if [[ ! -f /var/lib/pve-toolbox/resume-package-interruption ]]; then
+        printf 'INTERRUPTED=partial\n' > /etc/pve-toolbox/migration-interrupted.conf
+        : > /var/lib/pve-toolbox/package-interruption-ready
+        while true; do sleep 0.1; done
+    fi
+    cat /etc/pve-toolbox/migration-interrupted.conf \
+        > /var/lib/pve-toolbox/package-interruption-observed
+    printf 'INTERRUPTED=current\n' > /etc/pve-toolbox/migration-interrupted.conf
+}
+MIGRATION
+    chmod 0644 "$interrupted_migration"
+    dpkg-deb --build "$WORK/upgrade-interrupted" \
+        "$WORK/upgrade-interrupted.deb" >/dev/null
+    setsid dpkg -i "$WORK/upgrade-interrupted.deb" >/dev/null 2>&1 &
+    interrupted_pid=$!
+    for _ in {1..100}; do
+        [[ -e /var/lib/pve-toolbox/package-interruption-ready ]] && break
+        sleep 0.05
+    done
+    if [[ ! -e /var/lib/pve-toolbox/package-interruption-ready ]]; then
+        kill -KILL -- "-$interrupted_pid" 2>/dev/null || true
+        wait "$interrupted_pid" 2>/dev/null || true
+        fail "package interruption fixture never entered its migration"
+    fi
+    kill -KILL -- "-$interrupted_pid"
+    wait "$interrupted_pid" 2>/dev/null || true
+    [[ $(</etc/pve-toolbox/migration-interrupted.conf) == INTERRUPTED=partial \
+        && -f /var/lib/pve-toolbox/migration.pending ]] \
+        || fail "interrupted package upgrade left no recoverable transaction"
+    : > /var/lib/pve-toolbox/resume-package-interruption
+    dpkg --configure pve-toolbox >/dev/null
+    [[ $(</var/lib/pve-toolbox/package-interruption-observed) == INTERRUPTED=old \
+        && $(</etc/pve-toolbox/migration-interrupted.conf) == INTERRUPTED=current ]] \
+        || fail "package retry did not restore before resuming interruption"
+    [[ ! -e /var/lib/pve-toolbox/migration.pending ]] \
+        || fail "package retry retained its pending transaction"
+    grep -Fxq 920-package-interrupted /var/lib/pve-toolbox/migrations.state \
+        || fail "resumed package migration was not recorded"
+    pass "dpkg upgrade interruption restores before retry"
 
     printf 'keep\n' > /etc/pve-toolbox/package-test.conf
     printf 'keep\n' > /var/lib/pve-toolbox/package-test.state
