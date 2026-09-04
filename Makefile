@@ -22,6 +22,7 @@ test: syntax
 	@./tests/lib.sh
 	@./tests/migrations.sh
 	@./tests/native-notification-migration.sh
+	@./tests/native-zfs-scrub-migration.sh
 	@./tests/pve.sh
 	@./tests/report.sh
 	@./tests/doctor.sh

@@ -61,6 +61,8 @@ delivery, and then removes the obsolete provisioning module and its private
 state. Manage notification targets and matchers in PVE; the package retains
 the independent `pve-toolbox-native-notify` sender. See
 [Native notifications](https://quwisky.github.io/pve-toolbox/native-notifications/).
+Existing toolbox ZFS scrub schedules are also validated and preserved through
+native Debian ZFS timer overrides without starting a scrub during the upgrade.
 The trusted repository signing key has fingerprint
 `C354 8BC5 2A3D 5375 57DB 2A7F 84A4 3B72 AE04 34F2`.
 

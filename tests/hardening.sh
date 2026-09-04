@@ -192,8 +192,22 @@ pass "zfs-replication locks and fixups fail closed"
     if _zs_enable tank >/dev/null 2>&1; then
         fail "scrub timer enable failure was swallowed"
     fi
+
+    state_set zfs-scrub POOLS 'tank backup'
+    state_set zfs-scrub SCHEDULE_OWNER native
+    state_set zfs-scrub NATIVE_TIMER_TEMPLATE zfs-scrub-weekly@.timer
+    require_root() { :; }
+    if ( module_install ) >/dev/null 2>&1; then
+        fail "migrated native schedules could be claimed by module install"
+    fi
+    native_update=$(module_update --check)
+    [[ $native_update == *'managed by native ZFS timers'* ]] \
+        || fail "module update did not preserve migrated native schedules"
+    systemctl() { [[ $1 == is-enabled && $2 == --quiet ]]; }
+    [[ $(module_status) == 'native timers  [tank backup]' ]] \
+        || fail "module status did not report native schedule ownership"
 ) || exit 1
-pass "zfs-scrub rejects schedule collisions and timer failures"
+pass "zfs-scrub rejects unsafe timers and preserves native ownership"
 
 # --- scrutiny collector install and update transactions --------------------
 

@@ -17,6 +17,7 @@ else
 fi
 CONF_DIR=${PVE_TOOLBOX_CONF_DIR:-/etc/pve-toolbox}
 STATE_DIR=${PVE_TOOLBOX_STATE_DIR:-/var/lib/pve-toolbox}
+SYSTEMD_DIR=${PVE_TOOLBOX_SYSTEMD_DIR:-/etc/systemd/system}
 BACKUP_ROOT=${PVE_TOOLBOX_MIGRATION_BACKUP_DIR:-/var/backups/pve-toolbox/migrations}
 RUN_DIR=${PVE_TOOLBOX_RUN_DIR:-/run/pve-toolbox}
 PREVIOUS_VERSION=$1
@@ -93,12 +94,30 @@ completed() {
         && grep -Fqx -- "$1" "$STATE_DIR/migrations.state"
 }
 
-managed_file_path() {
+managed_data_file_path() {
     local path=$1 parent=${1%/*}
     [[ $path == /* && $path != *$'\n'* && $path != *$'\t'* ]] || return 1
     [[ $parent == "$CONF_DIR" || $parent == "$STATE_DIR" ]] || return 1
     [[ $path != "$STATE_DIR/migrations.state" \
         && $path != "$STATE_DIR/migration.pending" ]]
+}
+
+managed_systemd_file_path() {
+    local path=$1 parent relative canonical_systemd_dir
+    canonical_systemd_dir=$(realpath -e -- "$SYSTEMD_DIR" 2>/dev/null) || return 1
+    [[ $path == /* && $path != *$'\n'* && $path != *$'\t'* \
+        && -d $SYSTEMD_DIR && ! -L $SYSTEMD_DIR \
+        && $canonical_systemd_dir == "$SYSTEMD_DIR" ]] || return 1
+    relative=${path#"$SYSTEMD_DIR/"}
+    [[ $relative != "$path" \
+        && $relative =~ ^[A-Za-z0-9_.@:-]+\.timer\.d/override\.conf$ ]] \
+        || return 1
+    parent=${path%/*}
+    [[ ! -L $parent && ( ! -e $parent || -d $parent ) ]]
+}
+
+managed_file_path() {
+    managed_data_file_path "$1" || managed_systemd_file_path "$1"
 }
 
 record_completed() {
@@ -112,27 +131,37 @@ record_completed() {
     mv -f -- "$tmp" "$STATE_DIR/migrations.state"
 }
 
+backup_one_file() {
+    local backup=$1 path=$2 relative
+    if [[ -L $path || ( -e $path && ! -f $path ) ]]; then
+        printf 'pve-toolbox: refusing unsafe migration path: %s\n' "$path" >&2
+        return 1
+    fi
+    relative=${path#/}
+    if [[ -f $path ]]; then
+        mkdir -p -- "$backup/files/${relative%/*}"
+        cp -a -- "$path" "$backup/files/$relative"
+        printf 'present\t%s\n' "$path" >> "$backup/manifest"
+    else
+        printf 'absent\t%s\n' "$path" >> "$backup/manifest"
+    fi
+}
+
 backup_files() {
-    local backup=$1 path relative
+    local backup=$1 path
     mkdir -p -- "$backup/files"
     chmod 0700 -- "$backup" "$backup/files"
     : > "$backup/manifest"
     chmod 0600 -- "$backup/manifest"
     for path in "${MIGRATION_FILES[@]}"; do
-        managed_file_path "$path" \
+        managed_data_file_path "$path" \
             || { printf 'pve-toolbox: invalid migration path: %q\n' "$path" >&2; return 1; }
-        if [[ -L $path || ( -e $path && ! -f $path ) ]]; then
-            printf 'pve-toolbox: refusing unsafe migration path: %s\n' "$path" >&2
-            return 1
-        fi
-        if [[ -f $path ]]; then
-            relative=${path#/}
-            mkdir -p -- "$backup/files/${relative%/*}"
-            cp -a -- "$path" "$backup/files/$relative"
-            printf 'present\t%s\n' "$path" >> "$backup/manifest"
-        else
-            printf 'absent\t%s\n' "$path" >> "$backup/manifest"
-        fi
+        backup_one_file "$backup" "$path" || return 1
+    done
+    for path in "${MIGRATION_SYSTEMD_FILES[@]}"; do
+        managed_systemd_file_path "$path" \
+            || { printf 'pve-toolbox: invalid migration systemd path: %q\n' "$path" >&2; return 1; }
+        backup_one_file "$backup" "$path" || return 1
     done
 }
 
@@ -177,7 +206,14 @@ preserve_file_metadata() {
 validate_file_results() {
     local path
     for path in "${MIGRATION_FILES[@]}"; do
-        managed_file_path "$path" || return 1
+        managed_data_file_path "$path" || return 1
+        if [[ -L $path || ( -e $path && ! -f $path ) ]]; then
+            printf 'pve-toolbox: unsafe migration result: %s\n' "$path" >&2
+            return 1
+        fi
+    done
+    for path in "${MIGRATION_SYSTEMD_FILES[@]}"; do
+        managed_systemd_file_path "$path" || return 1
         if [[ -L $path || ( -e $path && ! -f $path ) ]]; then
             printf 'pve-toolbox: unsafe migration result: %s\n' "$path" >&2
             return 1
@@ -186,7 +222,7 @@ validate_file_results() {
 }
 
 restore_files() {
-    local backup=$1 kind path relative
+    local backup=$1 kind path relative parent
     [[ $backup == "$BACKUP_ROOT/"* && -d $backup && ! -L $backup \
         && -r $backup/manifest ]] || {
         printf 'pve-toolbox: migration backup is missing or unsafe: %s\n' "$backup" >&2
@@ -206,6 +242,10 @@ restore_files() {
             absent)
                 [[ ! -e $path || -f $path || -L $path ]] || return 1
                 rm -f -- "$path"
+                if managed_systemd_file_path "$path"; then
+                    parent=${path%/*}
+                    rmdir -- "$parent" 2>/dev/null || true
+                fi
                 ;;
             *) return 1 ;;
         esac
@@ -295,7 +335,7 @@ migration_failed() {
 }
 
 run_migration() {
-    local file=$1 id backup mode declaration
+    local file=$1 id backup mode declaration restore_after_apply=1
     id=${file##*/}; id=${id%.sh}
     [[ $id =~ ^[0-9][0-9A-Za-z._-]*$ ]] \
         || { printf 'pve-toolbox: invalid migration filename: %s\n' "${file##*/}" >&2; return 1; }
@@ -310,11 +350,14 @@ run_migration() {
     (( (8#$mode & 022) == 0 )) \
         || { printf 'pve-toolbox: migration is group/world writable: %s\n' "$file" >&2; return 1; }
 
-    unset -f migration_apply 2>/dev/null || true
-    unset MIGRATION_TARGET_VERSION MIGRATION_FILES MIGRATION_UNITS
+    unset -f migration_apply migration_prepare 2>/dev/null || true
+    unset MIGRATION_TARGET_VERSION MIGRATION_FILES MIGRATION_SYSTEMD_FILES \
+        MIGRATION_UNITS MIGRATION_KEEP_UNIT_STATE
     declare -g MIGRATION_TARGET_VERSION=
-    declare -ag MIGRATION_FILES=() MIGRATION_UNITS=()
-    # Package-owned migration fragments only define metadata and migration_apply.
+    declare -ag MIGRATION_FILES=() MIGRATION_SYSTEMD_FILES=() MIGRATION_UNITS=()
+    declare -gi MIGRATION_KEEP_UNIT_STATE=0
+    # Package-owned fragments define metadata, an optional read-only prepare
+    # hook, and migration_apply.
     # shellcheck source=/dev/null
     source "$file"
     declare -F migration_apply >/dev/null \
@@ -324,13 +367,21 @@ run_migration() {
         || { printf 'pve-toolbox: migration has no target version: %s\n' "$file" >&2; return 1; }
     dpkg --validate-version "$MIGRATION_TARGET_VERSION" >/dev/null 2>&1 \
         || { printf 'pve-toolbox: migration has invalid target version: %s\n' "$file" >&2; return 1; }
-    [[ $(declare -p MIGRATION_FILES 2>/dev/null) == 'declare -a '* \
-        && $(declare -p MIGRATION_UNITS 2>/dev/null) == 'declare -a '* ]] \
-        || { printf 'pve-toolbox: migration metadata must use indexed arrays: %s\n' "$file" >&2; return 1; }
     if dpkg --compare-versions "$PREVIOUS_VERSION" ge "$MIGRATION_TARGET_VERSION"; then
         record_completed "$id"
         return 0
     fi
+    if declare -F migration_prepare >/dev/null && ! migration_prepare; then
+        printf 'pve-toolbox: migration preparation failed: %s\n' "$file" >&2
+        return 1
+    fi
+    [[ $(declare -p MIGRATION_FILES 2>/dev/null) == 'declare -a '* \
+        && $(declare -p MIGRATION_SYSTEMD_FILES 2>/dev/null) == 'declare -a '* \
+        && $(declare -p MIGRATION_UNITS 2>/dev/null) == 'declare -a '* \
+        && $(declare -p MIGRATION_KEEP_UNIT_STATE 2>/dev/null) == 'declare -i '* \
+        && ( $MIGRATION_KEEP_UNIT_STATE -eq 0 || $MIGRATION_KEEP_UNIT_STATE -eq 1 ) ]] \
+        || { printf 'pve-toolbox: migration metadata is invalid: %s\n' "$file" >&2; return 1; }
+    [[ $MIGRATION_KEEP_UNIT_STATE -eq 0 ]] || restore_after_apply=0
 
     ensure_safe_directory "$BACKUP_ROOT" 0700
     backup="$BACKUP_ROOT/$id-$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -354,9 +405,15 @@ run_migration() {
         return 1
     fi
     if ! validate_file_results \
-        || ! preserve_file_metadata "$backup" \
-        || ! restore_units "$backup" \
-        || ! record_completed "$id"; then
+        || ! preserve_file_metadata "$backup"; then
+        migration_failed "$id" "$backup" 1
+        return 1
+    fi
+    if [[ $restore_after_apply -eq 1 ]] && ! restore_units "$backup"; then
+        migration_failed "$id" "$backup" 1
+        return 1
+    fi
+    if ! record_completed "$id"; then
         migration_failed "$id" "$backup" 1
         return 1
     fi
