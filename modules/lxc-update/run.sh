@@ -1,15 +1,21 @@
 #!/usr/bin/env bash
-# Runs only through the launcher; guest code is shipped with this module.
+# Runs through the launcher for manual work and as an installed systemd helper.
 set -Eeuo pipefail
-MODULE_PATH=$(cd -- "${BASH_SOURCE[0]%/*}" && pwd -P)
-TOOLBOX_ROOT=${TOOLBOX_ROOT:-${MODULE_PATH%/modules/lxc-update}}
+SCRIPT_PATH=$(cd -- "${BASH_SOURCE[0]%/*}" && pwd -P)
+if [[ -z ${PVE_TOOLBOX_LIB:-} ]]; then
+    TOOLBOX_ROOT=${TOOLBOX_ROOT:-${SCRIPT_PATH%/modules/lxc-update}}
+    PVE_TOOLBOX_LIB="$TOOLBOX_ROOT/lib"
+    LX_GUEST_HELPER=${LX_GUEST_HELPER:-$SCRIPT_PATH/guest.sh}
+else
+    LX_GUEST_HELPER=${LX_GUEST_HELPER:-$PVE_TOOLBOX_LIB/lxc-update-guest.sh}
+fi
 # shellcheck source=lib/common.sh
-source "$TOOLBOX_ROOT/lib/common.sh"
+source "$PVE_TOOLBOX_LIB/common.sh"
 # shellcheck source=lib/report.sh
-source "$TOOLBOX_ROOT/lib/report.sh"
+source "$PVE_TOOLBOX_LIB/report.sh"
 
-LX_DRY=0 LX_REMOVE=0 LX_NOTIFY=0 LX_CANCEL=0 LX_FAILED=0
-LX_EXCLUDE="" DISCORD_WEBHOOK=""
+LX_DRY=0 LX_REMOVE=0 LX_NOTIFY=0 LX_CANCEL=0 LX_FAILED=0 LX_SCHEDULED=0
+LX_EXCLUDE="" DISCORD_WEBHOOK="" LX_SCHEDULE_ENABLED=0 LX_SCHEDULE="" LX_SCHEDULE_NOTIFY=0
 LX_IDS=() LX_TARGETS=()
 declare -A LX_NAMES=()
 for arg in "$@"; do
@@ -17,21 +23,32 @@ for arg in "$@"; do
         --dry-run) LX_DRY=1 ;;
         --allow-removals) LX_REMOVE=1 ;;
         --notify) LX_NOTIFY=1 ;;
+        --scheduled) LX_SCHEDULED=1 ;;
         *) [[ $arg =~ ^[1-9][0-9]{2,8}$ ]] || { warn "invalid container ID or flag: $arg"; exit 64; }
            [[ " ${LX_IDS[*]} " == *" $arg "* ]] || LX_IDS+=("$arg") ;;
     esac
 done
+if [[ $LX_SCHEDULED == 1 && ( $LX_DRY == 1 || $LX_REMOVE == 1 || $LX_NOTIFY == 1 || ${#LX_IDS[@]} -gt 0 ) ]]; then
+    warn "scheduled mode does not accept IDs, previews, removals, or notification flags"
+    exit 64
+fi
 require_root
 for cmd in pveversion pvesh pct jq flock setsid; do
     command -v "$cmd" >/dev/null || die "missing host command: $cmd"
 done
 [[ $(pveversion) == pve-manager/9.* ]] || die "LXC updates require a PVE 9 host"
 in_lxc && die "run LXC updates on the PVE host"
-if [[ $LX_DRY == 0 ]]; then
+if [[ $LX_DRY == 0 && $LX_SCHEDULED == 0 ]]; then
     [[ $ASSUME_YES == 0 && ${FORCE:-0} == 0 && -t 0 && -t 1 ]] \
         || die "LXC updates require interactive confirmation; --yes/--force are not supported"
 fi
 if conf_exists lxc-update; then conf_load lxc-update; fi
+if [[ $LX_SCHEDULED == 1 ]]; then
+    [[ $LX_SCHEDULE_ENABLED == 1 ]] || die "automatic LXC updates are not enabled"
+    [[ $LX_SCHEDULE_NOTIFY == 0 || $LX_SCHEDULE_NOTIFY == 1 ]] \
+        || die "invalid automatic notification setting; reconfigure lxc-update"
+    LX_NOTIFY=$LX_SCHEDULE_NOTIFY
+fi
 exclude_ids=()
 # Intentional whitespace splitting: configuration stores a list of numeric IDs.
 for id in $LX_EXCLUDE; do
@@ -44,6 +61,32 @@ if [[ $LX_NOTIFY == 1 && $LX_DRY == 0 ]]; then
         || die "--notify requires a configured Discord webhook; run pve-toolbox install lxc-update"
     command -v curl >/dev/null || die "--notify requires curl"
 fi
+
+[[ ! -L $TOOLBOX_STATE_DIR ]] || die "unsafe state directory"
+mkdir -p "$TOOLBOX_STATE_DIR"
+for path in "$TOOLBOX_STATE_DIR/lxc-update.lock" \
+    "$TOOLBOX_STATE_DIR/lxc-update.state" \
+    "$TOOLBOX_STATE_DIR/lxc-update-overlap.state"; do
+    [[ ! -L $path && ( ! -e $path || -f $path ) ]] \
+        || die "unsafe LXC updater state path"
+done
+exec {LX_LOCK}>"$TOOLBOX_STATE_DIR/lxc-update.lock"
+if ! flock -n "$LX_LOCK"; then
+    if [[ $LX_SCHEDULED == 1 ]]; then
+        overlap_time=$(date -u +%FT%TZ)
+        state_set lxc-update-overlap invocation scheduled \
+            && state_set lxc-update-overlap schedule "$LX_SCHEDULE" \
+            && state_set lxc-update-overlap started_at "$overlap_time" \
+            && state_set lxc-update-overlap completed_at "$overlap_time" \
+            && state_set lxc-update-overlap result busy \
+            && state_set lxc-update-overlap skipped_at "$overlap_time" \
+            || die "could not record the skipped overlapping run"
+        warn "another LXC updater is already running; scheduled batch skipped"
+        exit 0
+    fi
+    die "another LXC updater is already running"
+fi
+
 LX_NODE=$(hostname -s)
 [[ $LX_NODE =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || die "invalid local node name"
 LX_INVENTORY=$(pvesh get "/nodes/$LX_NODE/lxc" --output-format json) \
@@ -61,6 +104,10 @@ for id in "${LX_IDS[@]}"; do
 done
 
 report_reset lxc-update
+LX_INVOCATION=manual
+[[ $LX_DRY == 0 ]] || LX_INVOCATION=preview
+[[ $LX_SCHEDULED == 0 ]] || LX_INVOCATION=scheduled
+LX_STARTED_AT=$(date -u +%FT%TZ)
 LX_WORK=$(mktemp -d)
 trap 'rm -rf -- "$LX_WORK"' EXIT
 # Each pct process has a separate session, so Ctrl+C reaches the supervisor
@@ -74,16 +121,16 @@ lx_guest() { # <id> <guest phase>; output streamed after credential filtering
     # Keep the reader outside the terminal process group too. Its output is
     # untrusted terminal text, so strip control bytes before displaying it.
     setsid --wait bash -c '
-        source "$1/lib/common.sh"
-        source "$1/lib/report.sh"
+        source "$1/common.sh"
+        source "$1/report.sh"
         while IFS= read -r line || [[ -n $line ]]; do
             line=$(printf "%s" "$line" | LC_ALL=C tr -d "\000-\010\013\014\016-\037\177")
             report_clean_text "$line"
         done | tee "$2"
-    ' _ "$TOOLBOX_ROOT" "$LX_WORK/output" < "$LX_WORK/stream" &
+    ' _ "$PVE_TOOLBOX_LIB" "$LX_WORK/output" < "$LX_WORK/stream" &
     reader=$!
     setsid --wait pct exec "$id" -- bash -s -- "$phase" "$LX_REMOVE" \
-        < "$MODULE_PATH/guest.sh" > "$LX_WORK/stream" 2>&1 &
+        < "$LX_GUEST_HELPER" > "$LX_WORK/stream" 2>&1 &
     child=$!
     while :; do
         rc=0
@@ -150,16 +197,8 @@ for row in "${LX_ROWS[@]}"; do
     LX_TARGETS+=("$id")
 done
 
-[[ ! -L $TOOLBOX_STATE_DIR ]] || die "unsafe state directory"
-mkdir -p "$TOOLBOX_STATE_DIR"
-for path in "$TOOLBOX_STATE_DIR/lxc-update.lock" "$TOOLBOX_STATE_DIR/lxc-update.state"; do
-    [[ ! -L $path && ( ! -e $path || -f $path ) ]] || die "unsafe LXC updater state path"
-done
-exec {LX_LOCK}>"$TOOLBOX_STATE_DIR/lxc-update.lock"
-flock -n "$LX_LOCK" || die "another LXC updater is already running"
-
 lx_save() {
-    local json index
+    local json index result_ids="" report_id
     # One bounded record per container avoids passing an entire large batch
     # through a single environment variable in the shared state helpers.
     for ((index=LX_SAVED; index<${#REPORT_IDS[@]}; index++)); do
@@ -169,6 +208,11 @@ lx_save() {
         lx_record "ct_${REPORT_IDS[$index]#ct.}" "$json" || return 1
     done
     LX_SAVED=${#REPORT_IDS[@]}
+    for report_id in "${REPORT_IDS[@]}"; do
+        [[ $report_id == ct.* ]] || continue
+        result_ids+="${report_id#ct.} "
+    done
+    lx_record container_ids "${result_ids% }" || return 1
     lx_record exit_code "$1" || return 1
     lx_record last_summary "$(date -u +%FT%TZ) $2" || return 1
 }
@@ -180,6 +224,11 @@ lx_report_start() {
     LX_SAVED=0
     state_clear lxc-update
     lx_record host "$LX_NODE" || die "could not initialize report; nothing updated"
+    lx_record invocation "$LX_INVOCATION" || die "could not initialize report; nothing updated"
+    lx_record schedule "$([[ $LX_SCHEDULED == 1 ]] && printf '%s' "$LX_SCHEDULE" || printf none)" \
+        || die "could not initialize report; nothing updated"
+    lx_record started_at "$LX_STARTED_AT" || die "could not initialize report; nothing updated"
+    lx_record completed_at pending || die "could not initialize report; nothing updated"
     lx_record allow_removals "$LX_REMOVE" || die "could not initialize report; nothing updated"
     lx_record notification pending || die "could not initialize report; nothing updated"
     lx_save "$LX_FAILED" 'in progress' || die "could not save initial report; nothing updated"
@@ -211,12 +260,17 @@ if [[ $LX_DRY == 1 ]]; then
         printf '%s: %s - %s\n' "${REPORT_IDS[$i]}" "${REPORT_STATES[$i]}" "${REPORT_SUMMARIES[$i]}"
     done
     lx_record notification not-requested || die "could not save preview notification state"
+    lx_record completed_at "$(date -u +%FT%TZ)" || die "could not save preview completion time"
     lx_save "$LX_FAILED" "preview completed (exit $LX_FAILED)" || die "could not save preview report"
     exit "$LX_FAILED"
 fi
 [[ $LX_CANCEL == 0 ]] || exit 130
 printf '\nPackages may restart services. No automatic backup, snapshot, rollback, or reboot.\n'
-confirm "Update these containers with this policy?" n || exit 0
+if [[ $LX_SCHEDULED == 0 ]]; then
+    confirm "Update these containers with this policy?" n || exit 0
+else
+    printf 'Authorized by the configured automatic-update timer; no removals or cleanup.\n'
+fi
 lx_report_start
 
 for id in "${LX_TARGETS[@]}"; do
@@ -279,9 +333,10 @@ step 'Container update results'
 for ((i=0; i<${#REPORT_IDS[@]}; i++)); do
     printf '%s: %s - %s\n' "${REPORT_IDS[$i]}" "${REPORT_STATES[$i]}" "${REPORT_SUMMARIES[$i]}"
 done
+lx_record completed_at "$(date -u +%FT%TZ)" || die "could not save completion time"
 lx_save "$LX_FAILED" "completed (exit $LX_FAILED)" || die "could not save final report"
 if [[ $LX_NOTIFY == 1 ]]; then
-    summary="Host: $LX_NODE | removals/cleanup: $LX_REMOVE | exit: $LX_FAILED"
+    summary="Invocation: $LX_INVOCATION | Host: $LX_NODE | removals/cleanup: $LX_REMOVE | exit: $LX_FAILED"
     for ((i=0; i<${#REPORT_IDS[@]}; i++)); do
         summary+=$'\n'"${REPORT_IDS[$i]}: ${REPORT_STATES[$i]} - ${REPORT_SUMMARIES[$i]}"
     done

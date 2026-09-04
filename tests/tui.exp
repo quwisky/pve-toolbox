@@ -71,7 +71,8 @@ need {Space toggles} "install checklist"
 send -- "\r"
 need {Install or reconfigure modules} "empty selection returns to the menu"
 
-# quit entry, six rows down from install
+# quit entry, seven rows down from install
+send -- "\033\[B"
 send -- "\033\[B"
 send -- "\033\[B"
 send -- "\033\[B"

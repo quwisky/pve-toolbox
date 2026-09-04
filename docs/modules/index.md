@@ -8,7 +8,7 @@ launcher discovers them at runtime; directories starting with `_` are skipped.
 | [backup-audit](backup-audit.md) | `backup audit monitoring` | yes | none; contributes doctor checks |
 | [certificate-watch](certificate-watch.md) | `monitoring tls certificate acme notify` | yes | none; contributes doctor checks |
 | [config-backup](config-backup.md) | `backup config notify` | yes | `pve-config-backup` |
-| [lxc-update](lxc-update.md) | `lxc upgrade apt notify` | yes | none; dedicated launcher command |
+| [lxc-update](lxc-update.md) | `lxc upgrade apt notify schedule` | yes | `pve-toolbox-lxc-update` when scheduled |
 | [native-notifications](native-notifications.md) | `monitoring notify webhook smtp gotify` | yes | `pve-toolbox-native-notify` |
 | [restore-drill](restore-drill.md) | `backup restore audit isolation notify` | yes | `pve-toolbox-restore-drill` |
 | [storage-hygiene](storage-hygiene.md) | `storage audit monitoring zfs lvm` | yes | none; contributes doctor checks |
