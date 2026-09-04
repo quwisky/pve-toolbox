@@ -87,8 +87,10 @@ architecture index. It installs:
 | Path | Purpose |
 | --- | --- |
 | `/usr/bin/pve-toolbox` | launcher |
+| `/usr/bin/pve-toolbox-native-notify` | native PVE custom-event sender |
 | `/usr/lib/pve-toolbox/lib/` | shared launcher libraries |
 | `/usr/lib/pve-toolbox/modules/` | runtime modules; `_template` is excluded |
+| `/usr/share/pve-toolbox/notification-templates/` | sender templates |
 | `/usr/share/bash-completion/completions/pve-toolbox` | Bash completion |
 | `/usr/share/zsh/vendor-completions/_pve-toolbox` | Zsh completion |
 | `/etc/pve-toolbox/` | generated config and secrets, directory mode `0750` |
@@ -102,6 +104,14 @@ Runtime config is not a dpkg conffile. Removing the package preserves both
 config and state; purging removes them. Module-installed helpers and systemd
 units under `/usr/local` and `/etc/systemd/system` remain owned by their
 modules, not by the package.
+
+During an upgrade from a release with notification provisioning, dpkg may
+temporarily unpack a compatibility module. Package configuration removes it
+only after the notification ownership migration is recorded. A failed
+migration retains that fallback while preserving all PVE targets, matchers,
+templates, and protected credentials. Later upgrades of a clean installation
+discard only the newly unpacked compatibility module; they do not require a
+legacy migration marker.
 
 ## Checkout migration
 

@@ -59,6 +59,8 @@ print "ok  zsh offers every command"
 
 got=$(offers 3 ./pve-toolbox install "")
 [[ $got == *zfs-scrub* ]] || fail "no modules offered for install: $got"
+[[ $got != *native-notifications* ]] \
+    || fail "obsolete notification provisioning offered for install: $got"
 print "ok  zsh offers modules after install"
 
 got=$(offers 4 ./pve-toolbox install zfs-scrub "")

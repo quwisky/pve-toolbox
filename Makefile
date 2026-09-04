@@ -2,6 +2,7 @@ SHELL := /bin/bash
 # Bash only. completions/_pve-toolbox is zsh and tests/tui.exp is Tcl;
 # neither bash -n nor shellcheck can read either.
 FILES := pve-toolbox $(sort $(wildcard lib/*.sh)) $(sort $(wildcard modules/*/*.sh)) \
+         $(sort $(wildcard debian/legacy/*/*.sh)) \
          completions/pve-toolbox.bash $(sort $(wildcard migrations/*.sh)) \
          scripts/pve-toolbox-native-notify $(sort $(wildcard scripts/*.sh)) \
          $(sort $(wildcard tests/*.sh))
@@ -25,7 +26,8 @@ test: syntax
 	@./tests/report.sh
 	@./tests/doctor.sh
 	@./tests/backup-audit.sh
-	@./tests/native-notifications.sh
+	@./tests/native-notify.sh
+	@./tests/notification-retirement.sh
 	@./tests/storage-hygiene.sh
 	@./tests/certificate-watch.sh
 	@./tests/upgrade-readiness.sh

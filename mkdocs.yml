@@ -61,6 +61,7 @@ plugins:
 nav:
   - Home: index.md
   - Getting started: getting-started.md
+  - Native notifications: native-notifications.md
   - Doctor: doctor.md
   - Automation output: automation.md
   - APT repository: apt-repository.md
@@ -70,7 +71,6 @@ nav:
       - certificate-watch: modules/certificate-watch.md
       - config-backup: modules/config-backup.md
       - lxc-update: modules/lxc-update.md
-      - native-notifications: modules/native-notifications.md
       - restore-drill: modules/restore-drill.md
       - storage-hygiene: modules/storage-hygiene.md
       - upgrade-readiness: modules/upgrade-readiness.md

@@ -54,6 +54,11 @@ The verification sends one PVE target test and one custom `pve-toolbox` event,
 so matching notification destinations receive test messages during the upgrade.
 If an object or helper has changed since the toolbox created it, the package
 upgrade stops with a specific error and leaves the legacy files in place.
+After the migration is recorded, package cleanup removes the obsolete module,
+the unmodified `/usr/local` sender, and private module backups. It retains the
+package-owned sender and every PVE object, template, and credential. See
+[Native notifications](native-notifications.md) for ongoing management and
+safe removal.
 
 ## Git checkout
 
