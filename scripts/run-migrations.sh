@@ -8,7 +8,13 @@ if [[ $# -ne 1 || -z $1 ]]; then
     exit 64
 fi
 
-MIGRATION_DIR=${PVE_TOOLBOX_MIGRATION_DIR:-/usr/lib/pve-toolbox/migrations}
+MIGRATION_DIR_STRICT=0
+if [[ -z ${PVE_TOOLBOX_MIGRATION_DIR+x} ]]; then
+    MIGRATION_DIR=/usr/lib/pve-toolbox/migrations
+    MIGRATION_DIR_STRICT=1
+else
+    MIGRATION_DIR=$PVE_TOOLBOX_MIGRATION_DIR
+fi
 CONF_DIR=${PVE_TOOLBOX_CONF_DIR:-/etc/pve-toolbox}
 STATE_DIR=${PVE_TOOLBOX_STATE_DIR:-/var/lib/pve-toolbox}
 BACKUP_ROOT=${PVE_TOOLBOX_MIGRATION_BACKUP_DIR:-/var/backups/pve-toolbox/migrations}
@@ -18,11 +24,26 @@ PREVIOUS_VERSION=$1
 if [[ ! -e $MIGRATION_DIR && ! -L $MIGRATION_DIR ]]; then
     exit 0
 fi
-[[ -d $MIGRATION_DIR && ! -L $MIGRATION_DIR ]] || {
+command -v realpath >/dev/null 2>&1 \
+    || { printf 'pve-toolbox: realpath is required to validate migrations\n' >&2; exit 69; }
+canonical_migration_dir=$(realpath -e -- "$MIGRATION_DIR" 2>/dev/null) || true
+[[ -d $MIGRATION_DIR && ! -L $MIGRATION_DIR \
+    && $canonical_migration_dir == "$MIGRATION_DIR" ]] || {
     printf 'pve-toolbox: refusing unsafe migration directory: %s\n' \
         "$MIGRATION_DIR" >&2
     exit 1
 }
+if [[ $MIGRATION_DIR_STRICT -eq 1 ]]; then
+    for package_dir in / /usr /usr/lib /usr/lib/pve-toolbox "$MIGRATION_DIR"; do
+        package_mode=$(stat -c '%a' "$package_dir")
+        [[ $(stat -c '%u' "$package_dir") -eq 0 ]] \
+            && (( (8#$package_mode & 022) == 0 )) || {
+            printf 'pve-toolbox: migration directory chain is not root-owned and protected: %s\n' \
+                "$package_dir" >&2
+            exit 1
+        }
+    done
+fi
 
 shopt -s nullglob
 migrations=("$MIGRATION_DIR"/*.sh)
@@ -275,6 +296,10 @@ run_migration() {
     completed "$id" && return 0
     [[ -f $file && ! -L $file ]] \
         || { printf 'pve-toolbox: refusing unsafe migration: %s\n' "$file" >&2; return 1; }
+    if [[ $MIGRATION_DIR_STRICT -eq 1 && $(stat -c '%u' "$file") -ne 0 ]]; then
+        printf 'pve-toolbox: migration is not root-owned: %s\n' "$file" >&2
+        return 1
+    fi
     mode=$(stat -c '%a' "$file")
     (( (8#$mode & 022) == 0 )) \
         || { printf 'pve-toolbox: migration is group/world writable: %s\n' "$file" >&2; return 1; }

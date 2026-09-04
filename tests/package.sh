@@ -200,6 +200,9 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
     [[ ! -e /var/lib/pve-toolbox/migrations.state \
         && ! -e /var/backups/pve-toolbox/migrations ]] \
         || fail "a fresh install ran or initialized package migrations"
+    [[ $(stat -c '%u' /usr/lib/pve-toolbox/migrations) -eq 0 \
+        && $(stat -c '%a' /usr/lib/pve-toolbox/migrations) == 755 ]] \
+        || fail "installed migration directory is not root-owned and protected"
 
     printf 'FORMAT=old\n' > /etc/pve-toolbox/migration-test.conf
     chmod 0640 /etc/pve-toolbox/migration-test.conf

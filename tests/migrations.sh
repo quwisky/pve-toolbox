@@ -406,19 +406,19 @@ result_output=$(env \
     || fail "an unsafe migration result was accepted or not rolled back"
 pass "unsafe migration results are rejected and rolled back"
 
-mkdir -p "$WORK/real-migration-dir"
-cat > "$WORK/real-migration-dir/100-symlinked-directory.sh" <<'MIGRATION'
+mkdir -p "$WORK/real-migration-parent/migrations"
+cat > "$WORK/real-migration-parent/migrations/100-symlinked-directory.sh" <<'MIGRATION'
 MIGRATION_TARGET_VERSION=0.6.0
 MIGRATION_FILES=()
 MIGRATION_UNITS=()
 migration_apply() { : > "$PVE_TOOLBOX_STATE_DIR/symlinked-dir-applied"; }
 MIGRATION
-chmod 0644 "$WORK/real-migration-dir/100-symlinked-directory.sh"
-ln -s "$WORK/real-migration-dir" "$WORK/symlinked-migration-dir"
+chmod 0644 "$WORK/real-migration-parent/migrations/100-symlinked-directory.sh"
+ln -s "$WORK/real-migration-parent" "$WORK/symlinked-migration-parent"
 directory_output=""
 directory_rc=0
 directory_output=$(env \
-    PVE_TOOLBOX_MIGRATION_DIR="$WORK/symlinked-migration-dir" \
+    PVE_TOOLBOX_MIGRATION_DIR="$WORK/symlinked-migration-parent/migrations" \
     PVE_TOOLBOX_CONF_DIR="$WORK/directory-config" \
     PVE_TOOLBOX_STATE_DIR="$WORK/directory-state" \
     PVE_TOOLBOX_MIGRATION_BACKUP_DIR="$WORK/directory-backups" \
@@ -426,5 +426,5 @@ directory_output=$(env \
     "$ROOT/scripts/run-migrations.sh" 0.5.0 2>&1) || directory_rc=$?
 [[ $directory_rc -ne 0 && $directory_output == *'unsafe migration directory'* \
     && ! -e $WORK/directory-state/symlinked-dir-applied ]] \
-    || fail "a symlinked migration directory was accepted"
-pass "symlinked migration directories are rejected"
+    || fail "a migration directory with a symlinked ancestor was accepted"
+pass "symlinked migration directory paths are rejected"
