@@ -16,7 +16,12 @@ override_dh_auto_test:
 
 override_dh_auto_install:
 	install -D -m 0755 pve-toolbox $(PACKAGE_ROOT)/usr/bin/pve-toolbox
-	install -d -m 0755 $(PACKAGE_LIB)/lib $(PACKAGE_LIB)/modules
+	install -D -m 0755 scripts/run-migrations.sh $(PACKAGE_LIB)/run-migrations.sh
+	install -d -m 0755 $(PACKAGE_LIB)/lib $(PACKAGE_LIB)/modules \
+		$(PACKAGE_LIB)/migrations
+	set -e; for migration in $(wildcard migrations/*.sh); do \
+		install -m 0644 "$$migration" $(PACKAGE_LIB)/migrations/; \
+	done
 	install -m 0644 lib/common.sh lib/discord.sh lib/doctor.sh lib/pve.sh lib/report.sh lib/tui.sh \
 		$(PACKAGE_LIB)/lib/
 	set -e; for module in modules/*; do \

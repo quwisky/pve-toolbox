@@ -34,6 +34,7 @@ pve-toolbox/
 │   ├── upgrade-readiness/   # read-only, policy-driven upgrade preflight
 │   ├── zfs-scrub/           # scheduled scrub per pool, reported to Discord
 │   └── zfs-replication/     # syncoid jobs on a timer, reported to Discord
+├── migrations/              # ordered package configuration migrations
 ├── completions/             # bash + zsh completion, installed by `link`
 ├── tests/                   # what `make test` runs, incl. a driven ui test
 ├── docs/                    # mkdocs-material sources
@@ -50,6 +51,9 @@ pve-toolbox
 The bootstrap verifies the downloaded signing key against the pinned
 fingerprint, configures the signed `trixie` repository, and installs the
 `pve-toolbox` package. Future releases arrive through `apt upgrade`.
+Package upgrades back up and migrate older toolbox configuration before
+restarting package-managed services; failed or interrupted migrations restore
+the prior files and remain retryable.
 The trusted repository signing key has fingerprint
 `C354 8BC5 2A3D 5375 57DB 2A7F 84A4 3B72 AE04 34F2`.
 
