@@ -2,7 +2,8 @@ SHELL := /bin/bash
 # Bash only. completions/_pve-toolbox is zsh and tests/tui.exp is Tcl;
 # neither bash -n nor shellcheck can read either.
 FILES := pve-toolbox $(sort $(wildcard lib/*.sh)) $(sort $(wildcard modules/*/*.sh)) \
-         completions/pve-toolbox.bash $(sort $(wildcard scripts/*.sh)) \
+         completions/pve-toolbox.bash $(sort $(wildcard migrations/*.sh)) \
+         $(sort $(wildcard scripts/*.sh)) \
          $(sort $(wildcard tests/*.sh))
 
 .PHONY: lint syntax test test-tui package package-test
@@ -18,6 +19,7 @@ syntax:
 
 test: syntax
 	@./tests/lib.sh
+	@./tests/migrations.sh
 	@./tests/pve.sh
 	@./tests/report.sh
 	@./tests/doctor.sh

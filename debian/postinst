@@ -20,6 +20,10 @@ if [ -e "$legacy" ] || [ -L "$legacy" ]; then
     fi
 fi
 
+if [ "$1" = configure ] && [ -n "${2:-}" ]; then
+    /usr/lib/pve-toolbox/run-migrations.sh "$2"
+fi
+
 #DEBHELPER#
 
 exit 0

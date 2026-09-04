@@ -19,6 +19,31 @@ If `/usr/local/bin/pve-toolbox` still points to an older checkout, it precedes
 symlink but never removes it automatically; verify the packaged command and
 remove the old symlink yourself.
 
+## Package upgrade migrations
+
+Package upgrades may include migrations for configuration created by an older
+release. They run automatically during `apt upgrade`, before package-managed
+services are restarted, and never prompt for input. A fresh installation does
+not initialize or run migrations.
+
+Before a migration changes a file, the package copies it with its ownership and
+permissions into `/var/backups/pve-toolbox/migrations/`. Completed migration IDs
+are recorded in `/var/lib/pve-toolbox/migrations.state`, so reinstalling or
+retrying the package does not repeat completed work.
+
+If a migration fails, its declared files and systemd unit state are restored
+and dpkg leaves `pve-toolbox` unconfigured. Read the named migration and backup
+path in the error, correct the underlying problem, and retry as root:
+
+```bash
+dpkg --configure pve-toolbox
+```
+
+An interrupted migration is restored from its retained backup before the same
+migration is attempted again. Do not delete
+`/var/lib/pve-toolbox/migration.pending` or its referenced backup while recovery
+is pending.
+
 ## Git checkout
 
 PVE 8 hosts use the checkout path, which remains fully supported:

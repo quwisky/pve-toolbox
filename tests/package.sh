@@ -26,12 +26,21 @@ fi
 
 WORK=$(mktemp -d)
 PACKAGE_TOUCHED=0
+BACKUP_TOUCHED=0
 cleanup() {
     status=$?
     trap - EXIT
     if [[ $PACKAGE_TOUCHED -eq 1 ]]; then
         if ! dpkg --purge pve-toolbox >/dev/null; then
             printf 'FAIL could not purge pve-toolbox during cleanup\n' >&2
+            status=1
+        fi
+    fi
+    if [[ $BACKUP_TOUCHED -eq 1 ]]; then
+        if [[ -d /var/backups/pve-toolbox && ! -L /var/backups/pve-toolbox ]]; then
+            rm -rf -- /var/backups/pve-toolbox
+        else
+            printf 'FAIL refusing unsafe package-test backup cleanup\n' >&2
             status=1
         fi
     fi
@@ -74,6 +83,7 @@ expected_manifest="$WORK/expected-runtime-manifest"
 actual_manifest="$WORK/actual-runtime-manifest"
 {
     printf '%s\n' VERSION
+    printf '%s\n' run-migrations.sh
     for source in "$ROOT"/lib/*.sh; do
         printf 'lib/%s\n' "${source##*/}"
     done
@@ -95,6 +105,13 @@ for source in "$ROOT"/lib/*.sh; do
     [[ $(stat -c '%a' "$target") == "$expected_mode" ]] \
         || fail "packaged lib/${source##*/} has the wrong mode"
 done
+cmp -s "$ROOT/scripts/run-migrations.sh" \
+    "$WORK/root/usr/lib/pve-toolbox/run-migrations.sh" \
+    || fail "packaged migration runner differs from source"
+[[ $(stat -c '%a' "$WORK/root/usr/lib/pve-toolbox/run-migrations.sh") == 755 ]] \
+    || fail "packaged migration runner has the wrong mode"
+[[ -d $WORK/root/usr/lib/pve-toolbox/migrations ]] \
+    || fail "package omitted the migration directory"
 while IFS= read -r -d '' source; do
     relative=${source#"$ROOT/"}
     target="$WORK/root/usr/lib/pve-toolbox/$relative"
@@ -145,6 +162,10 @@ grep -q '/usr/local/bin/pve-toolbox' "$WORK/control/postinst" \
     || fail "postinst does not warn about a shadowing checkout"
 grep -q 'targets Debian 13 (trixie) / PVE 9' "$WORK/control/postinst" \
     || fail "postinst does not warn on unsupported hosts"
+grep -Fq '[ "$1" = configure ] && [ -n "${2:-}" ]' "$WORK/control/postinst" \
+    || fail "postinst does not limit migrations to package upgrades"
+grep -Fq '/usr/lib/pve-toolbox/run-migrations.sh "$2"' "$WORK/control/postinst" \
+    || fail "postinst does not run package migrations"
 grep -q '\[ "$1" = purge \]' "$WORK/control/postrm" \
     || fail "postrm does not distinguish purge from remove"
 [[ $(stat -c '%a' "$WORK/root/etc/pve-toolbox") == 750 ]] \
@@ -162,7 +183,8 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
         | grep -q '^installed$'; then
         fail "refusing to replace an existing pve-toolbox package"
     fi
-    for path in /usr/bin/pve-toolbox /etc/pve-toolbox /var/lib/pve-toolbox; do
+    for path in /usr/bin/pve-toolbox /etc/pve-toolbox /var/lib/pve-toolbox \
+        /var/backups/pve-toolbox; do
         [[ ! -e $path && ! -L $path ]] \
             || fail "refusing to replace an existing package path: $path"
     done
@@ -175,6 +197,89 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
     dpkg -i "$deb" >/dev/null
     [[ $(/usr/bin/pve-toolbox --version) == "pve-toolbox $expected_version" ]] \
         || fail "the installed package did not run"
+    [[ ! -e /var/lib/pve-toolbox/migrations.state \
+        && ! -e /var/backups/pve-toolbox/migrations ]] \
+        || fail "a fresh install ran or initialized package migrations"
+
+    printf 'FORMAT=old\n' > /etc/pve-toolbox/migration-test.conf
+    chmod 0640 /etc/pve-toolbox/migration-test.conf
+    dpkg-deb --raw-extract "$deb" "$WORK/upgrade-success"
+    success_version="${expected_version}+migrationtest1"
+    sed -i "s/^Version: .*/Version: $success_version/" \
+        "$WORK/upgrade-success/DEBIAN/control"
+    rm -f -- "$WORK/upgrade-success/DEBIAN/md5sums"
+    cat > "$WORK/upgrade-success/usr/lib/pve-toolbox/migrations/900-package-test.sh" <<'MIGRATION'
+MIGRATION_FILES=(/etc/pve-toolbox/migration-test.conf)
+MIGRATION_UNITS=()
+migration_apply() {
+    [[ $(</etc/pve-toolbox/migration-test.conf) == FORMAT=old ]] || return 1
+    printf 'FORMAT=current\n' > /etc/pve-toolbox/migration-test.conf
+    printf '%s\n' "$PVE_TOOLBOX_PREVIOUS_VERSION" \
+        > /var/lib/pve-toolbox/migration-test.previous
+    printf 'applied\n' >> /var/lib/pve-toolbox/migration-test.calls
+}
+MIGRATION
+    chmod 0644 \
+        "$WORK/upgrade-success/usr/lib/pve-toolbox/migrations/900-package-test.sh"
+    dpkg-deb --build "$WORK/upgrade-success" "$WORK/upgrade-success.deb" >/dev/null
+    BACKUP_TOUCHED=1
+    dpkg -i "$WORK/upgrade-success.deb" >/dev/null
+    [[ $(</etc/pve-toolbox/migration-test.conf) == FORMAT=current ]] \
+        || fail "package upgrade did not migrate configuration"
+    [[ $(stat -c '%a' /etc/pve-toolbox/migration-test.conf) == 640 ]] \
+        || fail "package migration changed configuration permissions"
+    [[ $(</var/lib/pve-toolbox/migration-test.previous) == "$expected_version" ]] \
+        || fail "package migration did not receive the previous version"
+    grep -Fxq 900-package-test /var/lib/pve-toolbox/migrations.state \
+        || fail "package upgrade did not record its migration"
+    package_backup=$(find /var/backups/pve-toolbox/migrations \
+        -path '*/files/etc/pve-toolbox/migration-test.conf' -type f -print -quit)
+    [[ -n $package_backup && $(<"$package_backup") == FORMAT=old ]] \
+        || fail "package upgrade did not retain the original configuration"
+    dpkg -i "$WORK/upgrade-success.deb" >/dev/null
+    [[ $(grep -c '^applied$' /var/lib/pve-toolbox/migration-test.calls) -eq 1 ]] \
+        || fail "reinstall reran a completed package migration"
+
+    printf 'RETRY=old\n' > /etc/pve-toolbox/migration-retry.conf
+    chmod 0600 /etc/pve-toolbox/migration-retry.conf
+    dpkg-deb --raw-extract "$deb" "$WORK/upgrade-retry"
+    retry_version="${expected_version}+migrationtest2"
+    sed -i "s/^Version: .*/Version: $retry_version/" \
+        "$WORK/upgrade-retry/DEBIAN/control"
+    rm -f -- "$WORK/upgrade-retry/DEBIAN/md5sums"
+    cat > "$WORK/upgrade-retry/usr/lib/pve-toolbox/migrations/910-package-retry.sh" <<'MIGRATION'
+MIGRATION_FILES=(/etc/pve-toolbox/migration-retry.conf)
+MIGRATION_UNITS=()
+migration_apply() {
+    printf 'RETRY=partial\n' > /etc/pve-toolbox/migration-retry.conf
+    [[ -f /var/lib/pve-toolbox/allow-package-retry ]] || return 1
+    printf 'RETRY=current\n' > /etc/pve-toolbox/migration-retry.conf
+}
+MIGRATION
+    chmod 0644 \
+        "$WORK/upgrade-retry/usr/lib/pve-toolbox/migrations/910-package-retry.sh"
+    dpkg-deb --build "$WORK/upgrade-retry" "$WORK/upgrade-retry.deb" >/dev/null
+    retry_output=""
+    retry_rc=0
+    retry_output=$(dpkg -i "$WORK/upgrade-retry.deb" 2>&1) || retry_rc=$?
+    [[ $retry_rc -ne 0 && $retry_output == *'910-package-retry'* \
+        && $retry_output == *'restored'* ]] \
+        || fail "failed package migration did not stop configuration clearly"
+    [[ $(</etc/pve-toolbox/migration-retry.conf) == RETRY=old ]] \
+        || fail "failed package migration did not restore configuration"
+    [[ $(stat -c '%a' /etc/pve-toolbox/migration-retry.conf) == 600 ]] \
+        || fail "failed package migration changed configuration permissions"
+    if grep -Fxq 910-package-retry /var/lib/pve-toolbox/migrations.state; then
+        fail "failed package migration was recorded as complete"
+    fi
+    : > /var/lib/pve-toolbox/allow-package-retry
+    dpkg --configure pve-toolbox >/dev/null
+    [[ $(</etc/pve-toolbox/migration-retry.conf) == RETRY=current ]] \
+        || fail "package configuration retry did not complete migration"
+    grep -Fxq 910-package-retry /var/lib/pve-toolbox/migrations.state \
+        || fail "retried package migration was not recorded"
+    pass "dpkg upgrades migrate, roll back, and retry configuration"
+
     printf 'keep\n' > /etc/pve-toolbox/package-test.conf
     printf 'keep\n' > /var/lib/pve-toolbox/package-test.state
     dpkg --remove pve-toolbox >/dev/null
@@ -186,6 +291,10 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
     dpkg --purge pve-toolbox >/dev/null
     [[ ! -e /etc/pve-toolbox ]] || fail "package purge retained runtime config"
     [[ ! -e /var/lib/pve-toolbox ]] || fail "package purge retained runtime state"
+    [[ -d /var/backups/pve-toolbox/migrations ]] \
+        || fail "package purge deleted retained migration backups"
+    rm -rf -- /var/backups/pve-toolbox
+    BACKUP_TOUCHED=0
     PACKAGE_TOUCHED=0
     pass "dpkg install, remove and purge lifecycle"
 fi
