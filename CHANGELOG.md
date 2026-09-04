@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/quwisky/pve-toolbox/compare/v0.5.1...v0.6.0) (2026-09-04)
+
+
+### Features
+
+* **lxc-update:** schedule automatic container updates ([#49](https://github.com/quwisky/pve-toolbox/issues/49)) ([45613e7](https://github.com/quwisky/pve-toolbox/commit/45613e77a845b7f20cf7e7a5d331ff711f34d0de))
+
 ## [0.5.1](https://github.com/quwisky/pve-toolbox/compare/v0.5.0...v0.5.1) (2026-09-03)
 
 

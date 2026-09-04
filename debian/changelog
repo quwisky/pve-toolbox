@@ -1,3 +1,9 @@
+pve-toolbox (0.6.0) unstable; urgency=medium
+
+  * **lxc-update:** schedule automatic container updates ([#49](https://github.com/quwisky/pve-toolbox/issues/49)) ([45613e7](https://github.com/quwisky/pve-toolbox/commit/45613e77a845b7f20cf7e7a5d331ff711f34d0de))
+
+ -- Bence Nagy <quwisky@qwky.eu>  Fri, 04 Sep 2026 17:34:06 +0000
+
 pve-toolbox (0.5.1) unstable; urgency=medium
 
   * **release:** deploy Pages only after publication ([#43](https://github.com/quwisky/pve-toolbox/issues/43)) ([37c2f4d](https://github.com/quwisky/pve-toolbox/commit/37c2f4dabb05c31cf2aed490818fd7051b0f93ec))
