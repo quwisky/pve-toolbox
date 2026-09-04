@@ -16,7 +16,12 @@ override_dh_auto_test:
 
 override_dh_auto_install:
 	install -D -m 0755 pve-toolbox $(PACKAGE_ROOT)/usr/bin/pve-toolbox
+	install -D -m 0755 scripts/pve-toolbox-native-notify \
+		$(PACKAGE_ROOT)/usr/bin/pve-toolbox-native-notify
 	install -D -m 0755 scripts/run-migrations.sh $(PACKAGE_LIB)/run-migrations.sh
+	install -d -m 0755 $(PACKAGE_ROOT)/usr/share/pve-toolbox/notification-templates
+	install -m 0644 share/notification-templates/pve-toolbox-*.hbs \
+		$(PACKAGE_ROOT)/usr/share/pve-toolbox/notification-templates/
 	install -d -m 0755 $(PACKAGE_LIB)/lib $(PACKAGE_LIB)/modules \
 		$(PACKAGE_LIB)/migrations
 	set -e; for migration in $(wildcard migrations/*.sh); do \

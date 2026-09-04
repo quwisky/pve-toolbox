@@ -8,8 +8,9 @@ before claiming success, and exposes a shared sender for other toolbox modules.
 Module      native-notifications
 Config      /etc/pve-toolbox/native-notifications.conf (0600)
 State       /var/lib/pve-toolbox/native-notifications.state (0644; no secrets)
-Helper      /usr/local/bin/pve-toolbox-native-notify
+Helper      /usr/bin/pve-toolbox-native-notify (Debian package)
 Templates   /etc/pve/notification-templates/default/pve-toolbox-*.hbs
+Sources     /usr/share/pve-toolbox/notification-templates/
 Backups     /var/lib/pve-toolbox/native-notifications-backups/ (0700)
 ```
 
@@ -39,6 +40,32 @@ secrets and must not be copied into Git.
 
 Repeated installation updates the same owned endpoint and matcher. It never
 creates a suffixed or duplicate object.
+
+## Package upgrade ownership migration
+
+Package upgrades from 0.6.x verify any target and matcher created by this
+module before transferring their future management to PVE. The migration
+recognizes Discord and generic webhook targets as PVE `webhook` endpoints and
+also recognizes Gotify and SMTP endpoints. It checks the recorded names and
+type, ownership comments, matcher route, helper assets, and PVE test delivery.
+It sends one target test and one custom `pve-toolbox` event during the upgrade.
+
+After those checks and a custom sender test succeed, the upgrade removes the
+toolbox config and state files. It does not rewrite the target, matcher,
+routing rules, enabled state, templates, public endpoint data, or protected PVE
+credentials. The existing ownership comment is retained as provenance; it no
+longer means that the toolbox will update or remove the object after migration.
+
+Manage the resulting target and matcher in **Datacenter → Notifications** in
+the PVE web interface. You can change their comments, routing, enabled state,
+or credentials there. Do not reinstall this transitional module after a
+successful ownership migration unless you deliberately want the toolbox to
+claim and manage a new pair of objects.
+
+If the recorded identity, PVE objects, helper, or templates are missing or
+modified, the package upgrade stops before retiring the old files. Review the
+named target and matcher in PVE, restore the last known-good module assets if
+appropriate, then retry with `dpkg --configure pve-toolbox` as root.
 
 ## Credential handling
 
@@ -159,7 +186,8 @@ pve-toolbox-native-notify warning \
   'tank/appdata has not replicated for 26 hours'
 ```
 
-The helper accepts `info`, `notice`, `warning`, or `error`, preserves arbitrary
+The Debian package installs the helper independently of this provisioning
+module. It accepts `info`, `notice`, `warning`, or `error`, preserves arbitrary
 text as data, and calls `PVE::Notify` with the shipped `pve-toolbox` templates.
 It does not contain or accept endpoint credentials. Delivery is determined by
 the configured native matchers, so a matcher limited to `exact:type=vzdump`

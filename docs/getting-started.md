@@ -44,6 +44,17 @@ migration is attempted again. Do not delete
 `/var/lib/pve-toolbox/migration.pending` or its referenced backup while recovery
 is pending.
 
+The notification ownership migration verifies the legacy toolbox identity,
+the PVE target and matcher, the shipped templates, and both target and custom
+event delivery. It then removes only
+`/etc/pve-toolbox/native-notifications.conf` and
+`/var/lib/pve-toolbox/native-notifications.state`. The target, matcher, enabled
+state, routing rules, templates, and protected PVE credentials remain in PVE.
+The verification sends one PVE target test and one custom `pve-toolbox` event,
+so matching notification destinations receive test messages during the upgrade.
+If an object or helper has changed since the toolbox created it, the package
+upgrade stops with a specific error and leaves the legacy files in place.
+
 ## Git checkout
 
 PVE 8 hosts use the checkout path, which remains fully supported:

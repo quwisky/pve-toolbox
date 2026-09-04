@@ -84,6 +84,9 @@ actual_manifest="$WORK/actual-runtime-manifest"
 {
     printf '%s\n' VERSION
     printf '%s\n' run-migrations.sh
+    for source in "$ROOT"/migrations/*.sh; do
+        printf 'migrations/%s\n' "${source##*/}"
+    done
     for source in "$ROOT"/lib/*.sh; do
         printf 'lib/%s\n' "${source##*/}"
     done
@@ -123,6 +126,7 @@ while IFS= read -r -d '' source; do
 done < <(find "$ROOT/modules" -mindepth 2 -type f ! -path "$ROOT/modules/_*/*" -print0)
 for target in \
     "$WORK/root/usr/bin/pve-toolbox" \
+    "$WORK/root/usr/bin/pve-toolbox-native-notify" \
     "$WORK/root/usr/share/man/man1/pve-toolbox.1.gz" \
     "$WORK/root/usr/share/bash-completion/completions/pve-toolbox" \
     "$WORK/root/usr/share/zsh/vendor-completions/_pve-toolbox"
@@ -131,6 +135,14 @@ do
 done
 cmp -s "$ROOT/pve-toolbox" "$WORK/root/usr/bin/pve-toolbox" \
     || fail "packaged launcher differs from source"
+cmp -s "$ROOT/scripts/pve-toolbox-native-notify" \
+    "$WORK/root/usr/bin/pve-toolbox-native-notify" \
+    || fail "packaged native notification sender differs from source"
+for source in "$ROOT"/share/notification-templates/*.hbs; do
+    target="$WORK/root/usr/share/pve-toolbox/notification-templates/${source##*/}"
+    cmp -s "$source" "$target" \
+        || fail "packaged notification template ${source##*/} differs from source"
+done
 cmp -s "$ROOT/completions/pve-toolbox.bash" \
     "$WORK/root/usr/share/bash-completion/completions/pve-toolbox" \
     || fail "packaged Bash completion differs from source"
