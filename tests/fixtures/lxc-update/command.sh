@@ -66,5 +66,56 @@ case $name in
             if [[ $1 == -d ]]; then printf "%s" "$2" > "$LX_TEST/discord.json"; break; fi
             shift
         done ;;
+    systemd-analyze)
+        schedule=${*: -1}
+        [[ $1 == calendar && -n $schedule && $schedule != nonsense ]] || exit 1
+        if [[ $schedule == '*-02-30 04:00:00' ]]; then
+            printf 'Normalized form: *-02-30 04:00:00\n    Next elapse: never\n'
+        else
+            printf 'Normalized form: %s\n    Next elapse: Sun 2026-09-06 04:00:00 CEST\n' "$schedule"
+        fi ;;
+    systemctl)
+        printf '%s\n' "$*" >> "$LX_TEST/calls"
+        case ${1:-} in
+            daemon-reload) ;;
+            enable)
+                [[ ${2:-} == --now && -n ${3:-} ]] || exit 1
+                if [[ -f $LX_TEST/fail-enable ]]; then
+                    rm "$LX_TEST/fail-enable"
+                    exit 1
+                fi
+                rm -f "$LX_TEST/timer-inactive" "$LX_TEST/timer-failed"
+                printf '%s\n' "$3" > "$LX_TEST/enabled-unit" ;;
+            disable)
+                if [[ -f $LX_TEST/fail-disable ]]; then
+                    rm "$LX_TEST/fail-disable"
+                    exit 1
+                fi
+                rm -f "$LX_TEST/enabled-unit" ;;
+            is-enabled)
+                unit=${*: -1}
+                [[ -f $LX_TEST/enabled-unit && $(<"$LX_TEST/enabled-unit") == "$unit" ]] ;;
+            is-active)
+                unit=${*: -1}
+                [[ $unit == *.timer && -f $LX_TEST/enabled-unit \
+                    && ! -f $LX_TEST/timer-inactive ]] ;;
+            is-failed)
+                unit=${*: -1}
+                if [[ $unit == *.timer ]]; then [[ -f $LX_TEST/timer-failed ]]
+                else [[ -f $LX_TEST/service-failed ]]; fi ;;
+            reset-failed)
+                unit=${*: -1}
+                if [[ $unit == *.timer ]]; then rm -f "$LX_TEST/timer-failed"
+                else rm -f "$LX_TEST/service-failed"; fi ;;
+            show)
+                if [[ $* == *NextElapseUSecRealtime* ]]; then
+                    printf 'Sun 2026-09-06 04:17:00 CEST\n'
+                else
+                    printf 'Sun 2026-08-30 04:11:00 CEST\n'
+                fi ;;
+            list-unit-files)
+                [[ ! -f $LX_TEST/enabled-unit ]] || printf '%s enabled\n' "$(<"$LX_TEST/enabled-unit")" ;;
+            *) ;;
+        esac ;;
     *) exit 64 ;;
 esac

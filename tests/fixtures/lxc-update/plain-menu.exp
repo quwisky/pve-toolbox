@@ -1,0 +1,29 @@
+set timeout 30
+log_user 0
+set env(TERM) xterm
+spawn ./pve-toolbox
+proc need {pattern} {
+    expect {
+        -re $pattern {}
+        timeout {puts "FAIL LXC plain menu timeout: $pattern"; exit 1}
+        eof {puts "FAIL LXC plain menu closed: $pattern"; exit 1}
+    }
+}
+need {configure automatic LXC updates}
+send -- "a\r"
+need {Excluded container IDs}
+send -- "\r"
+need {Discord webhook URL}
+send -- "\r"
+need {Enable automatic LXC package updates}
+send -- "\r"
+need {Schedule preset}
+send -- "\r"
+need {Send a Discord report after every automatic run}
+send -- "\r"
+need {enabled pve-toolbox-lxc-update.timer}
+need {configure automatic LXC updates}
+send -- "q\r"
+expect eof
+catch wait result
+exit [lindex $result 3]

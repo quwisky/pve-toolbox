@@ -172,7 +172,8 @@ menu() {
             "$c_bold" "$c_reset" "$c_bold" "$c_reset"
         printf '  %sx%s uninstall selected             %sq%s quit\n\n' \
             "$c_bold" "$c_reset" "$c_bold" "$c_reset"
-        printf '  %sl%s update LXC container packages\n\n' "$c_bold" "$c_reset"
+        printf '  %sl%s update LXC container packages\n' "$c_bold" "$c_reset"
+        printf '  %sa%s configure automatic LXC updates\n\n' "$c_bold" "$c_reset"
 
         local reply
         read -r -p "> " reply || { echo; return 0; }
@@ -181,6 +182,12 @@ menu() {
         case ${reply,,} in
             q|quit|exit) return 0 ;;
             l|lxc-update) cmd_lxc_update || warn "LXC update did not complete" ;;
+            a|lxc-schedule)
+                step "Configure automatic LXC updates"
+                run_module lxc-update module_status_long || true
+                echo
+                run_module lxc-update module_install \
+                    || warn "LXC automatic-update configuration did not complete" ;;
             i|install)
                 [[ ${#SELECTED[@]} -eq 0 ]] && { warn "nothing selected"; continue; }
                 local m; for m in "${SELECTED[@]}"; do
@@ -485,6 +492,7 @@ cmd_ui() {
             status    "Show detailed status" \
             uninstall "Remove installed modules" \
             lxc-update "Update LXC container packages" \
+            lxc-schedule "Configure automatic LXC updates" \
             quit      "Exit") || { tui_clear; return 0; }
         case $choice in
             install)   ui_action "Install / reconfigure" module_install     all       off ;;
@@ -493,6 +501,7 @@ cmd_ui() {
             status)    ui_action "Status"                module_status_long all       on  ;;
             uninstall) ui_action "Uninstall"             module_uninstall   installed off ;;
             lxc-update) ui_lxc_update ;;
+            lxc-schedule) ui_lxc_schedule ;;
             quit)      tui_clear; return 0 ;;
         esac
     done
@@ -514,6 +523,18 @@ ui_lxc_update() {
     cmd_lxc_update "${flags[@]}" "${targets[@]}" || rc=$?
     [[ $rc == 0 ]] || warn "LXC update returned $rc; inspect the results above"
     read -rsn1 -p "press any key to go back to the menu " _ || true
+}
+
+ui_lxc_schedule() {
+    tui_clear
+    step "Configure automatic LXC updates"
+    run_module lxc-update module_status_long || true
+    echo
+    run_module lxc-update module_install \
+        || warn "LXC automatic-update configuration did not complete"
+    echo
+    read -rsn1 -p "press any key to go back to the menu " _ || true
+    echo
 }
 
 cmd_link() {
@@ -613,7 +634,7 @@ done
 
 command_name=${ARGS[0]:-menu}
 [[ ${#LXC_FLAGS[@]} == 0 || $command_name == lxc-update ]] \
-    || usage_error "--dry-run, --allow-removals, and --notify apply only to lxc-update"
+    || usage_error "LXC update flags apply only to lxc-update"
 if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
     case $command_name in
         status|check|doctor) ;;

@@ -14,7 +14,12 @@ proc choose_lxc {} {
     for {set i 0} {$i < 5} {incr i} {send -- "\033\[B"}
     send -- "\r"
 }
+proc choose_lxc_schedule {} {
+    for {set i 0} {$i < 6} {incr i} {send -- "\033\[B"}
+    send -- "\r"
+}
 need {Install or reconfigure modules}
+need {Configure automatic LXC updates}
 choose_lxc
 need {Choose options}
 need {Send Discord report}
@@ -41,6 +46,21 @@ need {notified: LXC package update report}
 need {press any key to go back}
 send -- " "
 need {Install or reconfigure modules}
+choose_lxc_schedule
+need {Excluded container IDs}
+send -- "\r"
+need {Discord webhook URL}
+send -- "\r"
+need {Enable automatic LXC package updates}
+send -- "y\r"
+need {Schedule preset}
+send -- "\r"
+need {Send a Discord report after every automatic run}
+send -- "\r"
+need {enabled pve-toolbox-lxc-update.timer}
+need {press any key to go back}
+send -- " "
+need {Configure automatic LXC updates}
 send -- "\033"
 expect eof
 catch wait result

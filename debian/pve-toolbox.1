@@ -39,6 +39,11 @@ root and interactive confirmation. Use --dry-run for a cached preview,
 --allow-removals to enable package removals and cleanup, and --notify for
 a Discord report. Saved exclusions always apply. No automatic reboots,
 backups, rollback, or distribution upgrades. Package scripts may restart services.
+Use "pve-toolbox install lxc-update" to configure an optional node-local
+systemd schedule. Scheduled runs update every eligible local container with
+the non-removing policy, never catch up after downtime, and can report every
+batch to Discord when explicitly enabled. Use "pve-toolbox status lxc-update"
+to inspect timer health and recent results.
 .TP
 .B uninstall module ...
 Remove modules after confirmation.

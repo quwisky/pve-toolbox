@@ -27,6 +27,7 @@ test: syntax
 	@./tests/certificate-watch.sh
 	@./tests/upgrade-readiness.sh
 	@./tests/restore-drill.sh
+	@./tests/lxc-schedule.sh
 	@./tests/lxc-update.sh
 	@./tests/discord.sh
 	@./tests/config-backup.sh
