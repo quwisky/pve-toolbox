@@ -13,12 +13,15 @@ fi
 LX_TEST=$(mktemp -d)
 trap 'rm -rf -- "$LX_TEST"' EXIT
 export LX_TEST
-mkdir -p "$LX_TEST/bin" "$LX_TEST/conf" "$LX_TEST/state"
-for cmd in pveversion pvesh pct apt-get apt-mark dpkg awk curl; do
+mkdir -p "$LX_TEST/bin" "$LX_TEST/conf" "$LX_TEST/state" "$LX_TEST/systemd" \
+    "$LX_TEST/toolbox-bin" "$LX_TEST/toolbox-lib"
+for cmd in pveversion pvesh pct apt-get apt-mark dpkg awk curl systemctl systemd-analyze; do
     ln -s "$ROOT/tests/fixtures/lxc-update/command.sh" "$LX_TEST/bin/$cmd"
 done
 export PATH="$LX_TEST/bin:$PATH"
-export TOOLBOX_CONF_DIR="$LX_TEST/conf" TOOLBOX_STATE_DIR="$LX_TEST/state"
+export TOOLBOX_CONF_DIR="$LX_TEST/conf" TOOLBOX_STATE_DIR="$LX_TEST/state" \
+    TOOLBOX_SYSTEMD_DIR="$LX_TEST/systemd" TOOLBOX_BIN_DIR="$LX_TEST/toolbox-bin" \
+    TOOLBOX_LIB_DIR="$LX_TEST/toolbox-lib"
 # shellcheck source=lib/common.sh
 source lib/common.sh
 conf_set lxc-update LX_EXCLUDE 103
@@ -120,7 +123,7 @@ reset_calls
 execute 103 || fail 'explicit excluded container should remain a documented skip'
 [[ ! -s $LX_TEST/calls ]] || fail 'explicit selection bypassed saved exclusion'
 ./pve-toolbox update lxc-update >/dev/null
-[[ ! -s $LX_TEST/calls ]] || fail 'toolkit update ran guest updates'
+if grep -Eq '^(pct|apt) ' "$LX_TEST/calls"; then fail 'toolkit update ran guest updates'; fi
 pass 'exclusions stay authoritative and toolkit module updates do not enter guests'
 
 reset_calls
@@ -160,7 +163,8 @@ pass 'overlapping batch execution fails before entering any guest'
 conf_set lxc-update DISCORD_WEBHOOK https://discord.com/api/webhooks/123/test-webhook
 if command -v whiptail >/dev/null; then
     expect tests/fixtures/lxc-update/menu.exp || fail 'LXC menu flow failed'
-    pass 'driven terminal preview and confirmed Discord-enabled execution'
+    expect tests/fixtures/lxc-update/plain-menu.exp || fail 'LXC plain menu schedule flow failed'
+    pass 'driven terminal manual updates and automatic schedule configuration'
 elif [[ ${TUI_TEST_REQUIRED:-0} == 1 ]]; then
     fail 'LXC menu test requires whiptail'
 else
