@@ -136,7 +136,7 @@ backup_files() {
     done
 }
 
-backup_and_stop_units() {
+backup_unit_state() {
     local backup=$1 unit enabled active
     : > "$backup/units"
     chmod 0600 -- "$backup/units"
@@ -151,11 +151,17 @@ backup_and_stop_units() {
         systemctl is-enabled --quiet "$unit" >/dev/null 2>&1 && enabled=1
         systemctl is-active --quiet "$unit" >/dev/null 2>&1 && active=1
         printf '%s\t%s\t%s\n' "$unit" "$enabled" "$active" >> "$backup/units"
+    done
+}
+
+stop_units() {
+    local backup=$1 unit enabled active
+    while IFS=$'\t' read -r unit enabled active; do
         systemctl stop "$unit" >/dev/null 2>&1 || {
             printf 'pve-toolbox: could not stop migration unit: %s\n' "$unit" >&2
             return 1
         }
-    done
+    done < "$backup/units"
 }
 
 preserve_file_metadata() {
@@ -330,13 +336,13 @@ run_migration() {
     backup="$BACKUP_ROOT/$id-$(date -u +%Y%m%dT%H%M%SZ)-$$"
     mkdir -- "$backup"
     backup_files "$backup"
-    if ! backup_and_stop_units "$backup"; then
-        restore_units "$backup" || true
-        return 1
-    fi
+    backup_unit_state "$backup"
 
     if ! write_pending "$id" "$backup"; then
-        restore_units "$backup" || true
+        return 1
+    fi
+    if ! stop_units "$backup"; then
+        migration_failed "$id" "$backup" 1
         return 1
     fi
     PVE_TOOLBOX_CONF_DIR=$CONF_DIR

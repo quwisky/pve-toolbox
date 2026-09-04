@@ -194,12 +194,20 @@ case $1 in
     is-enabled) [[ ${PVE_TOOLBOX_FAIL_DISABLE:-0} == 1 ]] && exit 1; exit 0 ;;
     is-active) exit 0 ;;
     disable) [[ ${PVE_TOOLBOX_FAIL_DISABLE:-0} == 1 ]] && exit 1; exit 0 ;;
-    stop|daemon-reload|enable|start) exit 0 ;;
+    stop)
+        if [[ ${PVE_TOOLBOX_REQUIRE_PENDING:-0} == 1 \
+            && ! -f $PVE_TOOLBOX_STATE_DIR/migration.pending ]]; then
+            exit 1
+        fi
+        exit 0
+        ;;
+    daemon-reload|enable|start) exit 0 ;;
     *) exit 1 ;;
 esac
 SYSTEMCTL
 chmod 0755 "$WORK/bin/systemctl"
 export PVE_TOOLBOX_SYSTEMCTL_LOG="$WORK/systemctl.log"
+export PVE_TOOLBOX_REQUIRE_PENDING=1
 PATH="$WORK/bin:$PATH"
 export PATH
 
