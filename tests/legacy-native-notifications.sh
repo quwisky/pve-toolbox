@@ -337,4 +337,3 @@ NT_KIND=smtp NT_SMTP_SERVER='smtp.example.invalid' NT_SMTP_PORT=70000 \
     NT_SMTP_MODE=starttls NT_SMTP_MAILTO=ops@example.invalid NT_SMTP_FROM=pve@example.invalid
 _nt_validate && fail "invalid SMTP port was accepted"
 pass "invalid endpoints fail closed before API changes"
-
