@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/quwisky/pve-toolbox/compare/v0.7.0...v0.7.1) (2026-09-05)
+
+
+### Bug Fixes
+
+* **zfs-scrub:** recover missing state during package upgrades ([#68](https://github.com/quwisky/pve-toolbox/issues/68)) ([1b27b85](https://github.com/quwisky/pve-toolbox/commit/1b27b85dc80736a32ad4b9d5faa580ec9a5f62c7))
+
 ## [0.7.0](https://github.com/quwisky/pve-toolbox/compare/v0.6.0...v0.7.0) (2026-09-05)
 
 

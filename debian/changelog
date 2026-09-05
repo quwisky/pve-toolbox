@@ -1,3 +1,9 @@
+pve-toolbox (0.7.1) unstable; urgency=medium
+
+  * **zfs-scrub:** recover missing state during package upgrades ([#68](https://github.com/quwisky/pve-toolbox/issues/68)) ([1b27b85](https://github.com/quwisky/pve-toolbox/commit/1b27b85dc80736a32ad4b9d5faa580ec9a5f62c7))
+
+ -- Bence Nagy <quwisky@qwky.eu>  Sat, 05 Sep 2026 12:05:29 +0000
+
 pve-toolbox (0.7.0) unstable; urgency=medium
 
   * Recover missing ZFS scrub state from validated legacy timer and service
