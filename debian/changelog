@@ -1,5 +1,7 @@
 pve-toolbox (0.6.0) unstable; urgency=medium
 
+  * Fix legacy notification template installation and rollback on pmxcfs,
+    without changing cluster filesystem permissions.
   * **lxc-update:** schedule automatic container updates ([#49](https://github.com/quwisky/pve-toolbox/issues/49)) ([45613e7](https://github.com/quwisky/pve-toolbox/commit/45613e77a845b7f20cf7e7a5d331ff711f34d0de))
 
  -- Bence Nagy <quwisky@qwky.eu>  Fri, 04 Sep 2026 17:34:06 +0000

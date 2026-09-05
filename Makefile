@@ -28,6 +28,7 @@ test: syntax
 	@./tests/doctor.sh
 	@./tests/backup-audit.sh
 	@./tests/native-notify.sh
+	@./tests/legacy-native-notifications.sh
 	@./tests/notification-retirement.sh
 	@./tests/storage-hygiene.sh
 	@./tests/certificate-watch.sh
