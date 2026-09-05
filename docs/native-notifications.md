@@ -49,6 +49,13 @@ then run as root:
 dpkg --configure pve-toolbox
 ```
 
+The retained compatibility module writes template contents without changing
+permissions under `/etc/pve`, where Proxmox assigns permissions by path. This
+fixes the legacy `install: setting permissions ... Operation not permitted`
+failure during asset installation or restoration. If restoring assets fails,
+the error reports the retained private backup directory for recovery instead
+of claiming that restoration succeeded.
+
 ## Removing an old target
 
 Review the route in **Datacenter → Notifications** before deleting anything.
