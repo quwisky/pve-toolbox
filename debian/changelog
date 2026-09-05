@@ -1,3 +1,13 @@
+pve-toolbox (0.7.0) unstable; urgency=medium
+
+  * **notifications:** remove target provisioning ([#65](https://github.com/quwisky/pve-toolbox/issues/65)) ([f36b667](https://github.com/quwisky/pve-toolbox/commit/f36b667501f8bee970c20714cd0c66a83cb48a4b))
+  * **package:** add guarded upgrade migrations ([#62](https://github.com/quwisky/pve-toolbox/issues/62)) ([d2a5f97](https://github.com/quwisky/pve-toolbox/commit/d2a5f97a54dcc58694727e2731f4101d6b6487a3))
+  * **package:** migrate notification ownership ([#64](https://github.com/quwisky/pve-toolbox/issues/64)) ([e7e3d57](https://github.com/quwisky/pve-toolbox/commit/e7e3d57ecac4f41d4922fdb1a741a13c5999fbd9)), closes [#53](https://github.com/quwisky/pve-toolbox/issues/53)
+  * **zfs-scrub:** migrate schedules to native timers ([#66](https://github.com/quwisky/pve-toolbox/issues/66)) ([793d408](https://github.com/quwisky/pve-toolbox/commit/793d408acf34579ea5a8868ca0d117d9405c8815)), closes [#55](https://github.com/quwisky/pve-toolbox/issues/55)
+  * **notifications:** preserve pmxcfs template permissions ([#67](https://github.com/quwisky/pve-toolbox/issues/67)) ([8698c33](https://github.com/quwisky/pve-toolbox/commit/8698c3336701547cea43ec1c89f17761ff9fe3f5))
+
+ -- Bence Nagy <quwisky@qwky.eu>  Sat, 05 Sep 2026 10:47:52 +0000
+
 pve-toolbox (0.6.0) unstable; urgency=medium
 
   * Fix legacy notification template installation and rollback on pmxcfs,
