@@ -60,6 +60,12 @@ package-owned sender and every PVE object, template, and credential. See
 [Native notifications](native-notifications.md) for ongoing management and
 safe removal.
 
+The ZFS scrub schedule migration preserves each pool's effective calendar in
+a native Debian ZFS timer override. It enables the native timer before
+disabling the toolbox timer and never starts a timer or scrub during package
+configuration. See [ZFS scrub](modules/zfs-scrub.md#package-upgrade-schedule-migration)
+for conflict handling, rollback, and activation after the upgrade.
+
 ## Git checkout
 
 PVE 8 hosts use the checkout path, which remains fully supported:
