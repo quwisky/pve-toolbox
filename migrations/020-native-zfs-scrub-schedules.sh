@@ -13,6 +13,7 @@ MIGRATION_KEEP_UNIT_STATE=1
 
 _M020_POOLS=()
 _M020_SCHEDULES=()
+_M020_RECOVER_STATE=0
 
 _m020_error() {
     printf 'pve-toolbox: native ZFS scrub migration: %s\n' "$1" >&2
@@ -52,9 +53,38 @@ _m020_schedule_from() {
     printf '%s' "${calendars[0]}"
 }
 
+_m020_recovery_unit() { # require the protected, unmodified file systemd loaded
+    local unit=$1 file=$2 value
+    _m020_safe_file "$file" 0 || return 1
+    value=$(systemctl show --property=FragmentPath --value "$unit" 2>/dev/null) \
+        && [[ $value == "$file" ]] || return 1
+    value=$(systemctl show --property=DropInPaths --value "$unit" 2>/dev/null) \
+        && [[ -z $value ]] || return 1
+    value=$(systemctl show --property=NeedDaemonReload --value "$unit" 2>/dev/null) \
+        && [[ $value == no ]]
+}
+
+_m020_recovery_service() {
+    local file=$1 conf=$2
+    # Recognize the legacy runner and its config without sourcing credentials
+    # or interpreting arbitrary service files as shell code.
+    awk -v conf="Environment=SCRUB_CONF=$conf" \
+        -v runner="ExecStart=${TOOLBOX_BIN_DIR:-/usr/local/bin}/pve-toolbox-zfs-scrub %i" '
+        /^\[/ { service = ($0 == "[Service]") }
+        service && /^[[:space:]]*ExecStart[[:space:]]*=/ {
+            starts++; if ($0 != runner) bad = 1
+        }
+        service && /^[[:space:]]*Environment[[:space:]]*=/ && /SCRUB_CONF/ {
+            configs++; if ($0 != conf) bad = 1
+        }
+        service && /^[[:space:]]*(EnvironmentFile|UnsetEnvironment)[[:space:]]*=/ { bad = 1 }
+        END { exit !(starts == 1 && configs == 1 && !bad) }
+    ' "$file"
+}
+
 migration_prepare() {
     local conf state systemd_dir timer pool schedule native monthly override
-    local state_value state_pool old_state native_state monthly_state
+    local state_value state_pool old_state native_state monthly_state service target
     local -a timer_pools=() state_pools=()
     local -A timer_seen=() state_seen=()
 
@@ -63,6 +93,7 @@ migration_prepare() {
     systemd_dir=${PVE_TOOLBOX_SYSTEMD_DIR:-/etc/systemd/system}
     _M020_POOLS=()
     _M020_SCHEDULES=()
+    _M020_RECOVER_STATE=0
     MIGRATION_SYSTEMD_FILES=()
     MIGRATION_UNITS=()
 
@@ -99,15 +130,49 @@ migration_prepare() {
         && ! -e $state && ! -L $state ]]; then
         return 0
     fi
-    _m020_safe_file "$conf" 1 && _m020_safe_file "$state" 0 || {
-        _m020_error "legacy config and state must both be protected regular files"
+    _m020_safe_file "$conf" 1 || {
+        _m020_error "legacy config is missing or unsafe; expected a protected regular file: $conf"
         return 1
     }
-    state_value=$(_m020_state_pools "$state") || {
-        _m020_error "could not read the installed pool list from legacy state"
-        return 1
-    }
-    read -r -a state_pools <<<"$state_value"
+    if [[ ! -e $state && ! -L $state ]]; then
+        [[ ${#timer_pools[@]} -gt 0 ]] || {
+            _m020_error "legacy state is missing and no timers establish installed pools; review the retained configuration: $conf"
+            return 1
+        }
+        service="$systemd_dir/pve-toolbox-zfs-scrub@.service"
+        _m020_safe_file "$service" 0 && _m020_recovery_service "$service" "$conf" || {
+            _m020_error "legacy state is missing and the scrub service is missing, unsafe, or unrecognized; restore the original service and retry"
+            return 1
+        }
+        for pool in "${timer_pools[@]}"; do
+            timer="pve-toolbox-zfs-scrub@$pool.timer"
+            target="pve-toolbox-zfs-scrub@$pool.service"
+            _m020_recovery_unit "$timer" "$systemd_dir/$timer" \
+                && _m020_recovery_unit "$target" "$service" || {
+                _m020_error "cannot recover missing state for '$pool': legacy units have overrides, changed paths, or pending edits; review them before retrying"
+                return 1
+            }
+            state_value=$(systemctl show --property=Unit --value "$timer" 2>/dev/null) \
+                && [[ $state_value == "$target" ]] || {
+                _m020_error "cannot recover missing state for '$pool': legacy timer does not target the expected scrub service"
+                return 1
+            }
+        done
+        # Legacy module status/update already use timer files as the pool
+        # inventory. Rebuild only the derived facts needed by this migration.
+        state_pools=("${timer_pools[@]}")
+        _M020_RECOVER_STATE=1
+    else
+        _m020_safe_file "$state" 0 || {
+            _m020_error "legacy state is unsafe; expected a protected regular file: $state"
+            return 1
+        }
+        state_value=$(_m020_state_pools "$state") || {
+            _m020_error "could not read the installed pool list from legacy state"
+            return 1
+        }
+        read -r -a state_pools <<<"$state_value"
+    fi
     [[ ${#state_pools[@]} -gt 0 ]] || {
         _m020_error "legacy state contains no installed pool list"
         return 1
@@ -175,6 +240,10 @@ migration_apply() {
     systemd_dir=${PVE_TOOLBOX_SYSTEMD_DIR:-/etc/systemd/system}
     state="${PVE_TOOLBOX_STATE_DIR}/zfs-scrub.state"
     [[ ${#_M020_POOLS[@]} -gt 0 ]] || return 0
+    if [[ $_M020_RECOVER_STATE -eq 1 && ( -e $state || -L $state ) ]]; then
+        _m020_error "legacy state appeared after recovery preparation; refusing to replace it"
+        return 1
+    fi
 
     for i in "${!_M020_POOLS[@]}"; do
         pool=${_M020_POOLS[$i]}
@@ -228,10 +297,19 @@ EOF
         }
     done
 
-    tmp=$(mktemp "${state%/*}/.zfs-scrub.state.XXXXXX")
-    grep -Ev '^(SCHEDULE_OWNER|NATIVE_TIMER_TEMPLATE)=' "$state" > "$tmp" || true
-    printf 'SCHEDULE_OWNER=%q\n' native >> "$tmp"
-    printf 'NATIVE_TIMER_TEMPLATE=%q\n' zfs-scrub-weekly@.timer >> "$tmp"
-    chmod 0644 -- "$tmp"
-    mv -f -- "$tmp" "$state"
+    tmp=$(mktemp "${state%/*}/.zfs-scrub.state.XXXXXX") || return 1
+    if [[ $_M020_RECOVER_STATE -eq 1 ]]; then
+        printf 'POOLS=%q\n' "${_M020_POOLS[*]}" > "$tmp" \
+            || { rm -f -- "$tmp"; return 1; }
+    else
+        sed '/^SCHEDULE_OWNER=/d; /^NATIVE_TIMER_TEMPLATE=/d' "$state" > "$tmp" \
+            || { rm -f -- "$tmp"; return 1; }
+    fi
+    if ! printf '%s\n' 'SCHEDULE_OWNER=native' \
+        'NATIVE_TIMER_TEMPLATE=zfs-scrub-weekly@.timer' >> "$tmp" \
+        || ! chmod 0644 -- "$tmp" || ! mv -f -- "$tmp" "$state"; then
+        rm -f -- "$tmp"
+        _m020_error "could not write native scrub ownership state"
+        return 1
+    fi
 }

@@ -23,6 +23,26 @@ printf '\t%s' "$@" >> "$PVE_TOOLBOX_SYSTEMCTL_LOG"
 printf '\n' >> "$PVE_TOOLBOX_SYSTEMCTL_LOG"
 unit=${*: -1}
 case $action in
+    show)
+        property=${1#--property=}
+        case $property in
+            FragmentPath)
+                if [[ ${PVE_TOOLBOX_FAKE_FRAGMENT:-} ]]; then
+                    printf '%s\n' "$PVE_TOOLBOX_FAKE_FRAGMENT"
+                    exit 0
+                fi
+                if [[ $unit == *.service ]]; then
+                    printf '%s/pve-toolbox-zfs-scrub@.service\n' "$PVE_TOOLBOX_SYSTEMD_DIR"
+                else
+                    printf '%s/%s\n' "$PVE_TOOLBOX_SYSTEMD_DIR" "$unit"
+                fi
+                ;;
+            DropInPaths) printf '%s' "${PVE_TOOLBOX_FAKE_DROP_INS:-}" ;;
+            NeedDaemonReload) printf '%s\n' "${PVE_TOOLBOX_FAKE_RELOAD:-no}" ;;
+            Unit) printf '%s\n' "${PVE_TOOLBOX_FAKE_TIMER_UNIT:-${unit%.timer}.service}" ;;
+            *) exit 64 ;;
+        esac
+        ;;
     cat)
         [[ -f $root/templates/$unit ]]
         ;;
@@ -64,6 +84,16 @@ set -euo pipefail
 [[ ${1:-} == calendar && -n ${2:-} && $2 != invalid ]]
 ANALYZE
     chmod 0755 "$bin/systemd-analyze"
+    cat > "$bin/mv" <<'MOVE'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${PVE_TOOLBOX_FAIL_RECORD:-0} == 1 \
+    && ${!#} == "$PVE_TOOLBOX_STATE_DIR/migrations.state" ]]; then
+    exit 9
+fi
+exec "$PVE_TOOLBOX_TEST_REAL_MV" "$@"
+MOVE
+    chmod 0755 "$bin/mv"
 }
 
 setup_case() { # setup_case <dir> <pool|schedule|active>...
@@ -80,6 +110,13 @@ setup_case() { # setup_case <dir> <pool|schedule|active>...
     printf 'DISCORD_WEBHOOK=%q\n' 'https://discord.com/api/webhooks/id/token' \
         > "$case_dir/config/zfs-scrub.conf"
     chmod 0600 "$case_dir/config/zfs-scrub.conf"
+    cat > "$case_dir/systemd/pve-toolbox-zfs-scrub@.service" <<EOF
+[Service]
+Type=oneshot
+Environment=SCRUB_CONF=$case_dir/config/zfs-scrub.conf
+ExecStart=/usr/local/bin/pve-toolbox-zfs-scrub %i
+EOF
+    chmod 0644 "$case_dir/systemd/pve-toolbox-zfs-scrub@.service"
     for fixture in "$@"; do
         pool=${fixture%%|*}
         active=${fixture##*|}
@@ -119,6 +156,7 @@ run_case() { # run_case <dir> [environment assignments...]
         PVE_TOOLBOX_RUN_DIR="$case_dir/run" \
         PVE_TOOLBOX_SYSTEMCTL_ROOT="$case_dir/systemctl" \
         PVE_TOOLBOX_SYSTEMCTL_LOG="$case_dir/systemctl.log" \
+        PVE_TOOLBOX_TEST_REAL_MV="$(command -v mv)" \
         "$@" "$ROOT/scripts/run-migrations.sh" 0.6.0
 }
 
@@ -178,6 +216,107 @@ run_case "$success" >/dev/null || fail "repeat migration failed"
     || fail "completed migration changed timer state again"
 pass "multiple pools preserve exact schedules without starting a scrub"
 pass "completed native timer migration is idempotent"
+
+recovered="$WORK/recovered"
+setup_case "$recovered" \
+    'data-pool|Sun *-*-01..07 03:00:00|active' \
+    'fast-data-pool|Mon *-*-15..21 04:30:00|inactive'
+rm -- "$recovered/state/zfs-scrub.state"
+recovered_conf=$(sha256sum "$recovered/config/zfs-scrub.conf")
+run_case "$recovered" >/dev/null || fail "missing state blocked valid legacy timers"
+grep -Fxq 'POOLS=data-pool\ fast-data-pool' "$recovered/state/zfs-scrub.state" \
+    || fail "recovered pool list does not match legacy timers"
+grep -Fxq SCHEDULE_OWNER=native "$recovered/state/zfs-scrub.state" \
+    || fail "recovered state omitted native ownership"
+[[ $(wc -l < "$recovered/state/zfs-scrub.state") -eq 3 \
+    && $(stat -c '%a' "$recovered/state/zfs-scrub.state") == 644 \
+    && $(sha256sum "$recovered/config/zfs-scrub.conf") == "$recovered_conf" ]] \
+    || fail "state recovery invented metadata or changed private configuration"
+grep -Fxq 'OnCalendar=Sun *-*-01..07 03:00:00' \
+    "$recovered/systemd/zfs-scrub-weekly@data-pool.timer.d/override.conf" \
+    || fail "state recovery changed the data-pool calendar"
+grep -Fxq 'OnCalendar=Mon *-*-15..21 04:30:00' \
+    "$recovered/systemd/zfs-scrub-weekly@fast-data-pool.timer.d/override.conf" \
+    || fail "state recovery changed the fast-data-pool calendar"
+if grep -E $'^start\t|^(enable|stop)\t.*(\.service|--now)' \
+    "$recovered/systemctl.log" >/dev/null; then
+    fail "state recovery started a timer or affected a scrub service"
+fi
+recovered_sum=$(sha256sum "$recovered/state/zfs-scrub.state")
+log_lines=$(wc -l < "$recovered/systemctl.log")
+run_case "$recovered" >/dev/null || fail "recovered migration retry failed"
+[[ $(sha256sum "$recovered/state/zfs-scrub.state") == "$recovered_sum" \
+    && $(wc -l < "$recovered/systemctl.log") -eq $log_lines ]] \
+    || fail "completed recovery was not idempotent"
+pass "missing state is recovered from legacy schedules without starting a scrub"
+
+for unsafe_case in state-link state-directory state-writable state-mismatch \
+    missing-config missing-service service-writable foreign-service \
+    foreign-timer drop-ins pending-edits wrong-fragment native-conflict; do
+    unsafe="$WORK/$unsafe_case"
+    setup_case "$unsafe" 'data-pool|weekly|active'
+    rm -- "$unsafe/state/zfs-scrub.state"
+    extra_env=()
+    case $unsafe_case in
+        state-link) ln -s "$unsafe/state/absent" "$unsafe/state/zfs-scrub.state" ;;
+        state-directory) mkdir "$unsafe/state/zfs-scrub.state" ;;
+        state-writable)
+            printf 'POOLS=data-pool\n' > "$unsafe/state/zfs-scrub.state"
+            chmod 0666 "$unsafe/state/zfs-scrub.state"
+            ;;
+        state-mismatch) printf 'POOLS=other-pool\n' > "$unsafe/state/zfs-scrub.state" ;;
+        missing-config) rm -- "$unsafe/config/zfs-scrub.conf" ;;
+        missing-service) rm -- "$unsafe/systemd/pve-toolbox-zfs-scrub@.service" ;;
+        service-writable) chmod 0666 "$unsafe/systemd/pve-toolbox-zfs-scrub@.service" ;;
+        foreign-service)
+            sed -i 's|^ExecStart=.*|ExecStart=/bin/true|' \
+                "$unsafe/systemd/pve-toolbox-zfs-scrub@.service"
+            ;;
+        foreign-timer) extra_env+=(PVE_TOOLBOX_FAKE_TIMER_UNIT=operator.service) ;;
+        drop-ins) extra_env+=(PVE_TOOLBOX_FAKE_DROP_INS=/run/systemd/system/timer.d/custom.conf) ;;
+        pending-edits) extra_env+=(PVE_TOOLBOX_FAKE_RELOAD=yes) ;;
+        wrong-fragment) extra_env+=(PVE_TOOLBOX_FAKE_FRAGMENT=/run/systemd/system/other.timer) ;;
+        native-conflict) : > "$unsafe/systemctl/enabled/zfs-scrub-weekly@data-pool.timer" ;;
+    esac
+    unsafe_timer=$(sha256sum "$unsafe/systemd/pve-toolbox-zfs-scrub@data-pool.timer")
+    unsafe_rc=0
+    run_case "$unsafe" "${extra_env[@]}" > "$unsafe/output" 2>&1 || unsafe_rc=$?
+    [[ $unsafe_rc -ne 0 && ! -e $unsafe/state/migrations.state \
+        && ! -e $unsafe/systemd/zfs-scrub-weekly@data-pool.timer.d \
+        && $(sha256sum "$unsafe/systemd/pve-toolbox-zfs-scrub@data-pool.timer") == "$unsafe_timer" ]] \
+        || fail "$unsafe_case was accepted or changed timer files"
+    if [[ -f $unsafe/systemctl.log ]] \
+        && grep -E '^(enable|disable|start|stop|daemon-reload)' "$unsafe/systemctl.log" >/dev/null; then
+        fail "$unsafe_case changed systemd before validation completed"
+    fi
+    [[ $(<"$unsafe/output") != *api/webhooks/id/token* ]] || fail "$unsafe_case leaked configuration"
+done
+pass "state recovery rejects unsafe, inconsistent, foreign, overridden, and conflicting installations"
+
+recover_rollback="$WORK/recover-rollback"
+setup_case "$recover_rollback" 'data-pool|weekly|active' 'fast-data-pool|monthly|inactive'
+rm -- "$recover_rollback/state/zfs-scrub.state"
+recover_rc=0
+run_case "$recover_rollback" PVE_TOOLBOX_FAIL_RECORD=1 \
+    > "$recover_rollback/output" 2>&1 || recover_rc=$?
+[[ $recover_rc -ne 0 && $(<"$recover_rollback/output") == *'restored files'* \
+    && ! -e $recover_rollback/state/zfs-scrub.state \
+    && ! -e $recover_rollback/state/migrations.state ]] \
+    || fail "failed completion did not restore the original absence of state"
+for pool in data-pool fast-data-pool; do
+    assert_enabled "$recover_rollback" "pve-toolbox-zfs-scrub@$pool.timer" \
+        || fail "recovery rollback did not restore the legacy timer"
+    assert_disabled "$recover_rollback" "zfs-scrub-weekly@$pool.timer" \
+        || fail "recovery rollback retained a native timer"
+    [[ ! -e $recover_rollback/systemd/zfs-scrub-weekly@$pool.timer.d ]] \
+        || fail "recovery rollback retained an override"
+done
+assert_active "$recover_rollback" pve-toolbox-zfs-scrub@data-pool.timer \
+    || fail "recovery rollback lost the previously active timer"
+assert_inactive "$recover_rollback" pve-toolbox-zfs-scrub@fast-data-pool.timer \
+    || fail "recovery rollback started a previously inactive timer"
+run_case "$recover_rollback" >/dev/null || fail "missing-state recovery could not retry after rollback"
+pass "failed recovery removes reconstructed state, restores schedules, and remains retryable"
 
 conflict="$WORK/conflict"
 setup_case "$conflict" 'tank|weekly|active'

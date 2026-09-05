@@ -1,5 +1,7 @@
 pve-toolbox (0.7.0) unstable; urgency=medium
 
+  * Recover missing ZFS scrub state from validated legacy timer and service
+    configuration during upgrades, preserving schedules and rollback.
   * **notifications:** remove target provisioning ([#65](https://github.com/quwisky/pve-toolbox/issues/65)) ([f36b667](https://github.com/quwisky/pve-toolbox/commit/f36b667501f8bee970c20714cd0c66a83cb48a4b))
   * **package:** add guarded upgrade migrations ([#62](https://github.com/quwisky/pve-toolbox/issues/62)) ([d2a5f97](https://github.com/quwisky/pve-toolbox/commit/d2a5f97a54dcc58694727e2731f4101d6b6487a3))
   * **package:** migrate notification ownership ([#64](https://github.com/quwisky/pve-toolbox/issues/64)) ([e7e3d57](https://github.com/quwisky/pve-toolbox/commit/e7e3d57ecac4f41d4922fdb1a741a13c5999fbd9)), closes [#53](https://github.com/quwisky/pve-toolbox/issues/53)
