@@ -298,10 +298,11 @@ _nt_snapshot_config() {
 _nt_install_assets() {
     local template_dir file
     template_dir=$(_nt_template_dir)
-    mkdir -p "$TOOLBOX_BIN_DIR" "$template_dir"
-    install -m 0755 "$(_nt_helper_src)" "$TOOLBOX_BIN_DIR/$NT_HELPER"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$template_dir" || return 1
+    install -m 0755 "$(_nt_helper_src)" "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
     for file in "${NT_TEMPLATE_FILES[@]}"; do
-        install -m 0644 "$(_nt_template_src "$file")" "$template_dir/$file"
+        # pmxcfs assigns permissions by path and rejects chmod, even as root.
+        cat -- "$(_nt_template_src "$file")" > "$template_dir/$file" || return 1
     done
 }
 
@@ -322,16 +323,16 @@ _nt_backup_assets() { # _nt_backup_assets <directory>
 _nt_restore_assets() { # _nt_restore_assets <directory>
     local backup=$1 template_dir file
     template_dir=$(_nt_template_dir)
-    rm -f -- "$TOOLBOX_BIN_DIR/$NT_HELPER"
+    rm -f -- "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
     for file in "${NT_TEMPLATE_FILES[@]}"; do
-        rm -f -- "$template_dir/$file"
+        rm -f -- "$template_dir/$file" || return 1
     done
     if [[ -f $backup/helper ]]; then
-        install -m 0755 "$backup/helper" "$TOOLBOX_BIN_DIR/$NT_HELPER"
+        install -m 0755 "$backup/helper" "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
     fi
     for file in "${NT_TEMPLATE_FILES[@]}"; do
         if [[ -f $backup/templates/$file ]]; then
-            install -m 0644 "$backup/templates/$file" "$template_dir/$file"
+            cat -- "$backup/templates/$file" > "$template_dir/$file" || return 1
         fi
     done
 }
@@ -432,7 +433,10 @@ _nt_configure() {
         || ! _nt_apply_matcher "$matcher_action" \
         || ! _nt_test_target; then
         _nt_restore_previous "$old_conf" "$target_existed" "$matcher_existed"
-        _nt_restore_assets "$asset_backup"
+        if ! _nt_restore_assets "$asset_backup"; then
+            [[ -z $old_conf ]] || rm -f -- "$old_conf"
+            die "native notification configuration failed and asset rollback failed; asset backup retained at $asset_backup"
+        fi
         [[ -z $old_conf ]] || rm -f -- "$old_conf"
         rm -rf -- "$asset_backup"
         die "native notification configuration or test delivery failed; previous owned objects were restored"
