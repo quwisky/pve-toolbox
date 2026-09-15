@@ -28,6 +28,22 @@ NT_ERROR=""
 
 _nt_dir() { printf '%s/modules/%s' "${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}" "$MODULE_NAME"; }
 _nt_src() { printf '%s/%s' "$(_nt_dir)" "$1"; }
+_nt_helper_src() {
+    local root=${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}
+    if [[ -f $root/scripts/$NT_HELPER ]]; then
+        printf '%s/scripts/%s' "$root" "$NT_HELPER"
+    else
+        printf '/usr/bin/%s' "$NT_HELPER"
+    fi
+}
+_nt_template_src() {
+    local root=${TOOLBOX_ROOT:-/usr/lib/pve-toolbox}
+    if [[ -f $root/share/notification-templates/$1 ]]; then
+        printf '%s/share/notification-templates/%s' "$root" "$1"
+    else
+        printf '/usr/share/pve-toolbox/notification-templates/%s' "$1"
+    fi
+}
 _nt_template_dir() { printf '%s' "${NT_TEMPLATE_DIR:-/etc/pve/notification-templates/default}"; }
 _nt_pve_dir() { printf '%s' "${NT_PVE_DIR:-/etc/pve}"; }
 
@@ -282,10 +298,11 @@ _nt_snapshot_config() {
 _nt_install_assets() {
     local template_dir file
     template_dir=$(_nt_template_dir)
-    mkdir -p "$TOOLBOX_BIN_DIR" "$template_dir"
-    install -m 0755 "$(_nt_src "$NT_HELPER")" "$TOOLBOX_BIN_DIR/$NT_HELPER"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$template_dir" || return 1
+    install -m 0755 "$(_nt_helper_src)" "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
     for file in "${NT_TEMPLATE_FILES[@]}"; do
-        install -m 0644 "$(_nt_src "$file")" "$template_dir/$file"
+        # pmxcfs assigns permissions by path and rejects chmod, even as root.
+        cat -- "$(_nt_template_src "$file")" > "$template_dir/$file" || return 1
     done
 }
 
@@ -306,16 +323,16 @@ _nt_backup_assets() { # _nt_backup_assets <directory>
 _nt_restore_assets() { # _nt_restore_assets <directory>
     local backup=$1 template_dir file
     template_dir=$(_nt_template_dir)
-    rm -f -- "$TOOLBOX_BIN_DIR/$NT_HELPER"
+    rm -f -- "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
     for file in "${NT_TEMPLATE_FILES[@]}"; do
-        rm -f -- "$template_dir/$file"
+        rm -f -- "$template_dir/$file" || return 1
     done
     if [[ -f $backup/helper ]]; then
-        install -m 0755 "$backup/helper" "$TOOLBOX_BIN_DIR/$NT_HELPER"
+        install -m 0755 "$backup/helper" "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
     fi
     for file in "${NT_TEMPLATE_FILES[@]}"; do
         if [[ -f $backup/templates/$file ]]; then
-            install -m 0644 "$backup/templates/$file" "$template_dir/$file"
+            cat -- "$backup/templates/$file" > "$template_dir/$file" || return 1
         fi
     done
 }
@@ -349,9 +366,9 @@ _nt_assets_owned_or_absent() {
 _nt_assets_current() {
     local template_dir file
     template_dir=$(_nt_template_dir)
-    cmp -s "$(_nt_src "$NT_HELPER")" "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
+    cmp -s "$(_nt_helper_src)" "$TOOLBOX_BIN_DIR/$NT_HELPER" || return 1
     for file in "${NT_TEMPLATE_FILES[@]}"; do
-        cmp -s "$(_nt_src "$file")" "$template_dir/$file" || return 1
+        cmp -s "$(_nt_template_src "$file")" "$template_dir/$file" || return 1
     done
 }
 
@@ -416,7 +433,10 @@ _nt_configure() {
         || ! _nt_apply_matcher "$matcher_action" \
         || ! _nt_test_target; then
         _nt_restore_previous "$old_conf" "$target_existed" "$matcher_existed"
-        _nt_restore_assets "$asset_backup"
+        if ! _nt_restore_assets "$asset_backup"; then
+            [[ -z $old_conf ]] || rm -f -- "$old_conf"
+            die "native notification configuration failed and asset rollback failed; asset backup retained at $asset_backup"
+        fi
         [[ -z $old_conf ]] || rm -f -- "$old_conf"
         rm -rf -- "$asset_backup"
         die "native notification configuration or test delivery failed; previous owned objects were restored"

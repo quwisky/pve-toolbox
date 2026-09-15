@@ -92,5 +92,6 @@ run record exists and retains the last report. If automatic cleanup is refused,
 inspect the run state and VMID manually; never delete a guest based only on its
 number.
 
-When `native-notifications` is installed, restore and probe outcomes are sent
-through its shared helper. Notification failure never weakens restore safety.
+When the package-owned native notification helper can route to a configured PVE
+matcher, restore and probe outcomes are sent through it. Notification failure
+never weakens restore safety.

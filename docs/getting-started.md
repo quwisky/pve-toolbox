@@ -19,6 +19,53 @@ If `/usr/local/bin/pve-toolbox` still points to an older checkout, it precedes
 symlink but never removes it automatically; verify the packaged command and
 remove the old symlink yourself.
 
+## Package upgrade migrations
+
+Package upgrades may include migrations for configuration created by an older
+release. They run automatically during `apt upgrade`, before package-managed
+services are restarted, and never prompt for input. A fresh installation does
+not initialize or run migrations.
+
+Before a migration changes a file, the package copies it with its ownership and
+permissions into `/var/backups/pve-toolbox/migrations/`. Completed migration IDs
+are recorded in `/var/lib/pve-toolbox/migrations.state`, so reinstalling or
+retrying the package does not repeat completed work.
+
+If a migration fails, its declared files and systemd unit state are restored
+and dpkg leaves `pve-toolbox` unconfigured. Read the named migration and backup
+path in the error, correct the underlying problem, and retry as root:
+
+```bash
+dpkg --configure pve-toolbox
+```
+
+An interrupted migration is restored from its retained backup before the same
+migration is attempted again. Do not delete
+`/var/lib/pve-toolbox/migration.pending` or its referenced backup while recovery
+is pending.
+
+The notification ownership migration verifies the legacy toolbox identity,
+the PVE target and matcher, the shipped templates, and both target and custom
+event delivery. It then removes only
+`/etc/pve-toolbox/native-notifications.conf` and
+`/var/lib/pve-toolbox/native-notifications.state`. The target, matcher, enabled
+state, routing rules, templates, and protected PVE credentials remain in PVE.
+The verification sends one PVE target test and one custom `pve-toolbox` event,
+so matching notification destinations receive test messages during the upgrade.
+If an object or helper has changed since the toolbox created it, the package
+upgrade stops with a specific error and leaves the legacy files in place.
+After the migration is recorded, package cleanup removes the obsolete module,
+the unmodified `/usr/local` sender, and private module backups. It retains the
+package-owned sender and every PVE object, template, and credential. See
+[Native notifications](native-notifications.md) for ongoing management and
+safe removal.
+
+The ZFS scrub schedule migration preserves each pool's effective calendar in
+a native Debian ZFS timer override. It enables the native timer before
+disabling the toolbox timer and never starts a timer or scrub during package
+configuration. See [ZFS scrub](modules/zfs-scrub.md#package-upgrade-schedule-migration)
+for conflict handling, rollback, and activation after the upgrade.
+
 ## Git checkout
 
 PVE 8 hosts use the checkout path, which remains fully supported:

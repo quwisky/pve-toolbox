@@ -26,12 +26,21 @@ fi
 
 WORK=$(mktemp -d)
 PACKAGE_TOUCHED=0
+BACKUP_TOUCHED=0
 cleanup() {
     status=$?
     trap - EXIT
     if [[ $PACKAGE_TOUCHED -eq 1 ]]; then
         if ! dpkg --purge pve-toolbox >/dev/null; then
             printf 'FAIL could not purge pve-toolbox during cleanup\n' >&2
+            status=1
+        fi
+    fi
+    if [[ $BACKUP_TOUCHED -eq 1 ]]; then
+        if [[ -d /var/backups/pve-toolbox && ! -L /var/backups/pve-toolbox ]]; then
+            rm -rf -- /var/backups/pve-toolbox
+        else
+            printf 'FAIL refusing unsafe package-test backup cleanup\n' >&2
             status=1
         fi
     fi
@@ -74,6 +83,11 @@ expected_manifest="$WORK/expected-runtime-manifest"
 actual_manifest="$WORK/actual-runtime-manifest"
 {
     printf '%s\n' VERSION
+    printf '%s\n' run-migrations.sh
+    printf '%s\n' retire-native-notifications.sh
+    for source in "$ROOT"/migrations/*.sh; do
+        printf 'migrations/%s\n' "${source##*/}"
+    done
     for source in "$ROOT"/lib/*.sh; do
         printf 'lib/%s\n' "${source##*/}"
     done
@@ -81,6 +95,7 @@ actual_manifest="$WORK/actual-runtime-manifest"
         printf '%s\n' "${source#"$ROOT/"}"
     done < <(find "$ROOT/modules" -mindepth 2 -type f \
         ! -path "$ROOT/modules/_*/*" -print0)
+    printf '%s\n' modules/native-notifications/module.sh
 } | LC_ALL=C sort > "$expected_manifest"
 find "$WORK/root/usr/lib/pve-toolbox" -type f -printf '%P\n' \
     | LC_ALL=C sort > "$actual_manifest"
@@ -95,6 +110,18 @@ for source in "$ROOT"/lib/*.sh; do
     [[ $(stat -c '%a' "$target") == "$expected_mode" ]] \
         || fail "packaged lib/${source##*/} has the wrong mode"
 done
+cmp -s "$ROOT/scripts/run-migrations.sh" \
+    "$WORK/root/usr/lib/pve-toolbox/run-migrations.sh" \
+    || fail "packaged migration runner differs from source"
+[[ $(stat -c '%a' "$WORK/root/usr/lib/pve-toolbox/run-migrations.sh") == 755 ]] \
+    || fail "packaged migration runner has the wrong mode"
+cmp -s "$ROOT/scripts/retire-native-notifications.sh" \
+    "$WORK/root/usr/lib/pve-toolbox/retire-native-notifications.sh" \
+    || fail "packaged notification retirement helper differs from source"
+[[ $(stat -c '%a' "$WORK/root/usr/lib/pve-toolbox/retire-native-notifications.sh") == 755 ]] \
+    || fail "packaged notification retirement helper has the wrong mode"
+[[ -d $WORK/root/usr/lib/pve-toolbox/migrations ]] \
+    || fail "package omitted the migration directory"
 while IFS= read -r -d '' source; do
     relative=${source#"$ROOT/"}
     target="$WORK/root/usr/lib/pve-toolbox/$relative"
@@ -104,8 +131,14 @@ while IFS= read -r -d '' source; do
     [[ $(stat -c '%a' "$target") == "$expected_mode" ]] \
         || fail "packaged $relative has the wrong mode"
 done < <(find "$ROOT/modules" -mindepth 2 -type f ! -path "$ROOT/modules/_*/*" -print0)
+cmp -s "$ROOT/debian/legacy/native-notifications/module.sh" \
+    "$WORK/root/usr/lib/pve-toolbox/modules/native-notifications/module.sh" \
+    || fail "packaged notification compatibility module differs from source"
+[[ $(stat -c '%a' "$WORK/root/usr/lib/pve-toolbox/modules/native-notifications/module.sh") == 644 ]] \
+    || fail "packaged notification compatibility module has the wrong mode"
 for target in \
     "$WORK/root/usr/bin/pve-toolbox" \
+    "$WORK/root/usr/bin/pve-toolbox-native-notify" \
     "$WORK/root/usr/share/man/man1/pve-toolbox.1.gz" \
     "$WORK/root/usr/share/bash-completion/completions/pve-toolbox" \
     "$WORK/root/usr/share/zsh/vendor-completions/_pve-toolbox"
@@ -114,6 +147,14 @@ do
 done
 cmp -s "$ROOT/pve-toolbox" "$WORK/root/usr/bin/pve-toolbox" \
     || fail "packaged launcher differs from source"
+cmp -s "$ROOT/scripts/pve-toolbox-native-notify" \
+    "$WORK/root/usr/bin/pve-toolbox-native-notify" \
+    || fail "packaged native notification sender differs from source"
+for source in "$ROOT"/share/notification-templates/*.hbs; do
+    target="$WORK/root/usr/share/pve-toolbox/notification-templates/${source##*/}"
+    cmp -s "$source" "$target" \
+        || fail "packaged notification template ${source##*/} differs from source"
+done
 cmp -s "$ROOT/completions/pve-toolbox.bash" \
     "$WORK/root/usr/share/bash-completion/completions/pve-toolbox" \
     || fail "packaged Bash completion differs from source"
@@ -145,6 +186,22 @@ grep -q '/usr/local/bin/pve-toolbox' "$WORK/control/postinst" \
     || fail "postinst does not warn about a shadowing checkout"
 grep -q 'targets Debian 13 (trixie) / PVE 9' "$WORK/control/postinst" \
     || fail "postinst does not warn on unsupported hosts"
+grep -Fq '[ "$1" = configure ]' "$WORK/control/postinst" \
+    || fail "postinst does not limit lifecycle work to package configuration"
+grep -Fq '/usr/lib/pve-toolbox/run-migrations.sh "$2"' "$WORK/control/postinst" \
+    || fail "postinst does not run package migrations"
+grep -Fq '/usr/lib/pve-toolbox/retire-native-notifications.sh upgrade "$2"' \
+    "$WORK/control/postinst" \
+    || fail "postinst does not retire notification provisioning after upgrades"
+grep -Fq '/usr/lib/pve-toolbox/retire-native-notifications.sh fresh' \
+    "$WORK/control/postinst" \
+    || fail "postinst does not remove notification provisioning on fresh installs"
+migration_line=$(grep -Fn '/usr/lib/pve-toolbox/run-migrations.sh "$2"' \
+    "$WORK/control/postinst" | cut -d: -f1)
+retirement_line=$(grep -Fn '/usr/lib/pve-toolbox/retire-native-notifications.sh upgrade "$2"' \
+    "$WORK/control/postinst" | cut -d: -f1)
+[[ $migration_line -lt $retirement_line ]] \
+    || fail "postinst may retire notification provisioning before migration"
 grep -q '\[ "$1" = purge \]' "$WORK/control/postrm" \
     || fail "postrm does not distinguish purge from remove"
 [[ $(stat -c '%a' "$WORK/root/etc/pve-toolbox") == 750 ]] \
@@ -162,7 +219,8 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
         | grep -q '^installed$'; then
         fail "refusing to replace an existing pve-toolbox package"
     fi
-    for path in /usr/bin/pve-toolbox /etc/pve-toolbox /var/lib/pve-toolbox; do
+    for path in /usr/bin/pve-toolbox /etc/pve-toolbox /var/lib/pve-toolbox \
+        /var/backups/pve-toolbox; do
         [[ ! -e $path && ! -L $path ]] \
             || fail "refusing to replace an existing package path: $path"
     done
@@ -175,6 +233,171 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
     dpkg -i "$deb" >/dev/null
     [[ $(/usr/bin/pve-toolbox --version) == "pve-toolbox $expected_version" ]] \
         || fail "the installed package did not run"
+    [[ ! -e /var/lib/pve-toolbox/migrations.state \
+        && ! -e /var/backups/pve-toolbox/migrations ]] \
+        || fail "a fresh install ran or initialized package migrations"
+    [[ ! -e /usr/lib/pve-toolbox/modules/native-notifications ]] \
+        || fail "fresh install retained notification provisioning"
+    if /usr/bin/pve-toolbox _complete modules | grep -Fxq native-notifications; then
+        fail "fresh install advertises notification provisioning"
+    fi
+    [[ -x /usr/bin/pve-toolbox-native-notify ]] \
+        || fail "fresh install removed the package-owned notification sender"
+    [[ $(stat -c '%u' /usr/lib/pve-toolbox/migrations) -eq 0 \
+        && $(stat -c '%a' /usr/lib/pve-toolbox/migrations) == 755 ]] \
+        || fail "installed migration directory is not root-owned and protected"
+
+    printf 'FORMAT=old\n' > /etc/pve-toolbox/migration-test.conf
+    chmod 0640 /etc/pve-toolbox/migration-test.conf
+    dpkg-deb --raw-extract "$deb" "$WORK/upgrade-success"
+    success_version="${expected_version}+migrationtest1"
+    sed -i "s/^Version: .*/Version: $success_version/" \
+        "$WORK/upgrade-success/DEBIAN/control"
+    rm -f -- "$WORK/upgrade-success/DEBIAN/md5sums"
+    success_migration="$WORK/upgrade-success/usr/lib/pve-toolbox/migrations/900-package-test.sh"
+    printf 'MIGRATION_TARGET_VERSION=%q\n' "$success_version" > "$success_migration"
+    cat >> "$success_migration" <<'MIGRATION'
+MIGRATION_FILES=(/etc/pve-toolbox/migration-test.conf)
+MIGRATION_UNITS=()
+migration_apply() {
+    [[ $(</etc/pve-toolbox/migration-test.conf) == FORMAT=old ]] || return 1
+    printf 'FORMAT=current\n' > /etc/pve-toolbox/migration-test.conf
+    printf '%s\n' "$PVE_TOOLBOX_PREVIOUS_VERSION" \
+        > /var/lib/pve-toolbox/migration-test.previous
+    printf 'applied\n' >> /var/lib/pve-toolbox/migration-test.calls
+}
+MIGRATION
+    chmod 0644 "$success_migration"
+    dpkg-deb --build "$WORK/upgrade-success" "$WORK/upgrade-success.deb" >/dev/null
+    BACKUP_TOUCHED=1
+    dpkg -i "$WORK/upgrade-success.deb" >/dev/null
+    [[ $(</etc/pve-toolbox/migration-test.conf) == FORMAT=current ]] \
+        || fail "package upgrade did not migrate configuration"
+    [[ $(stat -c '%a' /etc/pve-toolbox/migration-test.conf) == 640 ]] \
+        || fail "package migration changed configuration permissions"
+    [[ $(</var/lib/pve-toolbox/migration-test.previous) == "$expected_version" ]] \
+        || fail "package migration did not receive the previous version"
+    grep -Fxq 900-package-test /var/lib/pve-toolbox/migrations.state \
+        || fail "package upgrade did not record its migration"
+    [[ ! -e /usr/lib/pve-toolbox/modules/native-notifications \
+        && -x /usr/bin/pve-toolbox-native-notify ]] \
+        || fail "successful upgrade did not retire only notification provisioning"
+    package_backup=$(find /var/backups/pve-toolbox/migrations \
+        -path '*/files/etc/pve-toolbox/migration-test.conf' -type f -print -quit)
+    [[ -n $package_backup && $(<"$package_backup") == FORMAT=old ]] \
+        || fail "package upgrade did not retain the original configuration"
+    dpkg -i "$WORK/upgrade-success.deb" >/dev/null
+    [[ $(grep -c '^applied$' /var/lib/pve-toolbox/migration-test.calls) -eq 1 ]] \
+        || fail "reinstall reran a completed package migration"
+
+    printf 'RETRY=old\n' > /etc/pve-toolbox/migration-retry.conf
+    chmod 0600 /etc/pve-toolbox/migration-retry.conf
+    dpkg-deb --raw-extract "$deb" "$WORK/upgrade-retry"
+    retry_version="${expected_version}+migrationtest2"
+    sed -i "s/^Version: .*/Version: $retry_version/" \
+        "$WORK/upgrade-retry/DEBIAN/control"
+    rm -f -- "$WORK/upgrade-retry/DEBIAN/md5sums"
+    retry_migration="$WORK/upgrade-retry/usr/lib/pve-toolbox/migrations/910-package-retry.sh"
+    printf 'MIGRATION_TARGET_VERSION=%q\n' "$retry_version" > "$retry_migration"
+    cat >> "$retry_migration" <<'MIGRATION'
+MIGRATION_FILES=(/etc/pve-toolbox/migration-retry.conf)
+MIGRATION_UNITS=()
+migration_apply() {
+    printf 'RETRY=partial\n' > /etc/pve-toolbox/migration-retry.conf
+    [[ -f /var/lib/pve-toolbox/allow-package-retry ]] || return 1
+    printf 'RETRY=current\n' > /etc/pve-toolbox/migration-retry.conf
+}
+MIGRATION
+    chmod 0644 "$retry_migration"
+    dpkg-deb --build "$WORK/upgrade-retry" "$WORK/upgrade-retry.deb" >/dev/null
+    install -D -m 0755 /usr/bin/pve-toolbox-native-notify \
+        /usr/local/bin/pve-toolbox-native-notify
+    install -D -m 0600 /dev/null \
+        /var/lib/pve-toolbox/native-notifications-backups/notifications.cfg
+    retry_output=""
+    retry_rc=0
+    retry_output=$(dpkg -i "$WORK/upgrade-retry.deb" 2>&1) || retry_rc=$?
+    [[ $retry_rc -ne 0 && $retry_output == *'910-package-retry'* \
+        && $retry_output == *'restored'* ]] \
+        || fail "failed package migration did not stop configuration clearly"
+    [[ $(</etc/pve-toolbox/migration-retry.conf) == RETRY=old ]] \
+        || fail "failed package migration did not restore configuration"
+    [[ $(stat -c '%a' /etc/pve-toolbox/migration-retry.conf) == 600 ]] \
+        || fail "failed package migration changed configuration permissions"
+    if grep -Fxq 910-package-retry /var/lib/pve-toolbox/migrations.state; then
+        fail "failed package migration was recorded as complete"
+    fi
+    [[ -f /usr/lib/pve-toolbox/modules/native-notifications/module.sh \
+        && -x /usr/local/bin/pve-toolbox-native-notify \
+        && -f /var/lib/pve-toolbox/native-notifications-backups/notifications.cfg ]] \
+        || fail "failed migration did not retain notification provisioning fallback"
+    : > /var/lib/pve-toolbox/allow-package-retry
+    dpkg --configure pve-toolbox >/dev/null
+    [[ $(</etc/pve-toolbox/migration-retry.conf) == RETRY=current ]] \
+        || fail "package configuration retry did not complete migration"
+    grep -Fxq 910-package-retry /var/lib/pve-toolbox/migrations.state \
+        || fail "retried package migration was not recorded"
+    [[ ! -e /usr/lib/pve-toolbox/modules/native-notifications \
+        && ! -e /usr/local/bin/pve-toolbox-native-notify \
+        && ! -e /var/lib/pve-toolbox/native-notifications-backups \
+        && -x /usr/bin/pve-toolbox-native-notify ]] \
+        || fail "successful retry did not retire obsolete notification files"
+    pass "dpkg upgrades migrate, roll back, and retry configuration"
+
+    printf 'INTERRUPTED=old\n' > /etc/pve-toolbox/migration-interrupted.conf
+    chmod 0640 /etc/pve-toolbox/migration-interrupted.conf
+    dpkg-deb --raw-extract "$deb" "$WORK/upgrade-interrupted"
+    interrupted_version="${expected_version}+migrationtest3"
+    sed -i "s/^Version: .*/Version: $interrupted_version/" \
+        "$WORK/upgrade-interrupted/DEBIAN/control"
+    rm -f -- "$WORK/upgrade-interrupted/DEBIAN/md5sums"
+    interrupted_migration="$WORK/upgrade-interrupted/usr/lib/pve-toolbox/migrations/920-package-interrupted.sh"
+    printf 'MIGRATION_TARGET_VERSION=%q\n' "$interrupted_version" \
+        > "$interrupted_migration"
+    cat >> "$interrupted_migration" <<'MIGRATION'
+MIGRATION_FILES=(/etc/pve-toolbox/migration-interrupted.conf)
+MIGRATION_UNITS=()
+migration_apply() {
+    if [[ ! -f /var/lib/pve-toolbox/resume-package-interruption ]]; then
+        printf 'INTERRUPTED=partial\n' > /etc/pve-toolbox/migration-interrupted.conf
+        : > /var/lib/pve-toolbox/package-interruption-ready
+        while true; do sleep 0.1; done
+    fi
+    cat /etc/pve-toolbox/migration-interrupted.conf \
+        > /var/lib/pve-toolbox/package-interruption-observed
+    printf 'INTERRUPTED=current\n' > /etc/pve-toolbox/migration-interrupted.conf
+}
+MIGRATION
+    chmod 0644 "$interrupted_migration"
+    dpkg-deb --build "$WORK/upgrade-interrupted" \
+        "$WORK/upgrade-interrupted.deb" >/dev/null
+    setsid dpkg -i "$WORK/upgrade-interrupted.deb" >/dev/null 2>&1 &
+    interrupted_pid=$!
+    for _ in {1..100}; do
+        [[ -e /var/lib/pve-toolbox/package-interruption-ready ]] && break
+        sleep 0.05
+    done
+    if [[ ! -e /var/lib/pve-toolbox/package-interruption-ready ]]; then
+        kill -KILL -- "-$interrupted_pid" 2>/dev/null || true
+        wait "$interrupted_pid" 2>/dev/null || true
+        fail "package interruption fixture never entered its migration"
+    fi
+    kill -KILL -- "-$interrupted_pid"
+    wait "$interrupted_pid" 2>/dev/null || true
+    [[ $(</etc/pve-toolbox/migration-interrupted.conf) == INTERRUPTED=partial \
+        && -f /var/lib/pve-toolbox/migration.pending ]] \
+        || fail "interrupted package upgrade left no recoverable transaction"
+    : > /var/lib/pve-toolbox/resume-package-interruption
+    dpkg --configure pve-toolbox >/dev/null
+    [[ $(</var/lib/pve-toolbox/package-interruption-observed) == INTERRUPTED=old \
+        && $(</etc/pve-toolbox/migration-interrupted.conf) == INTERRUPTED=current ]] \
+        || fail "package retry did not restore before resuming interruption"
+    [[ ! -e /var/lib/pve-toolbox/migration.pending ]] \
+        || fail "package retry retained its pending transaction"
+    grep -Fxq 920-package-interrupted /var/lib/pve-toolbox/migrations.state \
+        || fail "resumed package migration was not recorded"
+    pass "dpkg upgrade interruption restores before retry"
+
     printf 'keep\n' > /etc/pve-toolbox/package-test.conf
     printf 'keep\n' > /var/lib/pve-toolbox/package-test.state
     dpkg --remove pve-toolbox >/dev/null
@@ -186,6 +409,10 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
     dpkg --purge pve-toolbox >/dev/null
     [[ ! -e /etc/pve-toolbox ]] || fail "package purge retained runtime config"
     [[ ! -e /var/lib/pve-toolbox ]] || fail "package purge retained runtime state"
+    [[ -d /var/backups/pve-toolbox/migrations ]] \
+        || fail "package purge deleted retained migration backups"
+    rm -rf -- /var/backups/pve-toolbox
+    BACKUP_TOUCHED=0
     PACKAGE_TOUCHED=0
     pass "dpkg install, remove and purge lifecycle"
 fi

@@ -184,6 +184,15 @@ Everything in `lib/common.sh` is already sourced:
 
 See the [`lib/common.sh` reference](reference/common.md).
 
+## Migrating package configuration
+
+When a release changes an existing on-disk format, add a numbered Bash fragment
+under `migrations/`; do not put upgrade-only rewrites in a module's install
+path. See [`migrations/README.md`](https://github.com/quwisky/pve-toolbox/blob/master/migrations/README.md)
+for the fragment contract, backup behavior, retry guarantees, and test fixture.
+Release Please owns package versions, so migrations use stable filename IDs
+instead of editing `VERSION` or `debian/changelog` versions themselves.
+
 ## Checks
 
 ```bash

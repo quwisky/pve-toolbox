@@ -37,6 +37,10 @@ _zs_defaults() {
 
 _zs_pools() { zpool list -H -o name 2>/dev/null; }
 
+_zs_native_owner() {
+    [[ $(state_get "$MODULE_NAME" SCHEDULE_OWNER 2>/dev/null) == native ]]
+}
+
 # Pool names may contain . - : which are not legal in a variable name.
 _zs_var() { # _zs_var <pool> -> ZFS_SCRUB_SCHEDULE_<POOL>
     local p=${1//[^A-Za-z0-9]/_}
@@ -195,6 +199,8 @@ _zs_webhook_shown() {
 
 module_install() {
     require_root
+    _zs_native_owner \
+        && die "scrub schedules were migrated to native ZFS timers; manage them with systemctl"
     require_pve
     have_zfs || die "no zpool binary - this module needs ZFS on the host"
     _zs_defaults
@@ -333,6 +339,10 @@ module_update() {
     require_root
     local check_only=0
     [[ ${1:-} == --check ]] && check_only=1
+    if _zs_native_owner; then
+        info "scrub schedules are managed by native ZFS timers"
+        return 0
+    fi
 
     _zs_scheduled
     [[ ${#ZS_SCHEDULED[@]} -eq 0 ]] && die "not installed"
@@ -458,6 +468,20 @@ module_update() {
 # ---------------------------------------------------------------- status --
 
 module_status() {
+    if _zs_native_owner; then
+        local native_pools pool
+        native_pools=$(state_get "$MODULE_NAME" POOLS)
+        [[ -n $native_pools ]] || { printf 'invalid native timer state'; return 0; }
+        for pool in $native_pools; do
+            if ! systemctl is-enabled --quiet \
+                "zfs-scrub-weekly@$pool.timer" 2>/dev/null; then
+                printf 'native timer disabled  [%s]' "$pool"
+                return 0
+            fi
+        done
+        printf 'native timers  [%s]' "$native_pools"
+        return 0
+    fi
     _zs_scheduled
     if [[ ${#ZS_SCHEDULED[@]} -eq 0 ]]; then
         printf 'not installed'
@@ -490,6 +514,15 @@ module_status() {
 }
 
 module_status_long() {
+    if _zs_native_owner; then
+        printf '  scheduling  native ZFS timers\n'
+        printf '  pools       %s\n' "$(state_get "$MODULE_NAME" POOLS)"
+        printf '  template    %s\n' \
+            "$(state_get "$MODULE_NAME" NATIVE_TIMER_TEMPLATE)"
+        echo
+        systemctl list-timers 'zfs-scrub-weekly@*' --no-pager 2>/dev/null || true
+        return 0
+    fi
     _zs_scheduled
     if [[ ${#ZS_SCHEDULED[@]} -eq 0 ]]; then
         warn "not installed"
@@ -518,6 +551,8 @@ module_status_long() {
 
 module_uninstall() {
     require_root
+    local native_owner=0
+    _zs_native_owner && native_owner=1
     _zs_scheduled
     local p
     for p in "${ZS_SCHEDULED[@]}"; do
@@ -542,5 +577,8 @@ module_uninstall() {
         fi
     fi
     dim "  $TOOLBOX_LIB_DIR/discord.sh is shared with other modules and stays"
+    if [[ $native_owner -eq 1 ]]; then
+        warn "native ZFS scrub timers and their preserved schedules stay enabled"
+    fi
     warn "a scrub already running in the kernel is not stopped - 'zpool scrub -s <pool>' does that"
 }

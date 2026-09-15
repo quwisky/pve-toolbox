@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Transaction, ownership, and secret-handling tests for native notifications.
+# Compatibility-module transactions, including pmxcfs template writes and rollback.
 set -euo pipefail
 
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
@@ -29,8 +29,26 @@ source "$ROOT/lib/common.sh"
 source "$ROOT/lib/report.sh"
 # shellcheck source=lib/doctor.sh
 source "$ROOT/lib/doctor.sh"
-# shellcheck source=modules/native-notifications/module.sh
-source "$ROOT/modules/native-notifications/module.sh"
+# shellcheck source=debian/legacy/native-notifications/module.sh
+source "$ROOT/debian/legacy/native-notifications/module.sh"
+
+# pmxcfs allows content writes but rejects install's permission changes.
+install() {
+    local destination=${!#}
+    if [[ $destination == "$NT_TEMPLATE_DIR/"* ]]; then
+        printf 'install: setting permissions for %s: Operation not permitted\n' "$destination" >&2
+        return 1
+    fi
+    command install "$@"
+}
+
+cat() {
+    if [[ ${FAIL_TEMPLATE_COPY:-0} == 1 && ${!#} == "$ROOT/share/notification-templates/${NT_TEMPLATE_FILES[0]}" ]]; then
+        printf 'partial template\n'
+        return 1
+    fi
+    command cat "$@"
+}
 
 _fixture_value() { # _fixture_value <option> <args...>
     local wanted=$1
@@ -170,7 +188,26 @@ initial_failure=$(FAIL_TEST_DELIVERY=1 _nt_configure 2>&1) || rc=$?
 [[ $initial_failure != *super-secret-token* ]] || fail "initial failure leaked a credential"
 pass "initial delivery failure rolls back every owned artifact"
 
+rc=0
+copy_failure=$(FAIL_TEMPLATE_COPY=1 _nt_configure 2>&1) || rc=$?
+[[ $rc -ne 0 ]] || fail "partial template copy failure was accepted"
+[[ $copy_failure == *'previous owned objects were restored'* ]] \
+    || fail "template copy failure did not report rollback"
+[[ ! -e $API_ROOT/endpoints/webhook.pve-toolbox-discord.json \
+    && ! -e $API_ROOT/matchers/pve-toolbox-discord.json \
+    && ! -e $TOOLBOX_BIN_DIR/$NT_HELPER \
+    && ! -e $(conf_file native-notifications) \
+    && ! -e $TOOLBOX_STATE_DIR/native-notifications.state ]] \
+    || fail "template copy failure retained objects or claimed ownership"
+for file in "${NT_TEMPLATE_FILES[@]}"; do
+    [[ ! -e $NT_TEMPLATE_DIR/$file ]] || fail "template copy failure retained $file"
+done
+pass "first template copy failure aborts configuration and removes partial assets"
+
 output=$(_nt_configure) || fail "initial notification configuration failed"
+_nt_assets_current || fail "installed template contents differ from source"
+[[ $(stat -c '%a' "$TOOLBOX_BIN_DIR/$NT_HELPER") == 755 ]] \
+    || fail "notification helper is not executable"
 [[ -f $API_ROOT/endpoints/webhook.pve-toolbox-discord.json ]] \
     || fail "Discord target was not created"
 [[ -f $API_ROOT/matchers/pve-toolbox-discord.json ]] || fail "matcher was not created"
@@ -200,6 +237,9 @@ pass "repeated configuration is idempotent"
 
 before_target=$(<"$API_ROOT/endpoints/webhook.pve-toolbox-discord.json")
 before_matcher=$(<"$API_ROOT/matchers/pve-toolbox-discord.json")
+for file in "${NT_TEMPLATE_FILES[@]}"; do
+    printf 'previous contents of %s\n' "$file" > "$NT_TEMPLATE_DIR/$file"
+done
 NT_MATCH_SEVERITY=info,warning,error
 rc=0
 failure_output=$(FAIL_TEST_DELIVERY=1 _nt_configure 2>&1) || rc=$?
@@ -209,7 +249,33 @@ failure_output=$(FAIL_TEST_DELIVERY=1 _nt_configure 2>&1) || rc=$?
 [[ $(<"$API_ROOT/matchers/pve-toolbox-discord.json") == "$before_matcher" ]] \
     || fail "matcher was not rolled back after test failure"
 [[ $failure_output != *super-secret-token* ]] || fail "failure output leaked a credential"
-pass "failed delivery restores owned endpoint and matcher"
+for file in "${NT_TEMPLATE_FILES[@]}"; do
+    [[ $(<"$NT_TEMPLATE_DIR/$file") == "previous contents of $file" ]] \
+        || fail "failed delivery did not restore $file"
+done
+_nt_install_assets || fail "could not resynchronize fixture assets"
+pass "failed delivery restores owned endpoint, matcher, and previous template contents"
+
+rc=0
+rollback_failure=$(
+    _nt_restore_assets() { return 1; }
+    FAIL_TEST_DELIVERY=1 _nt_configure 2>&1
+) || rc=$?
+[[ $rc -ne 0 && $rollback_failure == *'asset rollback failed; asset backup retained at '* ]] \
+    || fail "asset rollback failure was not reported"
+[[ $rollback_failure != *'previous owned objects were restored'* ]] \
+    || fail "asset rollback failure claimed successful restoration"
+retained_backup=${rollback_failure##*asset backup retained at }
+[[ -d $retained_backup && $(stat -c '%a' "$retained_backup") == 700 ]] \
+    || fail "failed asset rollback did not retain a private backup"
+for file in "${NT_TEMPLATE_FILES[@]}"; do
+    cmp -s "$retained_backup/templates/$file" "$NT_TEMPLATE_DIR/$file" \
+        || fail "retained backup is missing previous $file contents"
+done
+[[ $retained_backup == "${TMPDIR:-/tmp}/tmp."* && ! -L $retained_backup ]] \
+    || fail "unexpected retained backup path"
+rm -r -- "$retained_backup"
+pass "asset rollback failure reports and retains its recovery backup"
 
 # A same-named object without the module's ownership state must remain intact.
 user_api="$WORK/user-api"
@@ -271,22 +337,3 @@ NT_KIND=smtp NT_SMTP_SERVER='smtp.example.invalid' NT_SMTP_PORT=70000 \
     NT_SMTP_MODE=starttls NT_SMTP_MAILTO=ops@example.invalid NT_SMTP_FROM=pve@example.invalid
 _nt_validate && fail "invalid SMTP port was accepted"
 pass "invalid endpoints fail closed before API changes"
-
-# The shared helper passes arbitrary text as data into PVE::Notify.
-fake_perl="$WORK/perl"
-mkdir -p "$fake_perl/PVE"
-printf '%s\n' \
-    'package PVE::Notify;' \
-    'sub common_template_data { return { hostname => "pve1" }; }' \
-    'sub notify { my ($severity, $template, $data, $fields) = @_; print join("|", $severity, $template, $data->{title}, $data->{message}, $fields->{type}); }' \
-    '1;' > "$fake_perl/PVE/Notify.pm"
-helper_output=$(PERL5LIB="$fake_perl" \
-    "$ROOT/modules/native-notifications/pve-toolbox-native-notify" \
-    warning 'quoted "title"' $'line one\nline two')
-[[ $helper_output == $'warning|pve-toolbox|quoted "title"|line one\nline two|pve-toolbox' ]] \
-    || fail "shared helper mangled notification data: $helper_output"
-rc=0
-PERL5LIB="$fake_perl" "$ROOT/modules/native-notifications/pve-toolbox-native-notify" \
-    critical title message >/dev/null 2>&1 || rc=$?
-[[ $rc -eq 64 ]] || fail "shared helper accepted an invalid severity"
-pass "shared helper uses the native matcher path safely"

@@ -41,6 +41,56 @@ pve-toolbox-zfs-scrub@backup.timer  Sun *-*-15..21 03:00:00
 Every schedule is a plain systemd `OnCalendar` you are asked about at install
 time, so the stagger is a default, not a rule.
 
+## Package upgrade schedule migration
+
+Upgrades from 0.6.x move every configured pool to the native
+`zfs-scrub@.service` supplied by Debian's `zfsutils-linux` package. The
+migration reads the installed pool list and the effective `OnCalendar` from
+each toolbox timer, validates them, and writes one override at:
+
+```text
+/etc/systemd/system/zfs-scrub-weekly@<pool>.timer.d/override.conf
+```
+
+The weekly template name identifies the native timer used; the override keeps
+the original schedule and 30-minute randomized delay. The migration refuses
+missing native units, mismatched pool state, unsafe timer files, existing
+native overrides, or an already enabled native schedule.
+
+If `/var/lib/pve-toolbox/zfs-scrub.state` is missing but the protected scrub
+configuration and legacy timers remain, the migration can reconstruct the
+pool list. It requires the original protected scrub service, the expected
+timer-to-service links, and loaded unit files without drop-ins or pending
+edits. It writes only the verified pool list and native ownership markers;
+credentials and calendars are preserved. An unsafe or inconsistent existing
+state file is still rejected. Failed recovery restores the original absence
+of state along with the previous timer states.
+
+If 0.7.0 package configuration stopped with `legacy config and state must both
+be protected regular files`, install a package containing this recovery fix.
+If that corrected package has already been unpacked, retry as root:
+
+```bash
+dpkg --configure pve-toolbox
+```
+
+Each native timer is enabled and verified before its old toolbox timer is
+disabled. Neither timer nor service is started during package configuration,
+so a persistent timer cannot launch a missed scrub in the middle of an
+upgrade. The enabled native timers become active at the next boot. To activate
+one earlier, first finish the package upgrade and check that its pool is not
+already scrubbing, then run:
+
+```bash
+systemctl start zfs-scrub-weekly@<pool>.timer
+```
+
+Starting a persistent timer may immediately run an event missed while it was
+inactive. A failed or interrupted migration restores the prior timer states,
+configuration, and native override files. After success, `install` and
+`update` leave native ownership unchanged; `status` identifies the native
+timers.
+
 ## What the report says
 
 | Colour                                            | When                                                                                            |

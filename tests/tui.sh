@@ -56,6 +56,10 @@ fi
 # tui.exp reaches zfs-scrub by counting rows in the module checklist. Resolve
 # that row from the same discovery path as the UI, so adding an alphabetically
 # earlier module cannot make the driven test select a different module.
+if ./pve-toolbox _complete modules | grep -Fxq native-notifications; then
+    printf 'FAIL obsolete notification provisioning remains in the UI\n' >&2
+    exit 1
+fi
 TUI_ZFS_ROW=$(./pve-toolbox _complete modules | grep -nx 'zfs-scrub' | cut -d: -f1)
 if [[ -z $TUI_ZFS_ROW ]]; then
     printf 'FAIL zfs-scrub is missing from the discovered module list\n' >&2

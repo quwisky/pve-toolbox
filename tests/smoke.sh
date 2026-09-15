@@ -45,6 +45,9 @@ for target in commands modules tags; do
     [[ -n $(launch ./pve-toolbox _complete "$target") ]] \
         || fail "completion target '$target' produced nothing"
 done
+if launch ./pve-toolbox _complete modules | grep -Fxq native-notifications; then
+    fail "obsolete notification provisioning remains discoverable"
+fi
 launch ./pve-toolbox _complete bogus 2>/dev/null \
     && fail "completion accepted an unknown target"
 pass "completion candidates"
@@ -80,6 +83,8 @@ pass "bash filters commands by prefix"
 
 got=$(complete_words 2 ./pve-toolbox install "")
 has "$got" zfs-scrub || fail "no modules offered for install, got: $got"
+has_not "$got" native-notifications \
+    || fail "obsolete notification provisioning offered for install, got: $got"
 got=$(complete_words 2 ./pve-toolbox install "zfs-")
 has "$got" zfs-scrub       || fail "prefix zfs-<TAB> dropped zfs-scrub, got: $got"
 has "$got" zfs-replication || fail "prefix zfs-<TAB> dropped zfs-replication, got: $got"
