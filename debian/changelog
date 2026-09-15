@@ -1,3 +1,9 @@
+pve-toolbox (0.7.2) unstable; urgency=medium
+
+  * bump actions/deploy-pages in the github-actions group ([#70](https://github.com/quwisky/pve-toolbox/issues/70)) ([a7f1055](https://github.com/quwisky/pve-toolbox/commit/a7f105519d4e240968cec49b2c1982cb9bfac0a4))
+
+ -- Bence Nagy <quwisky@qwky.eu>  Tue, 15 Sep 2026 17:13:48 +0000
+
 pve-toolbox (0.7.1) unstable; urgency=medium
 
   * **zfs-scrub:** recover missing state during package upgrades ([#68](https://github.com/quwisky/pve-toolbox/issues/68)) ([1b27b85](https://github.com/quwisky/pve-toolbox/commit/1b27b85dc80736a32ad4b9d5faa580ec9a5f62c7))
