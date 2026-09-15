@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/quwisky/pve-toolbox/compare/v0.7.1...v0.7.2) (2026-09-15)
+
+
+### Dependencies
+
+* bump actions/deploy-pages in the github-actions group ([#70](https://github.com/quwisky/pve-toolbox/issues/70)) ([a7f1055](https://github.com/quwisky/pve-toolbox/commit/a7f105519d4e240968cec49b2c1982cb9bfac0a4))
+
 ## [0.7.1](https://github.com/quwisky/pve-toolbox/compare/v0.7.0...v0.7.1) (2026-09-05)
 
 
