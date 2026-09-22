@@ -18,8 +18,14 @@ export PATH="$WORK/doubles:$PATH"
 [[ $(./pve-toolbox list lxc) == *komodo-periphery* ]] || fail 'module missing from tag'
 if ./pve-toolbox -y install komodo-periphery > "$WORK/out" 2>&1; then fail 'noninteractive mutation permitted'; fi
 if ./pve-toolbox --force update komodo-periphery > "$WORK/out" 2>&1; then fail 'force mutation permitted'; fi
-./pve-toolbox check komodo-periphery > "$WORK/out"
-[[ $(cat "$WORK/out") == *'no managed containers'* ]] || fail 'empty check should be informative'
+if [[ $EUID == 0 ]]; then
+    ./pve-toolbox check komodo-periphery > "$WORK/out"
+    [[ $(cat "$WORK/out") == *'no managed containers'* ]] || fail 'empty check should be informative'
+else
+    if ./pve-toolbox check komodo-periphery > "$WORK/out" 2>&1; then
+        fail 'check accepted a non-root-owned configuration directory'
+    fi
+fi
 TOOLBOX_UPDATE_EXPLICIT=1 ./pve-toolbox update > "$WORK/out"
 [[ ! -e $TOOLBOX_BIN_DIR/periphery ]] || fail 'installed agent on host'
 printf 'ok Periphery discovery and noninteractive safeguards\n'
