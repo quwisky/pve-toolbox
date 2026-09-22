@@ -23,9 +23,20 @@ case ${0##*/} in
         else exec /usr/bin/readlink-real "$@"; fi ;;
     uname) printf 'x86_64\n' ;;
     dpkg-query) [[ -f /package-owned ]] ;;
+    journalctl)
+        [[ $* == '-u periphery.service --since @'*' -n 20 --no-pager --output=json --output-fields=MESSAGE' ]] || exit 98
+        [[ ! -f /fail-diagnostics ]] || exit 1
+        [[ -f /startup-failed ]] || exit 98
+        cat /startup-journal ;;
     systemctl)
         case $1 in
             show)
+                if [[ $* == *'--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts' ]]; then
+                    [[ ! -f /fail-diagnostics ]] || exit 1
+                    [[ -f /startup-failed ]] || exit 98
+                    printf 'ActiveState=failed\nSubState=failed\nResult=exit-code\nExecMainCode=1\nExecMainStatus=203\nNRestarts=3\n'
+                    exit
+                fi
                 if [[ ! -f /etc/systemd/system/periphery.service ]]; then printf 'LoadState=not-found\n'; exit; fi
                 if [[ -f /stale-unit ]]; then cat /stale-unit; else printf 'NeedDaemonReload=no\n'; fi
                 printf 'LoadState=loaded\nFragmentPath=/etc/systemd/system/periphery.service\nUser=root\nType=simple\nEnvironmentFiles=\n'
@@ -43,9 +54,17 @@ case ${0##*/} in
             start)
                 if [[ -f /crash-start ]]; then kill -KILL "$PPID"; exit 1; fi
                 printf '%s\n' "$*" >> /calls
-                if [[ -f /fail-new-start ]] && /usr/local/bin/periphery --version | grep -q 2.3.3; then exit 1; fi
+                if [[ -f /fail-old-start ]] && /usr/local/bin/periphery --version | grep -q 2.3.2; then exit 1; fi
+                if [[ -f /fail-new-start || -f /fail-new-health ]] && /usr/local/bin/periphery --version | grep -q 2.3.3; then
+                    : > /startup-failed
+                    printf 'failed\n' > /active
+                    [[ -f /fail-new-health ]] && exit 0
+                    printf 'Job for periphery.service failed: Permission denied\n' >&2
+                    exit 1
+                fi
+                rm -f /startup-failed
                 printf 'active\n' > /active ;;
-            stop) [[ -f /etc/systemd/system/periphery.service ]] || exit 5; printf '%s\n' "$*" >> /calls; printf 'inactive\n' > /active ;;
+            stop) [[ -f /etc/systemd/system/periphery.service ]] || exit 5; rm -f /startup-failed; printf '%s\n' "$*" >> /calls; printf 'inactive\n' > /active ;;
             enable) printf '%s\n' "$*" >> /calls; printf 'enabled\n' > /enabled ;;
             disable) printf '%s\n' "$*" >> /calls; printf 'disabled\n' > /enabled ;;
             daemon-reload) printf '%s\n' "$*" >> /calls ;;

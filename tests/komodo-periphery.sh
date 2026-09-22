@@ -95,3 +95,48 @@ kp_host_save 101 2.3.3 identity-one fingerprint-one uninstall
 [[ $(conf_get komodo-periphery KP_IDS) == 102 ]] || fail 'uninstall removed another managed target'
 [[ $(conf_get komodo-periphery-102 KP_VERSION) == 2.3.2 && $(state_get komodo-periphery-102 fingerprint) == fingerprint-two ]] || fail 'other guest state changed'
 printf 'ok independent managed-container records\n'
+
+# The original startup error must reach the operator before rollback replaces
+# the failed service state. Raw journal credentials must never reach the terminal.
+for scenario in install update health unavailable oversized rollback-failed; do
+    if [[ $scenario == install ]]; then kp_fixture absent; else kp_fixture upstream-v2; fi
+    kp_host_fixture
+    action=update
+    [[ $scenario != install ]] || action=install
+    if [[ $scenario == health ]]; then : > "$KP_TEST_ROOT/fail-new-health"
+    else : > "$KP_TEST_ROOT/fail-new-start"; fi
+    if [[ $scenario == unavailable ]]; then : > "$KP_TEST_ROOT/fail-diagnostics"; fi
+    if [[ $scenario == rollback-failed ]]; then : > "$KP_TEST_ROOT/fail-old-start"; fi
+    cat > "$KP_TEST_ROOT/startup-journal" <<'JOURNAL'
+{"MESSAGE":"Failed at step EXEC: Permission denied"}
+{"MESSAGE":"onboarding_key = \"fixture-secret\""}
+{"MESSAGE":"request rejected: fixture-secret"}
+{"MESSAGE":"authorization: Bearer hidden-bearer"}
+{"MESSAGE":"api_key = \"hidden-api-credential\""}
+{"MESSAGE":"config: {\n  passkey: \"hidden-passkey\"\n}"}
+{"MESSAGE":"-----BEGIN PRIVATE KEY-----\nhidden-key-material\n-----END PRIVATE KEY-----"}
+{"MESSAGE":"failure contacting https://name:hidden-password@core.example.invalid"}
+{"MESSAGE":"startup \u001b[31mfailed"}
+JOURNAL
+    if [[ $scenario == oversized ]]; then
+        jq -nc '{MESSAGE:("x" * 20000)}' > "$KP_TEST_ROOT/startup-journal"
+    fi
+    if kp_confirm accept "$action" komodo-periphery > "$KP_WORK/session"; then fail "$scenario startup failure succeeded"; fi
+    rollback=restored
+    [[ $scenario != rollback-failed ]] || rollback=failed
+    grep -q "rollback: $rollback" "$KP_WORK/session" || fail "$scenario rollback result missing"
+    if [[ $scenario == unavailable || $scenario == oversized ]]; then
+        grep -q 'unavailable' "$KP_WORK/session" || fail 'missing diagnostics not explained'
+    else
+        grep -q 'ExecMainStatus=203' "$KP_WORK/session" || fail 'startup exit status missing'
+        grep -q 'Failed at step EXEC: Permission denied' "$KP_WORK/session" || fail 'original startup journal missing'
+    fi
+    if [[ $scenario != health ]]; then
+        grep -q 'Job for periphery.service failed: Permission denied' "$KP_WORK/session" || fail 'start command error missing'
+    fi
+    if grep -Eq 'fixture-secret|hidden-(bearer|passkey|key-material|password|api-credential)' "$KP_WORK/session"; then fail 'startup diagnostic leaked credentials'; fi
+    if grep -Fq $'\033[31m' "$KP_WORK/session"; then fail 'journal controlled the terminal'; fi
+    if [[ $scenario == install ]]; then [[ ! -f $KP_TEST_BINARY ]] || fail 'failed installation not rolled back'
+    else grep -q 2.3.2 "$KP_TEST_BINARY" || fail 'failed update not rolled back'; fi
+done
+printf 'ok startup diagnostics survive rollback and filter credentials\n'

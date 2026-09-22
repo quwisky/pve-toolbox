@@ -24,7 +24,7 @@ cp "$KP_BASE/usr/bin/cp" "$KP_BASE/usr/bin/cp-real"
 cp "$KP_BASE/usr/bin/chmod" "$KP_BASE/usr/bin/chmod-real"
 cp "$KP_BASE/usr/bin/mv" "$KP_BASE/usr/bin/mv-real"
 cp "$KP_BASE/usr/bin/readlink" "$KP_BASE/usr/bin/readlink-real"
-for cmd in dpkg-query uname readlink sleep mv chmod cp; do cp tests/fixtures/komodo-periphery/command.sh "$KP_BASE/usr/bin/$cmd"; done
+for cmd in dpkg-query uname readlink sleep mv chmod cp journalctl; do cp tests/fixtures/komodo-periphery/command.sh "$KP_BASE/usr/bin/$cmd"; done
 kp_fixture() {
     KP_TEST_ROOT=$KP_WORK/guest
     rm -rf -- "$KP_TEST_ROOT"
