@@ -187,6 +187,20 @@ It retains configuration, identity keys, service overrides, stacks, repositories
 Docker data, adoption backups and Core's server record. Retained custom overrides
 can affect a future installation and should be inspected before reuse.
 
+When reinstalling, the toolbox offers **configure** (the default) or **reuse**
+for retained configuration at `/etc/komodo/periphery.config.toml`. Configure
+prompts for the Core URL and server name (blank keeps each current value), then
+offers to keep, replace or remove the onboarding key. It requires Python 3.11+
+in the guest and the same TOML editing constraints described above. Reuse keeps
+the configuration unchanged and does not require Python.
+
+Both choices preserve the agent identity keys. Reinstall enables and starts the
+service; if installation fails or is interrupted, rollback restores the retained
+configuration and removes the newly installed service and executable. Cancelling
+the final confirmation leaves the guest unchanged. If the retained configuration
+file is missing, reinstall prompts for the normal initial onboarding settings.
+Verify connectivity in Core after reinstalling, especially when changing its URL.
+
 ## Validation limits
 
 Automated tests exercise the real shell implementation in isolated guest roots

@@ -132,3 +132,76 @@ rm "$KP_TEST_ROOT/crash-start"
 kp_guest recover aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa || fail 'custom configuration recovery failed'
 [[ $(sha256sum "$KP_TEST_CONFIG") == "$before" && $(cat "$KP_TEST_ROOT/active") == active ]] || fail 'custom configuration was not restored after crash'
 printf 'ok crash recovery restores the original custom configuration path\n'
+
+# Reinstall after a real uninstall must offer connection settings again.
+config_fixture
+kp_host_fixture
+kp_confirm accept update komodo-periphery > "$KP_WORK/session" || fail 'reinstall adoption setup failed'
+kp_confirm accept uninstall komodo-periphery > "$KP_WORK/session" || fail 'reinstall uninstall setup failed'
+key_before=$(sha256sum "$KP_TEST_ROOT/etc/komodo/keys/periphery.key")
+KP_CORE_URL=http://reinstall.example.invalid:9120 kp_confirm reinstall install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'reinstall configuration failed'; }
+grep -Fq 'core_address = "http://reinstall.example.invalid:9120"' "$KP_TEST_CONFIG" || fail 'reinstall skipped Core URL prompt'
+grep -Fq 'onboarding_key = "fixture-secret"' "$KP_TEST_CONFIG" || fail 'reinstall skipped onboarding key prompt'
+grep -Fq 'level = "debug"' "$KP_TEST_CONFIG" || fail 'reinstall lost unrelated settings'
+[[ $(sha256sum "$KP_TEST_ROOT/etc/komodo/keys/periphery.key") == "$key_before" ]] || fail 'reinstall reset agent identity'
+if grep -Rq fixture-secret "$KP_WORK/session" "$TOOLBOX_STATE_DIR"; then fail 'reinstall exposed onboarding key'; fi
+printf 'ok reinstall prompts for connection settings and preserves identity\n'
+# Explicit reuse needs no Python and must not rewrite the retained file.
+kp_confirm accept uninstall komodo-periphery > "$KP_WORK/session" || fail 'reuse uninstall setup failed'
+rm "$KP_TEST_ROOT/usr/bin/python3"
+before=$(sha256sum "$KP_TEST_CONFIG")
+kp_confirm reuse install komodo-periphery > "$KP_WORK/session" || fail 'retained reuse failed'
+[[ $(sha256sum "$KP_TEST_CONFIG") == "$before" ]] || fail 'reuse changed retained configuration'
+kp_confirm accept uninstall komodo-periphery > "$KP_WORK/session" || fail 'cancel uninstall setup failed'
+kp_confirm decline install komodo-periphery > "$KP_WORK/session" || fail 'reinstall cancellation failed'
+[[ ! -e $KP_TEST_BINARY && $(sha256sum "$KP_TEST_CONFIG") == "$before" ]] || fail 'cancelled reinstall changed guest'
+# A retention marker alone must not suppress normal onboarding prompts.
+rm "$KP_TEST_CONFIG"
+KP_CORE_URL=https://missing-config.example.invalid kp_confirm accept install komodo-periphery > "$KP_WORK/session" || fail 'reinstall with missing configuration failed'
+grep -Fq 'core_address = "https://missing-config.example.invalid"' "$KP_TEST_CONFIG" || fail 'missing retained config skipped onboarding'
+[[ $(sha256sum "$KP_TEST_ROOT/etc/komodo/keys/periphery.key") == "$key_before" ]] || fail 'missing configuration reset identity'
+printf 'ok retained reuse, cancellation and missing-config onboarding\n'
+
+retained_fixture() {
+    config_fixture
+    kp_request update
+    kp_guest apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out" || fail 'retained fixture adoption failed'
+    kp_request uninstall
+    kp_guest apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out" || fail 'retained fixture uninstall failed'
+    : > "$KP_TEST_LOG"
+    kp_request install
+    patch_request --arg hash "$(kp_guest inspect | jq -r .config_fingerprint)" \
+        '.configure_retained=true | .config_fingerprint=$hash | .onboarding_key_action="replace" | .server_name="new-name"'
+}
+for scenario in stale malformed missing-python unsafe-owner; do
+    retained_fixture
+    case $scenario in
+        stale) printf '\n# concurrent edit\n' >> "$KP_TEST_CONFIG" ;;
+        malformed)
+            printf '\nbroken = [\n' >> "$KP_TEST_CONFIG"
+            patch_request --arg hash "$(kp_guest inspect | jq -r .config_fingerprint)" '.config_fingerprint=$hash' ;;
+        missing-python) rm "$KP_TEST_ROOT/usr/bin/python3" ;;
+        unsafe-owner) chown 1001:1001 "$KP_TEST_ROOT/var/lib/pve-toolbox/komodo-periphery/retained.json" ;;
+    esac
+    before=$(sha256sum "$KP_TEST_CONFIG")
+    if kp_guest apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out"; then fail "$scenario retained configuration accepted"; fi
+    [[ ! -e $KP_TEST_BINARY && $(sha256sum "$KP_TEST_CONFIG") == "$before" ]] || fail 'rejected reinstall changed guest'
+    kp_assert_no_guest_mutation
+done
+printf 'ok retained configuration validation precedes reinstall changes\n'
+for scenario in failure crash; do
+    retained_fixture
+    before=$(sha256sum "$KP_TEST_CONFIG")
+    key_before=$(sha256sum "$KP_TEST_ROOT/etc/komodo/keys/periphery.key")
+    if [[ $scenario == crash ]]; then : > "$KP_TEST_ROOT/crash-enable"
+    else : > "$KP_TEST_ROOT/fail-new-start"; fi
+    if kp_guest apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out" 2>/dev/null; then fail 'failed reinstall reported success'; fi
+    if [[ $scenario == crash ]]; then
+        [[ -f $KP_TEST_ROOT/var/lib/pve-toolbox/komodo-periphery/pending.json ]] || fail 'reinstall crash lost recovery record'
+        rm "$KP_TEST_ROOT/crash-enable"
+        kp_guest recover aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa || fail 'reinstall crash recovery failed'
+    else jq -e '.rollback=="restored"' "$KP_TEST_ROOT/out" >/dev/null || fail 'reinstall rollback not reported'; fi
+    [[ $(sha256sum "$KP_TEST_CONFIG") == "$before" && $(sha256sum "$KP_TEST_ROOT/etc/komodo/keys/periphery.key") == "$key_before" ]] || fail 'reinstall recovery lost config or identity'
+    [[ ! -e $KP_TEST_BINARY && ! -e $KP_TEST_ROOT/etc/systemd/system/periphery.service && $(cat "$KP_TEST_ROOT/active") != active ]] || fail 'reinstall recovery did not restore uninstalled state'
+done
+printf 'ok failed and interrupted reinstalls restore retained settings and uninstalled state\n'

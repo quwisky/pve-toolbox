@@ -69,6 +69,12 @@ kg_inspect_inner() {
     KG_SHOW=$(systemctl show "$KG_UNIT" --no-pager --property=LoadState,FragmentPath,DropInPaths,User,Type,EnvironmentFiles,Environment,ActiveState,UnitFileState,MainPID,NRestarts,ExecStart,NeedDaemonReload) || { kg_fail 'cannot inspect systemd service'; return 1; }
     if [[ $(kg_prop LoadState) == not-found ]]; then
         [[ ! -e /usr/local/bin/periphery && ! -L /usr/local/bin/periphery && ! -e /etc/systemd/system/periphery.service && ! -L /etc/systemd/system/periphery.service ]] || { kg_fail 'unmanaged files without service'; return 1; }
+        if [[ -e /etc/komodo/periphery.config.toml || -L /etc/komodo/periphery.config.toml ]]; then
+            kg_regular "$KG_STORE/retained.json" && [[ $(jq -r .machine_id "$KG_STORE/retained.json") == "$KG_MACHINE" ]] || { kg_fail 'existing configuration is not owned'; return 1; }
+            kg_regular /etc/komodo/periphery.config.toml || { kg_fail 'unsafe retained configuration'; return 1; }
+            KG_CONFIGS=(/etc/komodo/periphery.config.toml)
+            KG_CONFIG_FINGERPRINT=$(sha256sum -- "${KG_CONFIGS[@]}" | sha256sum | cut -d ' ' -f1) || { kg_fail 'cannot fingerprint retained configuration'; return 1; }
+        fi
         KG_LAYOUT=absent; KG_FINGERPRINT=absent
         return 0
     fi
@@ -319,6 +325,8 @@ kg_request() {
       (.machine_id | type=="string" and test("^[a-f0-9]{32}$")) and
       (.expected_fingerprint | type=="string" and (.=="absent" or test("^[a-f0-9]{64}$"))) and
       (.adopt | type=="boolean") and
+      ((has("configure_retained")|not) or (.configure_retained|type=="boolean")) and
+      (.configure_retained!=true or (.action=="install" and .expected_fingerprint=="absent")) and
       (.version | type=="string" and test("^2\\.[0-9]+\\.[0-9]+$")) and
       (.asset_sha256 | type=="string" and test("^[a-f0-9]{64}$")) and
       (.staged_binary | type=="string")' <<<"$KG_REQUEST_JSON" >/dev/null 2>&1 || { kg_fail 'invalid request'; return 1; }
@@ -326,7 +334,8 @@ kg_request() {
     [[ $KG_REQUEST == "/run/pve-toolbox-komodo-$KG_ID/request.json" && $(jq -r .staged_binary <<<"$KG_REQUEST_JSON") == "/run/pve-toolbox-komodo-$KG_ID/periphery" ]] || { kg_fail 'invalid staging paths'; return 1; }
     KG_ACTION=$(jq -r .action <<<"$KG_REQUEST_JSON")
     KG_DESIRED=$(jq -r .version <<<"$KG_REQUEST_JSON")
-    if [[ $KG_ACTION == configure ]]; then
+    KG_EDIT_CONFIG=$(jq -r '.action=="configure" or .configure_retained==true' <<<"$KG_REQUEST_JSON")
+    if [[ $KG_EDIT_CONFIG == true ]]; then
         jq -e '(.config_fingerprint | type=="string" and test("^[a-f0-9]{64}$")) and
             all(.core_url,.server_name,.onboarding_key; type=="string" and (explode|all(.>=32 and .!=127))) and
             (.core_url=="" or (.core_url|test("^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^\\s?#]*)?$") and (contains("@")|not))) and
@@ -437,12 +446,15 @@ kg_apply() {
         [[ $(printf '%s\n' "$old_version" "$KG_DESIRED" | sort -V | head -1) == "$old_version" || $KG_ACTION == uninstall ]] || { kg_fail 'downgrades are unsupported'; return 1; }
         oldhash=$(kg_hash "$binary") || return 1
         if [[ $KG_ACTION == configure ]]; then
-            [[ $KG_DESIRED == "$old_version" && $(jq -r .config_fingerprint <<<"$inspected") == "$(jq -r .config_fingerprint <<<"$KG_REQUEST_JSON")" ]] || { kg_fail 'configuration or version changed since preview'; return 1; }
-            [[ $(jq '.config_paths|length' <<<"$inspected") == 1 ]] || { kg_fail 'configuration editing requires one explicit TOML file'; return 1; }
-            config_path=$(jq -r '.config_paths[0]' <<<"$inspected")
-            kg_prepare_configuration "$config_path" || return 1
-            if ! cmp -s "$config_path" "$KG_CONFIG_STAGED"; then config_changed=true; fi
+            [[ $KG_DESIRED == "$old_version" ]] || { kg_fail 'version changed since preview'; return 1; }
         fi
+    fi
+    if [[ $KG_EDIT_CONFIG == true ]]; then
+        [[ $(jq -r .config_fingerprint <<<"$inspected") == "$(jq -r .config_fingerprint <<<"$KG_REQUEST_JSON")" ]] || { kg_fail 'configuration changed since preview'; return 1; }
+        [[ $(jq '.config_paths|length' <<<"$inspected") == 1 ]] || { kg_fail 'configuration editing requires one explicit TOML file'; return 1; }
+        config_path=$(jq -r '.config_paths[0]' <<<"$inspected")
+        kg_prepare_configuration "$config_path" || return 1
+        if ! cmp -s "$config_path" "$KG_CONFIG_STAGED"; then config_changed=true; fi
     fi
     kg_safe_path "$binary" && kg_safe_path "$unit" || return 1
     if [[ $KG_ACTION == install || $KG_ACTION == update ]]; then
@@ -451,7 +463,7 @@ kg_apply() {
         chmod 0755 "$candidate" || return 1
         [[ $(kg_version "$candidate") == "$KG_DESIRED" ]] || { kg_fail 'candidate version mismatch'; return 1; }
     fi
-    if [[ $config_changed == true && $expected == absent ]]; then
+    if [[ $config_changed == true && $expected == absent && $reuse == false ]]; then
         jq -e 'all(.core_url,.server_name,.onboarding_key; type=="string" and length>0 and (explode|all(.>=32 and .!=127))) and
           (.core_url | test("^https?://"))' <<<"$KG_REQUEST_JSON" >/dev/null || { kg_fail 'invalid onboarding settings'; return 1; }
         kg_safe_path /etc/komodo/periphery.config.toml && kg_safe_path /etc/komodo/keys || return 1
@@ -473,7 +485,7 @@ kg_apply() {
     mkdir -m 0700 "$KG_STORE/transaction" || return 1
     kg_backup "$binary" binary && kg_backup "$unit" unit && kg_backup "$KG_STORE/owner.json" owner || return 1
     if [[ $config_changed == true ]]; then
-        if [[ $KG_ACTION == configure ]]; then
+        if [[ $KG_EDIT_CONFIG == true ]]; then
             [[ $(sha256sum -- "$config_path" | sha256sum | cut -d ' ' -f1) == "$(jq -r .config_fingerprint <<<"$KG_REQUEST_JSON")" ]] || { kg_fail 'configuration changed while preparing update'; return 1; }
         fi
         kg_backup "$config_path" config || return 1
@@ -501,17 +513,18 @@ kg_apply() {
                 systemctl stop "$KG_UNIT" >/dev/null 2>&1 || { kg_fail 'could not stop service'; return 1; }
             fi
             kg_mark replacing || return 1
-            if [[ $KG_ACTION == configure ]]; then
+            if [[ $KG_EDIT_CONFIG == true && $config_changed == true ]]; then
                 mv -fT -- "$KG_CONFIG_STAGED" "$config_path" && sync -f "${config_path%/*}" || return 1
                 KG_CONFIG_STAGED=""
-            else
+            fi
+            if [[ $KG_ACTION != configure ]]; then
                 mv -fT -- "$KG_STAGED" "$binary" && sync -f "${binary%/*}" || return 1
                 KG_STAGED=""
             fi
             if [[ $expected == absent ]]; then
                 mkdir -p /etc/komodo/keys /etc/systemd/system || return 1
                 if [[ $reuse == false ]]; then chmod 0700 /etc/komodo/keys || return 1; fi
-                if [[ $config_changed == true ]]; then
+                if [[ $config_changed == true && $reuse == false ]]; then
                     { printf 'root_directory = "/etc/komodo"\nserver_enabled = false\n'
                       for field in core_address connect_as onboarding_key; do
                           case $field in core_address) key=core_url ;; connect_as) key=server_name ;; *) key=onboarding_key ;; esac

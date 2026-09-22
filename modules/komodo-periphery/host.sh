@@ -166,7 +166,7 @@ kp_host_save() {
 }
 kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     local action=$1 id="" release="" core="" name="" key="" saved_identity inspected layout version adopt=false file digest binary=""
-    local key_action=keep choice=""
+    local key_action=keep choice="" configure_retained=false retained_config=false
     [[ ${ASSUME_YES:-0} == 0 && ${FORCE:-0} == 0 && -t 0 && -t 1 ]] || { warn 'Periphery changes require a terminal and explicit confirmation; --yes/--force are unsupported'; return 1; }
     kp_host_require || return 1
     pve_lxc_inventory "$KP_NODE" || { warn "$PVE_LXC_ERROR"; return 1; }
@@ -250,6 +250,18 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     else
         [[ $action == install ]] || { warn 'Periphery is not installed; use install first'; return 1; }
         version=""
+        if [[ $(jq -r .retained <<<"$inspected") == true && $(jq '.config_paths|length' <<<"$inspected") == 1 ]]; then
+            retained_config=true
+            info 'Configuration and agent identity from the previous installation were retained.'
+            ask choice 'Retained configuration action (configure/reuse)' configure
+            case $choice in
+                configure)
+                    configure_retained=true
+                    info 'Editing retained settings requires Python 3.11+ in the guest; identity and unrelated settings are preserved.' ;;
+                reuse) info 'Reinstall will reuse the retained configuration unchanged.' ;;
+                *) warn 'choose configure or reuse'; return 1 ;;
+            esac
+        fi
     fi
     KP_TRANSACTION=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
     [[ $KP_TRANSACTION =~ ^[a-f0-9]{32}$ ]] || return 1
@@ -269,7 +281,7 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
         release=$version; digest=$(printf '%064d' 0)
     fi
     : > "$KP_WORK/key"; chmod 0600 "$KP_WORK/key"
-    if [[ $action == configure ]]; then
+    if [[ $action == configure || $configure_retained == true ]]; then
         ask core 'Core URL (HTTP or HTTPS; blank keeps current)' ''
         [[ -z $core || ( $core =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ) ]] || { warn 'provide an HTTP or HTTPS URL without credentials, query or fragment'; return 1; }
         ask name 'Server name in Core (blank keeps current)' ''
@@ -282,7 +294,7 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
                 printf '%s' "$key" > "$KP_WORK/key"; unset key ;;
             *) warn 'choose keep, replace or remove'; return 1 ;;
         esac
-    elif [[ $layout == absent && $(jq -r .retained <<<"$inspected") != true ]]; then
+    elif [[ $layout == absent && $retained_config == false ]]; then
         ask core 'Core URL (HTTP or HTTPS)' ''
         [[ $core =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ]] || { warn 'provide an HTTP or HTTPS URL without credentials, query or fragment'; return 1; }
         ask name 'Server name in Core' "ct-$id"
@@ -294,6 +306,12 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     if [[ $action == configure ]]; then
         info "Core URL: $(kp_display "${core:-keep current}"); server name: $(kp_display "${name:-keep current}"); onboarding key: $key_action"
         info 'Executable and agent identity unchanged. An active service restarts; stopped services remain stopped.'
+    elif [[ $retained_config == true ]]; then
+        if [[ $configure_retained == true ]]; then
+            info "Core URL: $(kp_display "${core:-keep current}"); server name: $(kp_display "${name:-keep current}"); onboarding key: $key_action"
+            info 'Reinstall with edited configuration; previous configuration is restored if installation fails.'
+        else info 'Reinstall with the retained configuration unchanged.'; fi
+        info 'Agent identity is preserved. The reinstalled service will be enabled and started.'
     elif [[ $layout == absent ]]; then info 'New agent: guest root, outbound to Core, inbound disabled; Core can run commands as guest root.'
     else info "Service policy: $(kp_display "$(jq -r '.enabled + "/" + .active' <<<"$inspected")"); existing connection settings preserved."; fi
     if [[ $action == uninstall ]]; then info 'Remove owned binary and service only; retain config, keys, overrides and workloads.'
@@ -303,11 +321,11 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     kp_host_lock "$id" && kp_host_match "$id" "$KP_IDENTITY" || return 1
     jq -nc --arg action "$action" --arg id "$KP_TRANSACTION" --arg machine "$(jq -r .machine_id <<<"$inspected")" \
         --arg fingerprint "$KP_PREVIEW_FINGERPRINT" --argjson adopt "$adopt" --arg version "$release" --arg digest "$digest" \
-        --arg config_fingerprint "$(jq -r '.config_fingerprint // ""' <<<"$inspected")" --arg key_action "$key_action" \
+        --arg config_fingerprint "$(jq -r '.config_fingerprint // ""' <<<"$inspected")" --arg key_action "$key_action" --argjson configure_retained "$configure_retained" \
         --arg candidate "/run/pve-toolbox-komodo-$KP_TRANSACTION/periphery" --arg core "$core" --arg name "$name" --rawfile key "$KP_WORK/key" \
         '{schema:1,action:$action,transaction_id:$id,machine_id:$machine,expected_fingerprint:$fingerprint,adopt:$adopt,
           version:$version,asset_sha256:$digest,staged_binary:$candidate,core_url:$core,server_name:$name,onboarding_key:$key,
-          config_fingerprint:$config_fingerprint,onboarding_key_action:$key_action}' > "$KP_WORK/request.json" || return 1
+          config_fingerprint:$config_fingerprint,onboarding_key_action:$key_action,configure_retained:$configure_retained}' > "$KP_WORK/request.json" || return 1
     chmod 0600 "$KP_WORK/request.json"
     kp_host_apply "$id" "$KP_WORK/request.json" "$binary" || return 1
     kp_host_save "$id" "$release" "$KP_IDENTITY" "$(jq -r .fingerprint <<<"$KP_OUTCOME_JSON")" "$action" || { warn 'guest operation succeeded but host records failed; rerun to reconcile'; return 1; }

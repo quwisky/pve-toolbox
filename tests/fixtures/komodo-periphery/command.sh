@@ -68,7 +68,9 @@ case ${0##*/} in
                 rm -f /startup-failed
                 printf 'active\n' > /active ;;
             stop) [[ -f /etc/systemd/system/periphery.service ]] || exit 5; rm -f /startup-failed; printf '%s\n' "$*" >> /calls; printf 'inactive\n' > /active ;;
-            enable) printf '%s\n' "$*" >> /calls; printf 'enabled\n' > /enabled ;;
+            enable)
+                printf '%s\n' "$*" >> /calls; printf 'enabled\n' > /enabled
+                if [[ -f /crash-enable ]]; then kill -KILL "$PPID"; exit 1; fi ;;
             disable) printf '%s\n' "$*" >> /calls; printf 'disabled\n' > /enabled ;;
             daemon-reload) printf '%s\n' "$*" >> /calls ;;
             *) printf '%s\n' "$*" >> /calls; exit 99 ;;
