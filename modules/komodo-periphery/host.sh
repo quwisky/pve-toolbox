@@ -259,8 +259,8 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     fi
     : > "$KP_WORK/key"; chmod 0600 "$KP_WORK/key"
     if [[ $layout == absent && $(jq -r .retained <<<"$inspected") != true ]]; then
-        ask core 'Core HTTPS URL' ''
-        [[ $core =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ]] || { warn 'provide an HTTPS URL without credentials, query or fragment'; return 1; }
+        ask core 'Core URL (HTTP or HTTPS)' ''
+        [[ $core =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ]] || { warn 'provide an HTTP or HTTPS URL without credentials, query or fragment'; return 1; }
         ask name 'Server name in Core' "ct-$id"
         ask_secret key 'Core v2 onboarding key'
         [[ -n $key && -n $name ]] || { warn 'server name and onboarding key are required'; return 1; }

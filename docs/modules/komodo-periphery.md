@@ -17,11 +17,13 @@ prerequisite is reported before installation. If necessary, an administrator
 can install missing packages inside the guest; the module does not do this.
 The host needs its usual Proxmox tools, curl and jq.
 
-For a new installation, have the Core HTTPS URL, a server name and a Core v2
+For a new installation, have the Core HTTP or HTTPS URL, a server name and a Core v2
 onboarding key ready. Create the onboarding key in Core. The prompt hides the
 key and transfers it in a protected file. The new agent connects outward to
-Core, with its inbound listener explicitly disabled and certificate validation
-preserved. See [Komodo's connection guide](https://komo.do/docs/setup/connect-servers).
+Core, with its inbound listener explicitly disabled. HTTP connections are
+unencrypted; HTTPS connections retain certificate validation. Core URLs may include
+a port and path, but must not include credentials, a query or a fragment.
+See [Komodo's connection guide](https://komo.do/docs/setup/connect-servers).
 
 The new service runs as **root inside the guest**. Core can execute agent actions
 with that account's privileges. The preview identifies the container and service
