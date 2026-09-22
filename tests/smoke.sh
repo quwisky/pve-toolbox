@@ -83,6 +83,7 @@ pass "bash filters commands by prefix"
 
 got=$(complete_words 2 ./pve-toolbox install "")
 has "$got" zfs-scrub || fail "no modules offered for install, got: $got"
+has "$got" komodo-periphery || fail "Periphery missing from install completion"
 has_not "$got" native-notifications \
     || fail "obsolete notification provisioning offered for install, got: $got"
 got=$(complete_words 2 ./pve-toolbox install "zfs-")

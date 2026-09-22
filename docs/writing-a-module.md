@@ -217,3 +217,14 @@ update, selection, download, and install.
 Those root-only lifecycle and APT consumer checks run only when their required
 gate variables are set. Run them on a clean disposable Debian 13 environment;
 they refuse existing toolbox package, binary, configuration, or state paths.
+
+## Explicit guest updates
+
+A module that modifies a guest can declare `MODULE_EXPLICIT_UPDATE=1` to default
+to unchecked in the full-screen Update selection. Its update hook must check
+`TOOLBOX_UPDATE_EXPLICIT=1` before mutations. The launcher sets this scoped value
+for named CLI updates and confirmed full-screen selections; an inherited
+environment value cannot authorize update-all. The plain update-all action does
+not supply it. `module_update --check` remains read-only regardless of selection.
+A module must still obtain its own target-specific confirmation before changing
+a guest. Periphery uses the existing `check` command, not a new `--check` CLI flag.

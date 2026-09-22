@@ -70,6 +70,7 @@ nav:
       - backup-audit: modules/backup-audit.md
       - certificate-watch: modules/certificate-watch.md
       - config-backup: modules/config-backup.md
+      - komodo-periphery: modules/komodo-periphery.md
       - lxc-update: modules/lxc-update.md
       - restore-drill: modules/restore-drill.md
       - storage-hygiene: modules/storage-hygiene.md

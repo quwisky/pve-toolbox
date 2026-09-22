@@ -1,4 +1,5 @@
 #compdef pve-toolbox
+# Guest modules such as komodo-periphery use dynamic module/tag discovery.
 #
 # zsh completion for pve-toolbox.
 #

@@ -135,3 +135,13 @@ See [State versus config](../writing-a-module.md#state-versus-config).
 `install_toolbox_lib <name>...`
 : Copies `lib/<name>` into `TOOLBOX_LIB_DIR` at `0644`, so an installed helper
   script can source it.
+
+### Exact release assets
+
+`gh_exact_asset NAME` selects exactly one asset in `GH_JSON` and returns its
+HTTPS URL and GitHub SHA-256 digest in `GH_ASSET_URL` and `GH_ASSET_SHA256`.
+Missing or ambiguous metadata fails with empty outputs. `verify_sha256 FILE
+DIGEST` verifies a regular file against a 64-digit hexadecimal digest. These
+helpers do not install a binary. GitHub metadata provides integrity checking,
+not an independent signature. Existing checksum-manifest verification remains
+mandatory for callers using that interface.

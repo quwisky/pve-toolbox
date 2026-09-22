@@ -5,7 +5,7 @@ FILES := pve-toolbox $(sort $(wildcard lib/*.sh)) $(sort $(wildcard modules/*/*.
          $(sort $(wildcard debian/legacy/*/*.sh)) \
          completions/pve-toolbox.bash $(sort $(wildcard migrations/*.sh)) \
          scripts/pve-toolbox-native-notify $(sort $(wildcard scripts/*.sh)) \
-         $(sort $(wildcard tests/*.sh))
+         $(sort $(wildcard tests/*.sh)) $(sort $(wildcard tests/fixtures/komodo-periphery/*.sh))
 
 .PHONY: lint syntax test test-tui package package-test
 
@@ -20,10 +20,16 @@ syntax:
 
 test: syntax
 	@./tests/lib.sh
+	@./tests/komodo-periphery-release.sh
 	@./tests/migrations.sh
 	@./tests/native-notification-migration.sh
 	@./tests/native-zfs-scrub-migration.sh
 	@./tests/pve.sh
+	@./tests/komodo-periphery-target.sh
+	@./tests/komodo-periphery-guest.sh
+	@./tests/komodo-periphery-recovery.sh
+	@./tests/komodo-periphery.sh
+	@./tests/komodo-periphery-ui.sh
 	@./tests/report.sh
 	@./tests/doctor.sh
 	@./tests/backup-audit.sh

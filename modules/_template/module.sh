@@ -11,6 +11,9 @@
 #     MODULE_TITLE      short human name for the menu
 #     MODULE_DESC       one line describing what it does
 #     MODULE_TAGS       space separated, used by `pve-toolbox list <tag>`
+#     MODULE_EXPLICIT_UPDATE optional 1: default off in the Update checklist;
+#                          module_update must guard TOOLBOX_UPDATE_EXPLICIT.
+#                          --check remains read-only regardless of selection.
 #     MODULE_HOST_ONLY  1 if it must run on the PVE host rather than an LXC
 #
 #   Functions:

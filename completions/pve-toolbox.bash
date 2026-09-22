@@ -1,4 +1,5 @@
 # shellcheck shell=bash
+# Guest modules such as komodo-periphery use dynamic module/tag discovery.
 #
 # bash completion for pve-toolbox.
 #
