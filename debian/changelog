@@ -1,3 +1,9 @@
+pve-toolbox (0.8.1) unstable; urgency=medium
+
+  * **komodo-periphery:** show detailed startup failures ([#73](https://github.com/quwisky/pve-toolbox/issues/73)) ([bc7279e](https://github.com/quwisky/pve-toolbox/commit/bc7279e0347814ac44ad02efb0489db758c3cba5))
+
+ -- Bence Nagy <quwisky@qwky.eu>  Tue, 22 Sep 2026 17:32:31 +0000
+
 pve-toolbox (0.8.0) unstable; urgency=medium
 
   * **komodo-periphery:** manage systemd agents in existing LXC ([#72](https://github.com/quwisky/pve-toolbox/issues/72)) ([0279a86](https://github.com/quwisky/pve-toolbox/commit/0279a86e611a76bf411107f66c78677b8fb1fe60))
