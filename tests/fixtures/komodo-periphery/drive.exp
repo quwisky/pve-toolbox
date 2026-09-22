@@ -44,6 +44,11 @@ if {$mode eq "ui" || $mode eq "ui-default"} {
     }
 }
 expect {
+    -re {Existing agent action[^:]*: } {
+        if {$mode eq "configure"} { send -- "configure\r" } else { send -- "update\r" }
+        exp_continue
+    }
+    -re {Onboarding key action[^:]*: } { send -- "keep\r"; exp_continue }
     -re {Container ID[^:]*: } { send -- "101\r"; exp_continue }
     -re {Adopt this existing[^\r\n]*: } { send -- "y\r"; exp_continue }
     -re {Exact stable Periphery[^:]*: } { send -- "2.3.3\r"; exp_continue }

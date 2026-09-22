@@ -28,6 +28,7 @@ case ${0##*/} in
         else exit 98; fi ;;
     curl)
         url=${*: -1}
+        printf 'curl %s\n' "$url" >> "$KP_HOST_CALLS"
         case $url in
             https://api.github.com/repos/moghtech/komodo/releases/tags/v2.3.3)
                 hash=$(sha256sum "$KP_RELEASE" | cut -d ' ' -f1)

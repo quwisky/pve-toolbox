@@ -1,6 +1,6 @@
 # Komodo Periphery in LXC
 
-Install or update **Komodo Periphery v2 as a systemd service** inside an existing
+Install, update or reconfigure **Komodo Periphery v2 as a systemd service** inside an existing
 local LXC. Run the toolbox as **root on the PVE 9 host**. The initial supported
 guest is **Debian 13 amd64**, including unprivileged containers.
 
@@ -43,7 +43,8 @@ pve-toolbox uninstall komodo-periphery
 ```
 
 Install, update and uninstall select **one container per operation**. Repeat the
-flow for additional containers. Install also offers to update an existing agent.
+flow for additional containers. Install offers to update an existing agent's
+executable or edit its connection configuration.
 The plain menu's install/reconfigure action supports the same flow; its update-all
 operation skips guest agents. The full-screen Update checklist leaves this
 module unchecked until selected. Container-specific confirmation is still required.
@@ -90,6 +91,39 @@ Changes to an owned executable or service after adoption are reported as drift.
 Do not force an overwrite. Inspect the installation and retained ownership
 record first. A container identity change also blocks reuse of old host records.
 
+## Updating connection configuration
+
+Run `pve-toolbox install komodo-periphery` **as root on the PVE host**, select the
+existing container, then choose **configure** at the existing-agent prompt.
+The plain and full-screen install/reconfigure actions offer the same choice.
+This edits configuration without downloading or upgrading the executable.
+
+- Set the Core HTTP/HTTPS URL and server name, or leave either blank to keep it.
+- Choose **keep**, **replace** or **remove** for the onboarding key. A replacement
+  key is entered privately; existing keys are never displayed.
+- Review the selected changes and confirm before applying them.
+
+Configuration editing requires **Python 3.11 or newer in the guest** (including
+the standard `tomllib` module). The toolbox does not install this dependency.
+It supports one protected TOML file, including a custom file path, up to 1 MiB.
+Selected connection fields must have unambiguous single-line assignments.
+Invalid TOML, ambiguous edits, multiple config files and JSON/YAML configurations
+are refused without stopping the service. Binary updates still support their
+existing configuration layouts.
+
+Comments and unrelated settings, configuration ownership and permissions, unit
+files and the agent identity key are preserved. Changing the Core URL does not
+reset the agent identity or guarantee that a different Core accepts it.
+An active service restarts only when the configuration changes; an inactive or
+failed service stays stopped, and its enabled/disabled policy is preserved.
+Unchanged settings do not restart the agent. Confirm connectivity in Core after
+an edit, and start a previously stopped service separately when appropriate.
+
+The previous configuration is backed up before replacement. Restart failure
+restores it and reports the original startup diagnostics and rollback result.
+Interrupted edits use the same recovery flow as binary updates. If the file
+changes after preview, the operation refuses to overwrite it.
+
 ## Paths and retained data
 
 Fresh installations create these files **inside the guest**:
@@ -103,9 +137,9 @@ Fresh installations create these files **inside the guest**:
 | `/var/lib/pve-toolbox/komodo-periphery/` | Protected ownership, transaction and recovery records |
 
 Adopted installations keep their existing supported paths. The private key
-remains in the guest. Updates do not remove onboarding keys or rewrite connection
-configuration. After confirming enrollment in Core, an administrator may remove
-the onboarding key from the guest configuration; retain the agent private key.
+remains in the guest. Binary updates do not remove onboarding keys or rewrite
+connection configuration. After confirming enrollment in Core, use the configure
+action to remove the onboarding key if desired; retain the agent private key.
 
 The host stores desired versions and target identity through protected config
 helpers in `/etc/pve-toolbox/komodo-periphery-CTID.conf`. The managed ID list is

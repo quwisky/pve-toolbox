@@ -28,6 +28,7 @@ test: syntax
 	@./tests/komodo-periphery-target.sh
 	@./tests/komodo-periphery-guest.sh
 	@./tests/komodo-periphery-recovery.sh
+	@./tests/komodo-periphery-config.sh
 	@./tests/komodo-periphery.sh
 	@./tests/komodo-periphery-ui.sh
 	@./tests/report.sh
