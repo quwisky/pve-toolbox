@@ -3,7 +3,7 @@
 # shellcheck disable=SC2034
 MODULE_NAME="komodo-periphery"
 MODULE_TITLE="Komodo Periphery in LXC"
-MODULE_DESC="install or update a systemd agent in an existing local container"
+MODULE_DESC="install, update or reconfigure a systemd agent in an existing local container"
 MODULE_TAGS="lxc komodo periphery agent"
 MODULE_HOST_ONLY=1
 MODULE_EXPLICIT_UPDATE=1

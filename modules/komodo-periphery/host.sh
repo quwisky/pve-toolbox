@@ -166,6 +166,7 @@ kp_host_save() {
 }
 kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     local action=$1 id="" release="" core="" name="" key="" saved_identity inspected layout version adopt=false file digest binary=""
+    local key_action=keep choice=""
     [[ ${ASSUME_YES:-0} == 0 && ${FORCE:-0} == 0 && -t 0 && -t 1 ]] || { warn 'Periphery changes require a terminal and explicit confirmation; --yes/--force are unsupported'; return 1; }
     kp_host_require || return 1
     pve_lxc_inventory "$KP_NODE" || { warn "$PVE_LXC_ERROR"; return 1; }
@@ -229,20 +230,30 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
         info "Unit: $(kp_display "$(jq -r .unit <<<"$inspected")")"
         info "Configuration: $(kp_display "$(jq -r '.config_paths | join(", ")' <<<"$inspected")")"
         info 'Connection mode: existing configuration (not inferred or changed).'
-        info 'Existing configuration, identity keys and service customizations will be preserved.'
+        info 'Binary updates preserve existing configuration, identity keys and service customizations.'
+        if [[ $action == install ]]; then
+            ask choice 'Existing agent action (update/configure)' update
+            case $choice in
+                update|configure) action=$choice ;;
+                *) warn 'choose update or configure'; return 1 ;;
+            esac
+        fi
+        if [[ $action == configure ]]; then
+            [[ $(jq '.config_paths|length' <<<"$inspected") == 1 && $(jq -r '.config_paths[0]' <<<"$inspected") == *.toml ]] || { warn 'configuration editing requires one explicit TOML file'; return 1; }
+            info 'Configuration editing preserves other settings and identity; Python 3.11+ is required in the guest.'
+        fi
         if [[ $(jq -r .owned <<<"$inspected") != true ]]; then
             [[ $action != uninstall ]] || { warn 'only toolbox-owned agents can be uninstalled'; return 1; }
             confirm 'Adopt this existing systemd installation for management' n || return 1
             adopt=true
         fi
-        [[ $action != install ]] || action=update
     else
         [[ $action == install ]] || { warn 'Periphery is not installed; use install first'; return 1; }
         version=""
     fi
     KP_TRANSACTION=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
     [[ $KP_TRANSACTION =~ ^[a-f0-9]{32}$ ]] || return 1
-    if [[ $action != uninstall ]]; then
+    if [[ $action == install || $action == update ]]; then
         release=$(conf_get "komodo-periphery-$id" KP_VERSION)
         ask release 'Exact stable Periphery v2 version compatible with your Core (e.g. 2.3.3)' "${release:-$version}"
         release=${release#v}
@@ -258,7 +269,20 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
         release=$version; digest=$(printf '%064d' 0)
     fi
     : > "$KP_WORK/key"; chmod 0600 "$KP_WORK/key"
-    if [[ $layout == absent && $(jq -r .retained <<<"$inspected") != true ]]; then
+    if [[ $action == configure ]]; then
+        ask core 'Core URL (HTTP or HTTPS; blank keeps current)' ''
+        [[ -z $core || ( $core =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ) ]] || { warn 'provide an HTTP or HTTPS URL without credentials, query or fragment'; return 1; }
+        ask name 'Server name in Core (blank keeps current)' ''
+        ask key_action 'Onboarding key action (keep/replace/remove)' keep
+        case $key_action in
+            keep|remove) ;;
+            replace)
+                ask_secret key 'Core v2 onboarding key'
+                [[ -n $key ]] || { warn 'replacement onboarding key is required'; return 1; }
+                printf '%s' "$key" > "$KP_WORK/key"; unset key ;;
+            *) warn 'choose keep, replace or remove'; return 1 ;;
+        esac
+    elif [[ $layout == absent && $(jq -r .retained <<<"$inspected") != true ]]; then
         ask core 'Core URL (HTTP or HTTPS)' ''
         [[ $core =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ]] || { warn 'provide an HTTP or HTTPS URL without credentials, query or fragment'; return 1; }
         ask name 'Server name in Core' "ct-$id"
@@ -267,17 +291,23 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
         printf '%s' "$key" > "$KP_WORK/key"; unset key
     fi
     info "Node $KP_NODE / CT $id: $action Periphery ${version:-absent} -> $release"
-    if [[ $layout == absent ]]; then info 'New agent: guest root, outbound to Core, inbound disabled; Core can run commands as guest root.'
+    if [[ $action == configure ]]; then
+        info "Core URL: $(kp_display "${core:-keep current}"); server name: $(kp_display "${name:-keep current}"); onboarding key: $key_action"
+        info 'Executable and agent identity unchanged. An active service restarts; stopped services remain stopped.'
+    elif [[ $layout == absent ]]; then info 'New agent: guest root, outbound to Core, inbound disabled; Core can run commands as guest root.'
     else info "Service policy: $(kp_display "$(jq -r '.enabled + "/" + .active' <<<"$inspected")"); existing connection settings preserved."; fi
     if [[ $action == uninstall ]]; then info 'Remove owned binary and service only; retain config, keys, overrides and workloads.'
+    elif [[ $action == configure ]]; then info 'Previous configuration will be restored if the restart fails; Core connectivity must be checked separately.'
     else info 'An active agent will briefly stop during replacement; confirm this version is compatible with Core.'; fi
     confirm 'Apply this operation to the selected container' n || { info 'cancelled; guest unchanged'; return 0; }
     kp_host_lock "$id" && kp_host_match "$id" "$KP_IDENTITY" || return 1
     jq -nc --arg action "$action" --arg id "$KP_TRANSACTION" --arg machine "$(jq -r .machine_id <<<"$inspected")" \
         --arg fingerprint "$KP_PREVIEW_FINGERPRINT" --argjson adopt "$adopt" --arg version "$release" --arg digest "$digest" \
+        --arg config_fingerprint "$(jq -r '.config_fingerprint // ""' <<<"$inspected")" --arg key_action "$key_action" \
         --arg candidate "/run/pve-toolbox-komodo-$KP_TRANSACTION/periphery" --arg core "$core" --arg name "$name" --rawfile key "$KP_WORK/key" \
         '{schema:1,action:$action,transaction_id:$id,machine_id:$machine,expected_fingerprint:$fingerprint,adopt:$adopt,
-          version:$version,asset_sha256:$digest,staged_binary:$candidate,core_url:$core,server_name:$name,onboarding_key:$key}' > "$KP_WORK/request.json" || return 1
+          version:$version,asset_sha256:$digest,staged_binary:$candidate,core_url:$core,server_name:$name,onboarding_key:$key,
+          config_fingerprint:$config_fingerprint,onboarding_key_action:$key_action}' > "$KP_WORK/request.json" || return 1
     chmod 0600 "$KP_WORK/request.json"
     kp_host_apply "$id" "$KP_WORK/request.json" "$binary" || return 1
     kp_host_save "$id" "$release" "$KP_IDENTITY" "$(jq -r .fingerprint <<<"$KP_OUTCOME_JSON")" "$action" || { warn 'guest operation succeeded but host records failed; rerun to reconcile'; return 1; }

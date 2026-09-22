@@ -42,20 +42,23 @@ case ${0##*/} in
                 printf 'LoadState=loaded\nFragmentPath=/etc/systemd/system/periphery.service\nUser=root\nType=simple\nEnvironmentFiles=\n'
                 if [[ -f /with-dropin ]]; then printf 'DropInPaths=/etc/systemd/system/periphery.service.d/priority.conf\n'; else printf 'DropInPaths=\n'; fi
                 printf 'ActiveState=%s\nUnitFileState=%s\nMainPID=123\nNRestarts=0\n' "$(cat /active)" "$(cat /enabled)"
+                config_path=/etc/komodo/periphery.config.toml
+                [[ ! -f /custom-config ]] || config_path=/opt/periphery/config.toml
                 if [[ -f '/opt/custom path/periphery' ]]; then
-                    printf 'ExecStart={ path=/opt/custom path/periphery ; argv[]=/opt/custom path/periphery --config-path /etc/komodo/periphery.config.toml ; ignore_errors=no ; }\n'
+                    printf 'ExecStart={ path=/opt/custom path/periphery ; argv[]=/opt/custom path/periphery --config-path %s ; ignore_errors=no ; }\n' "$config_path"
                     exit
                 fi
                 if [[ $(sed -n 's/^ExecStart=//p' /etc/systemd/system/periphery.service) == /usr/local/bin/periphery* ]]; then
-                    printf 'ExecStart={ path=/usr/local/bin/periphery ; argv[]=/usr/local/bin/periphery --config-path /etc/komodo/periphery.config.toml ; ignore_errors=no ; }\n'; exit
+                    printf 'ExecStart={ path=/usr/local/bin/periphery ; argv[]=/usr/local/bin/periphery --config-path %s ; ignore_errors=no ; }\n' "$config_path"; exit
                 fi
-                printf 'ExecStart={ path=/bin/sh ; argv[]=/bin/sh -lc /usr/local/bin/periphery --config-path /etc/komodo/periphery.config.toml ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n'
+                printf 'ExecStart={ path=/bin/sh ; argv[]=/bin/sh -lc /usr/local/bin/periphery --config-path %s ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n' "$config_path"
                 ;;
             start)
                 if [[ -f /crash-start ]]; then kill -KILL "$PPID"; exit 1; fi
                 printf '%s\n' "$*" >> /calls
                 if [[ -f /fail-old-start ]] && /usr/local/bin/periphery --version | grep -q 2.3.2; then exit 1; fi
-                if [[ -f /fail-new-start || -f /fail-new-health ]] && /usr/local/bin/periphery --version | grep -q 2.3.3; then
+                if { [[ -f /fail-new-start || -f /fail-new-health ]] && /usr/local/bin/periphery --version | grep -q 2.3.3; } ||
+                    { [[ -f /fail-config-start ]] && grep -Fq 'connect_as = "new-name"' /etc/komodo/periphery.config.toml; }; then
                     : > /startup-failed
                     printf 'failed\n' > /active
                     [[ -f /fail-new-health ]] && exit 0

@@ -178,6 +178,9 @@ if [[ $EUID == 0 ]] && command -v expect >/dev/null; then
     PVE_TOOLBOX_ROOT="$WORK/root/usr/lib/pve-toolbox" \
         bash "$ROOT/tests/komodo-periphery.sh" > "$WORK/periphery-runtime.log" 2>&1 \
         || { cat "$WORK/periphery-runtime.log"; fail "packaged Periphery lifecycle failed"; }
+    PVE_TOOLBOX_ROOT="$WORK/root/usr/lib/pve-toolbox" \
+        bash "$ROOT/tests/komodo-periphery-config.sh" > "$WORK/periphery-config-runtime.log" 2>&1 \
+        || { cat "$WORK/periphery-config-runtime.log"; fail "packaged Periphery configuration update failed"; }
 fi
 pass "packaged Periphery helpers, discovery and isolated lifecycle"
 

@@ -110,3 +110,11 @@ BIN
     export PATH="$KP_WORK/host-bin:$PATH"
 }
 kp_confirm() { expect tests/fixtures/komodo-periphery/drive.exp "$1" ./pve-toolbox "${@:2}"; }
+
+kp_guest_python() { # Optional configuration-editor dependency in isolated guests.
+    local stdlib KP_BASE=$KP_TEST_ROOT
+    kp_copy_bin python3
+    stdlib=$(python3 -c 'import sysconfig; print(sysconfig.get_path("stdlib"))')
+    mkdir -p "$KP_TEST_ROOT${stdlib%/*}"
+    cp -a "$stdlib" "$KP_TEST_ROOT$stdlib"
+}

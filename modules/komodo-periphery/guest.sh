@@ -9,6 +9,7 @@ KG_CONFIGS=() KG_FILES=() KG_WORDS=()
 KG_ACTIVE=unknown KG_ENABLED=unknown KG_USER=root KG_FINGERPRINT="" KG_MACHINE=""
 KG_TRANSACTION=none
 KG_DIAGNOSTICS=null
+KG_CONFIG_FINGERPRINT=""
 kg_fail() { KG_REASON=$1; return 1; }
 kg_safe_path() { # Absolute canonical path, root-owned and not writable by others.
     local path=$1 mode
@@ -123,12 +124,13 @@ kg_inspect_inner() {
     version=$(timeout 5 "$KG_BINARY" --version 2>/dev/null | head -c 128) || { kg_fail 'could not read agent version'; return 1; }
     [[ $version =~ ^periphery[[:space:]]+v?(2\.[0-9]+\.[0-9]+)$ ]] || { kg_fail 'only stable Periphery v2 installations are supported'; return 1; }
     KG_VERSION=${BASH_REMATCH[1]}
+    KG_CONFIG_FINGERPRINT=$(sha256sum -- "${KG_CONFIGS[@]}" | sha256sum | cut -d ' ' -f1) || { kg_fail 'cannot fingerprint configuration'; return 1; }
     KG_FINGERPRINT=$({ printf '%s\n' "$KG_BINARY" "$KG_USER" "$type" "$raw"; sha256sum -- "$KG_BINARY" "${KG_FILES[@]}"; } | sha256sum | cut -d ' ' -f1)
     KG_LAYOUT=supported
 }
 kg_inspect() {
     KG_REASON="" KG_LAYOUT=unsupported KG_CONFIGS=() KG_FILES=()
-    KG_VERSION="" KG_BINARY="" KG_UNIT_PATH="" KG_FINGERPRINT="" KG_ACTIVE=unknown KG_ENABLED=unknown
+    KG_VERSION="" KG_BINARY="" KG_UNIT_PATH="" KG_FINGERPRINT="" KG_CONFIG_FINGERPRINT="" KG_ACTIVE=unknown KG_ENABLED=unknown
     kg_inspect_inner || true
     local record="" transaction_id="" last_action="" owned=false retained=false
     if [[ -f $KG_STORE/owner.json && ! -L $KG_STORE/owner.json ]]; then owned=true; fi
@@ -143,11 +145,11 @@ kg_inspect() {
     jq -nc --arg id "$transaction_id" --arg action "$last_action" --argjson owned "$owned" --argjson retained "$retained" --arg layout "$KG_LAYOUT" --arg reason "$KG_REASON" --arg machine_id "$KG_MACHINE" \
         --arg version "$KG_VERSION" --arg binary "$KG_BINARY" --arg unit "$KG_UNIT_PATH" \
         --arg user "$KG_USER" --arg active "$KG_ACTIVE" --arg enabled "$KG_ENABLED" \
-        --arg fingerprint "$KG_FINGERPRINT" --arg transaction "$KG_TRANSACTION" \
+        --arg fingerprint "$KG_FINGERPRINT" --arg config_fingerprint "$KG_CONFIG_FINGERPRINT" --arg transaction "$KG_TRANSACTION" \
         --argjson configs "$(printf '%s\n' "${KG_CONFIGS[@]}" | jq -Rsc 'split("\n") | map(select(length>0))')" \
         '{schema:1,transaction_id:$id,last_action:$action,owned:$owned,retained:$retained,layout:$layout,reason:$reason,machine_id:$machine_id,os_id:"debian",os_version:"13",arch:"amd64",
           version:$version,binary:$binary,unit:$unit,config_paths:$configs,service_user:$user,
-          active:$active,enabled:$enabled,masked:false,fingerprint:$fingerprint,transaction:$transaction}'
+          active:$active,enabled:$enabled,masked:false,fingerprint:$fingerprint,config_fingerprint:$config_fingerprint,transaction:$transaction}'
 }
 
 kg_atomic() { # <protected JSON path>, data on stdin
@@ -222,12 +224,97 @@ kg_toml() { # Validated strings; output one TOML string literal.
     value=${value//\\/\\\\}; value=${value//\"/\\\"}
     printf '"%s"' "$value"
 }
+kg_prepare_configuration() { # <TOML path>; edit a staged copy, verify all other values.
+    local config=$1
+    command -v python3 >/dev/null && python3 -c 'import tomllib' >/dev/null 2>&1 || { kg_fail 'configuration editing requires Python 3.11 or newer in the guest'; return 1; }
+    kg_regular "$config" && [[ $config == *.toml && $(stat -c %s "$config") -le 1048576 ]] || { kg_fail 'configuration editing requires one protected TOML file up to 1 MiB'; return 1; }
+    KG_CONFIG_STAGED=$(mktemp "${config%/*}/.periphery-config.XXXXXXXX") || return 1
+    if ! python3 - "$config" "$KG_REQUEST" "$KG_CONFIG_STAGED" <<'PY'
+import json
+import re
+import sys
+
+def trailing_comment(line):
+    # Locate a comment outside TOML basic/literal strings, including # in values.
+    index, delimiter = 0, None
+    while index < len(line):
+        if delimiter:
+            if delimiter.startswith('"') and line[index] == "\\":
+                index += 2
+            elif line.startswith(delimiter, index):
+                index += len(delimiter)
+                delimiter = None
+            else:
+                index += 1
+        elif line[index] in "\"'":
+            delimiter = line[index] * (3 if line.startswith(line[index] * 3, index) else 1)
+            index += len(delimiter)
+        elif line[index] == "#":
+            while index > 0 and line[index - 1] in " \t":
+                index -= 1
+            return line[index:].rstrip("\r\n")
+        else:
+            index += 1
+    return ""
+
+try:
+    import tomllib
+
+    with open(sys.argv[1], encoding="utf-8", newline="") as stream:
+        source = stream.read()
+    with open(sys.argv[2], encoding="utf-8") as stream:
+        request = json.load(stream)
+    original = tomllib.loads(source)
+    expected = original.copy()
+    edits = {}
+    for source_key, config_key in (("core_url", "core_address"), ("server_name", "connect_as")):
+        if request[source_key]:
+            edits[config_key] = request[source_key]
+    if request["onboarding_key_action"] == "replace":
+        edits["onboarding_key"] = request["onboarding_key"]
+    elif request["onboarding_key_action"] == "remove":
+        edits["onboarding_key"] = None
+    for key, value in edits.items():
+        if value is None:
+            expected.pop(key, None)
+        else:
+            expected[key] = value
+        if original.get(key) == value:
+            continue
+        replacement = "" if value is None else f"{key} = {json.dumps(value)}\n"
+        if key in original:
+            pattern = re.compile(r"^[ \t]*(?:" + key + r"|\"" + key + r"\"|'" + key + r"')[ \t]*=.*(?:\n|$)", re.MULTILINE)
+            def replace_assignment(match):
+                line = match.group()
+                comment = trailing_comment(line)
+                ending = "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+                indent = re.match(r"[ \t]*", line).group()
+                if value is None:
+                    return indent + comment + ending if comment else ""
+                return indent + replacement.rstrip("\n") + comment + ending
+            source, count = pattern.subn(replace_assignment, source)
+            if count != 1:
+                raise ValueError("ambiguous assignment")
+        elif value is not None:
+            source = replacement + source
+    # Reject multiline/ambiguous assignments instead of altering other settings.
+    if tomllib.loads(source) != expected:
+        raise ValueError("unrelated configuration changed")
+    with open(sys.argv[3], "w", encoding="utf-8", newline="") as stream:
+        stream.write(source)
+except Exception:
+    # Parser exceptions can include secrets from the configuration source.
+    sys.exit(1)
+PY
+    then kg_fail 'cannot safely edit configuration; requires valid TOML and unambiguous single-line connection settings'; return 1; fi
+    chown --reference="$config" "$KG_CONFIG_STAGED" && chmod --reference="$config" "$KG_CONFIG_STAGED" && sync -f "$KG_CONFIG_STAGED" || return 1
+}
 kg_request() {
     KG_REQUEST=$1
     kg_regular "$KG_REQUEST" && [[ $(stat -c %a "$KG_REQUEST") == 600 && $(stat -c %s "$KG_REQUEST") -le 65536 ]] || { kg_fail 'unsafe request file'; return 1; }
     KG_REQUEST_JSON=$(cat -- "$KG_REQUEST") || return 1
     jq -e 'type=="object" and .schema==1 and
-      (.action=="install" or .action=="update" or .action=="uninstall") and
+      (.action=="install" or .action=="update" or .action=="uninstall" or .action=="configure") and
       (.transaction_id | type=="string" and test("^[a-f0-9]{32}$")) and
       (.machine_id | type=="string" and test("^[a-f0-9]{32}$")) and
       (.expected_fingerprint | type=="string" and (.=="absent" or test("^[a-f0-9]{64}$"))) and
@@ -239,6 +326,13 @@ kg_request() {
     [[ $KG_REQUEST == "/run/pve-toolbox-komodo-$KG_ID/request.json" && $(jq -r .staged_binary <<<"$KG_REQUEST_JSON") == "/run/pve-toolbox-komodo-$KG_ID/periphery" ]] || { kg_fail 'invalid staging paths'; return 1; }
     KG_ACTION=$(jq -r .action <<<"$KG_REQUEST_JSON")
     KG_DESIRED=$(jq -r .version <<<"$KG_REQUEST_JSON")
+    if [[ $KG_ACTION == configure ]]; then
+        jq -e '(.config_fingerprint | type=="string" and test("^[a-f0-9]{64}$")) and
+            all(.core_url,.server_name,.onboarding_key; type=="string" and (explode|all(.>=32 and .!=127))) and
+            (.core_url=="" or (.core_url|test("^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^\\s?#]*)?$") and (contains("@")|not))) and
+            (.onboarding_key_action=="keep" or .onboarding_key_action=="remove" or
+                (.onboarding_key_action=="replace" and (.onboarding_key|length>0)))' <<<"$KG_REQUEST_JSON" >/dev/null 2>&1 || { kg_fail 'invalid configuration update'; return 1; }
+    fi
 }
 kg_backup() { # <file> <backup leaf>
     if [[ -e $1 ]]; then
@@ -265,7 +359,7 @@ kg_restore() {
             binary) path=$binary ;;
             unit) path=$unit ;;
             config) [[ $(jq -r .config_changed <<<"$record") == true ]] || continue
-                    path=/etc/komodo/periphery.config.toml ;;
+                    path=$(jq -r '.config_path // "/etc/komodo/periphery.config.toml"' <<<"$record") ;;
         esac
         kg_safe_path "$path" || return 1
         [[ ! -e $path || -f $path ]] || return 1
@@ -293,7 +387,7 @@ kg_restore() {
             binary) path=$binary ;;
             unit) path=$unit ;;
             config) [[ $(jq -r .config_changed <<<"$record") == true ]] || continue
-                    path=/etc/komodo/periphery.config.toml ;;
+                    path=$(jq -r '.config_path // "/etc/komodo/periphery.config.toml"' <<<"$record") ;;
         esac
         if [[ -f $KG_STORE/transaction/$leaf ]]; then
             tmp=$(mktemp "${path%/*}/.restore.XXXXXXXX") || return 1
@@ -315,6 +409,7 @@ kg_restore() {
 }
 kg_apply() {
     local inspected expected binary unit candidate digest old_version config_changed=false reuse=false backups oldhash="" startup_since start_output
+    local config_path=/etc/komodo/periphery.config.toml
     kg_request "$1" && kg_store || return 1
     [[ ! -e $KG_STORE/pending.json ]] || { kg_fail 'pending transaction requires recovery'; return 1; }
     inspected=$(kg_inspect)
@@ -341,22 +436,29 @@ kg_apply() {
         old_version=$(jq -r .version <<<"$inspected")
         [[ $(printf '%s\n' "$old_version" "$KG_DESIRED" | sort -V | head -1) == "$old_version" || $KG_ACTION == uninstall ]] || { kg_fail 'downgrades are unsupported'; return 1; }
         oldhash=$(kg_hash "$binary") || return 1
+        if [[ $KG_ACTION == configure ]]; then
+            [[ $KG_DESIRED == "$old_version" && $(jq -r .config_fingerprint <<<"$inspected") == "$(jq -r .config_fingerprint <<<"$KG_REQUEST_JSON")" ]] || { kg_fail 'configuration or version changed since preview'; return 1; }
+            [[ $(jq '.config_paths|length' <<<"$inspected") == 1 ]] || { kg_fail 'configuration editing requires one explicit TOML file'; return 1; }
+            config_path=$(jq -r '.config_paths[0]' <<<"$inspected")
+            kg_prepare_configuration "$config_path" || return 1
+            if ! cmp -s "$config_path" "$KG_CONFIG_STAGED"; then config_changed=true; fi
+        fi
     fi
     kg_safe_path "$binary" && kg_safe_path "$unit" || return 1
-    if [[ $KG_ACTION != uninstall ]]; then
+    if [[ $KG_ACTION == install || $KG_ACTION == update ]]; then
         candidate=$(jq -r .staged_binary <<<"$KG_REQUEST_JSON"); digest=$(jq -r .asset_sha256 <<<"$KG_REQUEST_JSON")
         kg_regular "$candidate" && [[ $(kg_hash "$candidate") == "$digest" ]] || { kg_fail 'candidate checksum mismatch'; return 1; }
         chmod 0755 "$candidate" || return 1
         [[ $(kg_version "$candidate") == "$KG_DESIRED" ]] || { kg_fail 'candidate version mismatch'; return 1; }
     fi
-    if [[ $config_changed == true ]]; then
+    if [[ $config_changed == true && $expected == absent ]]; then
         jq -e 'all(.core_url,.server_name,.onboarding_key; type=="string" and length>0 and (explode|all(.>=32 and .!=127))) and
           (.core_url | test("^https?://"))' <<<"$KG_REQUEST_JSON" >/dev/null || { kg_fail 'invalid onboarding settings'; return 1; }
         kg_safe_path /etc/komodo/periphery.config.toml && kg_safe_path /etc/komodo/keys || return 1
     fi
     # Allocate and sync on the destination filesystem before stopping the agent.
     # Copy failure (including a full filesystem) leaves the service untouched.
-    if [[ $KG_ACTION != uninstall && $oldhash != "$digest" ]]; then
+    if [[ ( $KG_ACTION == install || $KG_ACTION == update ) && $oldhash != "$digest" ]]; then
         mkdir -p -- "${binary%/*}" || return 1
         KG_STAGED=$(mktemp "${binary%/*}/.periphery.XXXXXXXX") || return 1
         cp -- "$candidate" "$KG_STAGED" || { kg_fail 'destination staging failed; service unchanged'; return 1; }
@@ -370,14 +472,20 @@ kg_apply() {
     if [[ -d $KG_STORE/transaction ]]; then rm -rf -- "$KG_STORE/transaction" || return 1; fi
     mkdir -m 0700 "$KG_STORE/transaction" || return 1
     kg_backup "$binary" binary && kg_backup "$unit" unit && kg_backup "$KG_STORE/owner.json" owner || return 1
+    if [[ $config_changed == true ]]; then
+        if [[ $KG_ACTION == configure ]]; then
+            [[ $(sha256sum -- "$config_path" | sha256sum | cut -d ' ' -f1) == "$(jq -r .config_fingerprint <<<"$KG_REQUEST_JSON")" ]] || { kg_fail 'configuration changed while preparing update'; return 1; }
+        fi
+        kg_backup "$config_path" config || return 1
+    fi
     backups=$(find "$KG_STORE/transaction" -maxdepth 1 -type f -exec sha256sum {} + | jq -Rn '[inputs|capture("^(?<hash>[0-9a-f]{64})  (?<path>.*)$")|{key:(.path|split("/")|last),value:.hash}]|from_entries') || return 1
     if [[ $expected != absent && ! -e $KG_STORE/owner.json && ! -e $KG_STORE/adoption ]]; then
         cp -a "$KG_STORE/transaction" "$KG_STORE/adoption" && sync -f "$KG_STORE/adoption" || return 1
     fi
     jq -nc --argjson inspected "$inspected" --arg id "$KG_ID" --arg binary "$binary" --arg unit "$unit" \
-        --arg action "$KG_ACTION" --argjson changed "$config_changed" --argjson backups "$backups" \
+        --arg action "$KG_ACTION" --arg config_path "$config_path" --argjson changed "$config_changed" --argjson backups "$backups" \
         '{schema:1,transaction_id:$id,machine_id:$inspected.machine_id,action:$action,binary:$binary,unit:$unit,
-          active:$inspected.active,enabled:$inspected.enabled,config_changed:$changed,backups:$backups,phase:"backed_up"}' | kg_atomic "$KG_STORE/pending.json" || return 1
+          active:$inspected.active,enabled:$inspected.enabled,config_changed:$changed,config_path:$config_path,backups:$backups,phase:"backed_up"}' | kg_atomic "$KG_STORE/pending.json" || return 1
     KG_OWN_TRANSACTION=1
     if [[ $KG_ACTION == uninstall ]]; then
         kg_mark stopping && systemctl stop "$KG_UNIT" >/dev/null 2>&1 && systemctl disable "$KG_UNIT" >/dev/null 2>&1 || { kg_fail 'could not stop/disable service'; return 1; }
@@ -385,14 +493,21 @@ kg_apply() {
         jq -nc --arg machine "$KG_MACHINE" '{machine_id:$machine}' | kg_atomic "$KG_STORE/retained.json" || return 1
         rm -f -- "$KG_STORE/owner.json" || return 1
     else
-        if [[ $expected != absent && $oldhash == "$digest" ]]; then
+        if [[ $KG_ACTION == configure && $config_changed == false ]] || [[ $KG_ACTION != configure && $expected != absent && $oldhash == "$digest" ]]; then
             : # Same-version adoption records ownership without restarting.
         else
             kg_mark stopping || return 1
-            if [[ $expected != absent ]]; then systemctl stop "$KG_UNIT" >/dev/null 2>&1 || { kg_fail 'could not stop service'; return 1; }; fi
+            if [[ $expected != absent && ( $KG_ACTION != configure || $(jq -r .active <<<"$inspected") == active ) ]]; then
+                systemctl stop "$KG_UNIT" >/dev/null 2>&1 || { kg_fail 'could not stop service'; return 1; }
+            fi
             kg_mark replacing || return 1
-            mv -fT -- "$KG_STAGED" "$binary" && sync -f "${binary%/*}" || return 1
-            KG_STAGED=""
+            if [[ $KG_ACTION == configure ]]; then
+                mv -fT -- "$KG_CONFIG_STAGED" "$config_path" && sync -f "${config_path%/*}" || return 1
+                KG_CONFIG_STAGED=""
+            else
+                mv -fT -- "$KG_STAGED" "$binary" && sync -f "${binary%/*}" || return 1
+                KG_STAGED=""
+            fi
             if [[ $expected == absent ]]; then
                 mkdir -p /etc/komodo/keys /etc/systemd/system || return 1
                 if [[ $reuse == false ]]; then chmod 0700 /etc/komodo/keys || return 1; fi
@@ -445,6 +560,7 @@ kg_finish() {
         if kg_restore; then rollback=restored; else rollback=failed; fi
     fi
     if [[ -n ${KG_STAGED:-} ]] && kg_safe_path "$KG_STAGED"; then rm -f -- "$KG_STAGED" || rc=1; fi
+    if [[ -n ${KG_CONFIG_STAGED:-} ]] && kg_safe_path "$KG_CONFIG_STAGED"; then rm -f -- "$KG_CONFIG_STAGED" || rc=1; fi
     [[ $KG_SUCCESS == 1 ]] || rc=${rc:-1}
     if [[ $KG_SUCCESS != 1 && $rc == 0 ]]; then rc=1; fi
     printf '%s' "$KG_DIAGNOSTICS" | jq -c --arg result "$([[ $KG_SUCCESS == 1 ]] && printf success || printf failed)" --arg reason "${KG_REASON:-operation failed}" \
