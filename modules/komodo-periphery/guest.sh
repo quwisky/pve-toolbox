@@ -9,6 +9,7 @@ KG_CONFIGS=() KG_FILES=() KG_WORDS=()
 KG_ACTIVE=unknown KG_ENABLED=unknown KG_USER=root KG_FINGERPRINT="" KG_MACHINE=""
 KG_TRANSACTION=none
 KG_DIAGNOSTICS=null
+KG_HEALTH_REASON="" KG_HEALTH_AGENT_PID=""
 KG_CONFIG_FINGERPRINT=""
 kg_fail() { KG_REASON=$1; return 1; }
 kg_safe_path() { # Absolute canonical path, root-owned and not writable by others.
@@ -179,40 +180,58 @@ kg_version() {
     [[ $text =~ ^periphery[[:space:]]+v?(2\.[0-9]+\.[0-9]+)$ ]] || return 1
     printf '%s' "${BASH_REMATCH[1]}"
 }
-kg_agent_pid() { # <MainPID> <binary>; known upstream shell wrapper or direct agent
+kg_agent_pid() { # <MainPID> <binary>; record agent PID or a non-secret reason.
     local pid=$1 binary=$2 child children found="" exe
-    exe=$(readlink -- "/proc/$pid/exe") || return 1
-    if [[ $exe == "$binary" ]]; then printf '%s' "$pid"; return 0; fi
-    [[ $exe == "$(readlink -f /bin/sh)" ]] || return 1
-    children=$(cat "/proc/$pid/task/$pid/children") || return 1
+    KG_HEALTH_AGENT_PID=""
+    exe=$(readlink -- "/proc/$pid/exe" 2>/dev/null) || { KG_HEALTH_REASON='cannot read the service MainPID executable from /proc'; return 1; }
+    if [[ $exe == "$binary" ]]; then KG_HEALTH_AGENT_PID=$pid; return 0; fi
+    [[ $exe == "$(readlink -f /bin/sh)" ]] || { KG_HEALTH_REASON='service MainPID is not running the expected agent executable or supported shell wrapper'; return 1; }
+    children=$(cat "/proc/$pid/task/$pid/children" 2>/dev/null) || { KG_HEALTH_REASON='cannot inspect the service shell wrapper children'; return 1; }
     for child in $children; do # Kernel format: whitespace-separated numeric PIDs.
-        [[ $child =~ ^[1-9][0-9]*$ ]] || return 1
-        if [[ $(readlink -- "/proc/$child/exe") == "$binary" ]]; then
-            [[ -z $found && $(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$child/status") == "$pid" ]] || return 1
+        [[ $child =~ ^[1-9][0-9]*$ ]] || { KG_HEALTH_REASON='invalid child PID in the service shell wrapper'; return 1; }
+        if [[ $(readlink -- "/proc/$child/exe" 2>/dev/null) == "$binary" ]]; then
+            [[ -z $found && $(sed -n 's/^PPid:[[:space:]]*//p' "/proc/$child/status" 2>/dev/null) == "$pid" ]] || { KG_HEALTH_REASON='agent process under the service shell wrapper is ambiguous'; return 1; }
             found=$child
         fi
     done
-    [[ -n $found ]] || return 1
-    printf '%s' "$found"
+    [[ -n $found ]] || { KG_HEALTH_REASON='service shell wrapper has no verifiable agent child yet'; return 1; }
+    KG_HEALTH_AGENT_PID=$found
 }
-kg_service_health() { # expected binary
-    local i props pid restarts agent previous=""
-    for ((i=0;i<10;i++)); do
-        props=$(systemctl show "$KG_UNIT" --property=ActiveState,MainPID,NRestarts) || return 1
-        [[ $props == *'ActiveState=active'* ]] || return 1
+kg_service_health() { # expected binary; bounded readiness then stable identity.
+    local i props pid restarts active ready stable=0 previous="" initial_restarts=""
+    KG_HEALTH_REASON=""
+    for ((i=0;i<20;i++)); do
+        props=$(timeout 5 systemctl show "$KG_UNIT" --property=ActiveState,MainPID,NRestarts) || { KG_HEALTH_REASON='cannot read systemd health properties'; return 1; }
+        active=$(sed -n 's/^ActiveState=//p' <<<"$props")
         pid=$(sed -n 's/^MainPID=//p' <<<"$props")
         restarts=$(sed -n 's/^NRestarts=//p' <<<"$props")
-        [[ $pid =~ ^[1-9][0-9]*$ && $restarts =~ ^[0-9]+$ ]] || return 1
-        agent=$(kg_agent_pid "$pid" "$1") || return 1
-        [[ -z $previous || $previous == "$pid:$agent:$restarts" ]] || return 1
-        previous=$pid:$agent:$restarts
+        [[ $active == active || $active == activating ]] || { KG_HEALTH_REASON='service became inactive, failed, or left its startup state'; return 1; }
+        [[ $pid =~ ^[0-9]+$ && $restarts =~ ^[0-9]+$ ]] || { KG_HEALTH_REASON='systemd returned an invalid MainPID or restart count'; return 1; }
+        [[ -z $initial_restarts || $initial_restarts == "$restarts" ]] || { KG_HEALTH_REASON='service restarted during the startup health check'; return 1; }
+        initial_restarts=$restarts
+        ready=false
+        if [[ $active == activating ]]; then KG_HEALTH_REASON='systemd is still activating the service'
+        elif [[ $pid == 0 ]]; then KG_HEALTH_REASON='systemd has not assigned a service MainPID yet'
+        elif kg_agent_pid "$pid" "$1"; then ready=true; fi
+        if [[ $ready == true ]]; then
+            [[ -z $previous || $previous == "$pid:$KG_HEALTH_AGENT_PID" ]] || { KG_HEALTH_REASON='service or agent PID changed during the stability check'; return 1; }
+            previous=$pid:$KG_HEALTH_AGENT_PID
+            stable=$((stable+1))
+        elif [[ -n $previous ]]; then return 1
+        elif ((i >= 10)); then
+            KG_HEALTH_REASON="startup readiness timed out: $KG_HEALTH_REASON"
+            return 1
+        fi
         sleep 1
+        if ((stable == 10)); then KG_HEALTH_REASON=""; return 0; fi
     done
+    KG_HEALTH_REASON='service did not complete the startup stability check'
+    return 1
 }
 kg_startup_diagnostics() { # <start time> <start output>; before rollback changes it
     local since=$1 start_output=$2 status journal
     status=$(timeout 5 systemctl show "$KG_UNIT" --no-pager \
-        --property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts \
+        --property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts,MainPID \
         2>/dev/null | head -c 1024) || status='service status unavailable'
     journal=$(timeout 5 journalctl -u "$KG_UNIT" --since "@$since" -n 20 \
         --no-pager --output=json --output-fields=MESSAGE 2>/dev/null | head -c 8192) || journal=''
@@ -222,7 +241,7 @@ kg_startup_diagnostics() { # <start time> <start output>; before rollback change
         || journal='["startup journal unavailable or exceeds the diagnostic limit"]'
     # Journal text may contain credentials: keep it on stdin, never in argv.
     KG_DIAGNOSTICS=$({ printf '%s' "$start_output" | jq -Rs .; printf '%s' "$journal"; } \
-        | jq -cs --arg service "$status" '{service:$service,journal:([.[0]] + .[1] | map(select(length>0)))}') \
+        | jq -cs --arg service "$status" --arg health "$KG_HEALTH_REASON" '{service:$service,health:$health,journal:([.[0]] + .[1] | map(select(length>0)))}') \
         || KG_DIAGNOSTICS=null
 }
 kg_toml() { # Validated strings; output one TOML string literal.
@@ -550,6 +569,7 @@ UNIT
             kg_mark starting || return 1
             if [[ $expected == absent || $(jq -r .active <<<"$inspected") == active ]]; then
                 startup_since=$(date +%s)
+                KG_HEALTH_REASON='systemctl start failed'
                 if ! { start_output=$(systemctl start "$KG_UNIT" 2>&1 | head -c 2048) && kg_service_health "$binary"; }; then
                     kg_startup_diagnostics "$startup_since" "$start_output" || true
                     kg_fail 'new service failed startup health check'; return 1
