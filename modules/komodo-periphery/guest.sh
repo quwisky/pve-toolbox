@@ -351,7 +351,7 @@ kg_apply() {
     fi
     if [[ $config_changed == true ]]; then
         jq -e 'all(.core_url,.server_name,.onboarding_key; type=="string" and length>0 and (explode|all(.>=32 and .!=127))) and
-          (.core_url | startswith("https://"))' <<<"$KG_REQUEST_JSON" >/dev/null || { kg_fail 'invalid onboarding settings'; return 1; }
+          (.core_url | test("^https?://"))' <<<"$KG_REQUEST_JSON" >/dev/null || { kg_fail 'invalid onboarding settings'; return 1; }
         kg_safe_path /etc/komodo/periphery.config.toml && kg_safe_path /etc/komodo/keys || return 1
     fi
     # Allocate and sync on the destination filesystem before stopping the agent.

@@ -47,8 +47,13 @@ kp_fixture absent
 kp_host_fixture
 kp_confirm decline install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'decline failed'; }
 [[ ! -e $KP_TEST_BINARY && ! -e $KP_TEST_ROOT/var/lib/pve-toolbox ]] || fail 'decline changed guest'
-kp_confirm accept install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'host installation failed'; }
+for url in ftp://core.example.invalid http://user:password@core.example.invalid 'http://core.example.invalid/?query=1' 'http://core.example.invalid/#fragment'; do
+    if KP_CORE_URL=$url kp_confirm accept install komodo-periphery > "$KP_WORK/session"; then fail 'unsupported Core URL accepted'; fi
+    [[ ! -e $KP_TEST_BINARY && ! -e $KP_TEST_ROOT/var/lib/pve-toolbox ]] || fail 'invalid Core URL changed guest'
+done
+KP_CORE_URL=http://192.0.2.10:9120/komodo kp_confirm accept install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'HTTP Core installation failed'; }
 [[ -f $KP_TEST_CONFIG ]] || fail 'configuration missing'
+grep -Fq 'core_address = "http://192.0.2.10:9120/komodo"' "$KP_TEST_CONFIG" || fail 'HTTP Core URL not preserved'
 if grep -Rq fixture-secret "$KP_WORK/session" "$TOOLBOX_STATE_DIR"; then fail 'secret leaked'; fi
 kp_confirm accept uninstall komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'host uninstall failed'; }
 [[ ! -e $KP_TEST_BINARY && -f $KP_TEST_CONFIG ]] || fail 'host uninstall violated retention'

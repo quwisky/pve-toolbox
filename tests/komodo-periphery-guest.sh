@@ -50,6 +50,21 @@ kp_request uninstall
 kp_guest apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out" || fail 'uninstall failed'
 [[ ! -e $KP_TEST_BINARY && -f $KP_TEST_CONFIG ]] || fail 'uninstall retention violated'
 printf 'ok guest installation, update, rollback and uninstall\n'
+for url in http://192.0.2.10:9120/komodo ftp://core.example.invalid; do
+    kp_fixture absent
+    kp_request install
+    jq --arg url "$url" '.core_url=$url' "$KP_TEST_ROOT$KP_TEST_REQUEST" > "$KP_TEST_ROOT/request-new.json"
+    mv "$KP_TEST_ROOT/request-new.json" "$KP_TEST_ROOT$KP_TEST_REQUEST"
+    chmod 0600 "$KP_TEST_ROOT$KP_TEST_REQUEST"
+    if [[ $url == http://* ]]; then
+        kp_guest apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out" || fail 'guest rejected HTTP Core URL'
+        grep -Fq 'core_address = "http://192.0.2.10:9120/komodo"' "$KP_TEST_CONFIG" || fail 'guest rewrote HTTP URL'
+    else
+        if kp_guest apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out"; then fail 'guest accepted unsupported URL scheme'; fi
+        kp_assert_no_guest_mutation
+    fi
+done
+printf 'ok guest HTTP Core support and unsupported scheme refusal\n'
 # A binary checksum error must occur before the service stops.
 kp_fixture upstream-v2
 kp_request update

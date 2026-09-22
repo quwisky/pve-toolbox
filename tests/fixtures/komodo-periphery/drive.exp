@@ -1,6 +1,8 @@
 #!/usr/bin/expect -f
 set timeout 30
 set mode [lindex $argv 0]
+set core_url "https://core.example.invalid"
+if {[info exists env(KP_CORE_URL)]} { set core_url $env(KP_CORE_URL) }
 if {[info exists env(KP_CAPTURE)]} { log_file -noappend $env(KP_CAPTURE) }
 spawn -noecho {*}[lrange $argv 1 end]
 if {$mode eq "plain"} {
@@ -45,7 +47,7 @@ expect {
     -re {Container ID[^:]*: } { send -- "101\r"; exp_continue }
     -re {Adopt this existing[^\r\n]*: } { send -- "y\r"; exp_continue }
     -re {Exact stable Periphery[^:]*: } { send -- "2.3.3\r"; exp_continue }
-    -re {Core HTTPS URL[^:]*: } { send -- "https://core.example.invalid\r"; exp_continue }
+    -re {Core (HTTPS )?URL[^:]*: } { send -- "$core_url\r"; exp_continue }
     -re {Server name in Core[^:]*: } { send -- "test-lxc\r"; exp_continue }
     -re {Core v2 onboarding key: } { send -- "fixture-secret\r"; exp_continue }
     -re {Apply this operation[^\r\n]*: } {
