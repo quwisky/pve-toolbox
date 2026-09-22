@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/quwisky/pve-toolbox/compare/v0.7.1...v0.8.0) (2026-09-22)
+
+
+### Features
+
+* **komodo-periphery:** manage systemd agents in existing LXC ([#72](https://github.com/quwisky/pve-toolbox/issues/72)) ([0279a86](https://github.com/quwisky/pve-toolbox/commit/0279a86e611a76bf411107f66c78677b8fb1fe60))
+
+
+### Dependencies
+
+* bump actions/deploy-pages in the github-actions group ([#70](https://github.com/quwisky/pve-toolbox/issues/70)) ([a7f1055](https://github.com/quwisky/pve-toolbox/commit/a7f105519d4e240968cec49b2c1982cb9bfac0a4))
+
 ## [0.7.1](https://github.com/quwisky/pve-toolbox/compare/v0.7.0...v0.7.1) (2026-09-05)
 
 
