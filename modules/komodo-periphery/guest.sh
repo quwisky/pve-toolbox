@@ -8,6 +8,7 @@ KG_REASON="" KG_LAYOUT=unsupported KG_VERSION="" KG_BINARY="" KG_UNIT_PATH=""
 KG_CONFIGS=() KG_FILES=() KG_WORDS=()
 KG_ACTIVE=unknown KG_ENABLED=unknown KG_USER=root KG_FINGERPRINT="" KG_MACHINE=""
 KG_TRANSACTION=none
+KG_DIAGNOSTICS=null
 kg_fail() { KG_REASON=$1; return 1; }
 kg_safe_path() { # Absolute canonical path, root-owned and not writable by others.
     local path=$1 mode
@@ -200,6 +201,22 @@ kg_service_health() { # expected binary
         sleep 1
     done
 }
+kg_startup_diagnostics() { # <start time> <start output>; before rollback changes it
+    local since=$1 start_output=$2 status journal
+    status=$(timeout 5 systemctl show "$KG_UNIT" --no-pager \
+        --property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts \
+        2>/dev/null | head -c 1024) || status='service status unavailable'
+    journal=$(timeout 5 journalctl -u "$KG_UNIT" --since "@$since" -n 20 \
+        --no-pager --output=json --output-fields=MESSAGE 2>/dev/null | head -c 8192) || journal=''
+    # Refuse partial JSON if a very large journal entry exceeds the byte limit.
+    journal=$(printf '%s' "$journal" | jq -cs '[.[] | .MESSAGE | select(type=="string")]
+        | if length == 0 then ["startup journal unavailable or empty"] else . end' 2>/dev/null) \
+        || journal='["startup journal unavailable or exceeds the diagnostic limit"]'
+    # Journal text may contain credentials: keep it on stdin, never in argv.
+    KG_DIAGNOSTICS=$({ printf '%s' "$start_output" | jq -Rs .; printf '%s' "$journal"; } \
+        | jq -cs --arg service "$status" '{service:$service,journal:([.[0]] + .[1] | map(select(length>0)))}') \
+        || KG_DIAGNOSTICS=null
+}
 kg_toml() { # Validated strings; output one TOML string literal.
     local value=$1
     value=${value//\\/\\\\}; value=${value//\"/\\\"}
@@ -297,7 +314,7 @@ kg_restore() {
     kg_mark restored && mv -fT "$KG_STORE/pending.json" "$KG_STORE/last-failure.json" && sync -f "$KG_STORE" || return 1
 }
 kg_apply() {
-    local inspected expected binary unit candidate digest old_version config_changed=false reuse=false backups oldhash=""
+    local inspected expected binary unit candidate digest old_version config_changed=false reuse=false backups oldhash="" startup_since start_output
     kg_request "$1" && kg_store || return 1
     [[ ! -e $KG_STORE/pending.json ]] || { kg_fail 'pending transaction requires recovery'; return 1; }
     inspected=$(kg_inspect)
@@ -404,7 +421,11 @@ UNIT
             fi
             kg_mark starting || return 1
             if [[ $expected == absent || $(jq -r .active <<<"$inspected") == active ]]; then
-                systemctl start "$KG_UNIT" >/dev/null 2>&1 && kg_service_health "$binary" || { kg_fail 'new service failed startup health check'; return 1; }
+                startup_since=$(date +%s)
+                if ! { start_output=$(systemctl start "$KG_UNIT" 2>&1 | head -c 2048) && kg_service_health "$binary"; }; then
+                    kg_startup_diagnostics "$startup_since" "$start_output" || true
+                    kg_fail 'new service failed startup health check'; return 1
+                fi
             fi
         fi
         local current
@@ -426,9 +447,9 @@ kg_finish() {
     if [[ -n ${KG_STAGED:-} ]] && kg_safe_path "$KG_STAGED"; then rm -f -- "$KG_STAGED" || rc=1; fi
     [[ $KG_SUCCESS == 1 ]] || rc=${rc:-1}
     if [[ $KG_SUCCESS != 1 && $rc == 0 ]]; then rc=1; fi
-    jq -nc --arg result "$([[ $KG_SUCCESS == 1 ]] && printf success || printf failed)" --arg reason "${KG_REASON:-operation failed}" \
+    printf '%s' "$KG_DIAGNOSTICS" | jq -c --arg result "$([[ $KG_SUCCESS == 1 ]] && printf success || printf failed)" --arg reason "${KG_REASON:-operation failed}" \
         --arg version "${KG_DESIRED:-}" --arg fingerprint "$KG_FINGERPRINT" --arg rollback "$rollback" --arg id "${KG_ID:-}" \
-        '{schema:1,result:$result,reason:$reason,version:$version,fingerprint:$fingerprint,rollback:$rollback,transaction_id:$id}'
+        '{schema:1,result:$result,reason:$reason,version:$version,fingerprint:$fingerprint,rollback:$rollback,transaction_id:$id,diagnostics:.}'
     exit "$rc"
 }
 case ${1:-} in

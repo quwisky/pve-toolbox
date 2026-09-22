@@ -120,6 +120,14 @@ or migrates a container automatically.
 
 A failed update restores the previous executable and toolbox-changed files and
 checks the previous service state. Recovery failure is reported separately.
+If the new service fails to start or remain healthy, the error includes the
+start command's message, systemd state/result and process exit status, and up to
+20 recent journal entries from that startup attempt. These details are captured
+**before rollback**, so restarting the previous version does not hide the original
+failure. Credential-bearing journal entries are withheld, other known credential
+forms are filtered, and terminal control characters are removed. Diagnostic
+collection has time and size limits; unavailable or oversized logs are reported
+without preventing rollback. Diagnostics are displayed, not saved in toolbox state.
 Backups include the original adopted installation and the previous transaction's
 files. Do not delete transaction records or lock files to bypass a failure.
 

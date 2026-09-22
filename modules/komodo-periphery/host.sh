@@ -43,6 +43,24 @@ kp_host_ids() {
 kp_display() { # Untrusted guest strings must not control the host terminal.
     report_clean_text "$1" | LC_ALL=C tr -d '\000-\037\177'
 }
+kp_host_diagnostics() { # <outcome JSON> <protected request>; human output only
+    local result=$1 request=$2 message key
+    jq -e '.diagnostics | type=="object" and (.service|type=="string") and
+        (.journal|type=="array" and all(.[];type=="string"))' <<<"$result" >/dev/null 2>&1 || return 0
+    key=$(jq -r '.onboarding_key // ""' "$request")
+    warn 'Periphery startup failure (captured before rollback):'
+    while IFS= read -r message; do
+        message=$(jq -r . <<<"$message")
+        [[ -z $key ]] || message=${message//"$key"/'[redacted]'}
+        message=$(kp_display "$message")
+        # Omit the whole journal entry, including continuation lines, when it
+        # mentions credentials. Use the shared filter for other credential forms.
+        if [[ ${message,,} =~ ((onboarding|private|api|access)[_\ -]?key|passkey|password|passphrase|secret|token|authorization|bearer) ]]; then
+            message='[credential-bearing journal entry withheld]'
+        fi
+        warn "  $message"
+    done < <(jq -c '.diagnostics | .service, .journal[]' <<<"$result")
+}
 kp_guest_source() { printf '%s/modules/komodo-periphery/guest.sh' "$TOOLBOX_ROOT"; }
 kp_host_inspect() { # <ctid> -> KP_INSPECTION_JSON, KP_TARGET_IDENTITY
     local config result machine rootfs
@@ -127,6 +145,7 @@ kp_host_apply() { # <ctid> <protected request> <verified binary, empty for unins
     KP_OUTCOME_JSON=$result
     if [[ $rc != 0 || $(jq -r .result <<<"$result") != success ]]; then
         warn "guest operation failed: $(kp_display "$(jq -r .reason <<<"$result")") (rollback: $(kp_display "$(jq -r .rollback <<<"$result")"))"
+        kp_host_diagnostics "$result" "$request"
         return 1
     fi
 }
