@@ -156,8 +156,16 @@ or migrates a container automatically.
 
 A failed update restores the previous executable and toolbox-changed files and
 checks the previous service state. Recovery failure is reported separately.
+During startup, the toolbox allows up to ten one-second readiness retries for
+systemd to activate the service and expose the expected agent process. This
+handles services reported as active before their executable or shell-wrapper
+child is ready. It then requires ten successful stability samples, one second
+apart. A restart-count change, a process change after readiness, or a persistent
+executable-verification failure still triggers rollback.
+
 If the new service fails to start or remain healthy, the error includes the
-start command's message, systemd state/result and process exit status, and up to
+failed health check, the start command's message, systemd state/result, MainPID
+and process exit status, and up to
 20 recent journal entries from that startup attempt. These details are captured
 **before rollback**, so restarting the previous version does not hide the original
 failure. Credential-bearing journal entries are withheld, other known credential

@@ -12,13 +12,26 @@ case ${0##*/} in
         exec /usr/bin/mv-real "$@" ;;
     sleep) exit 0 ;;
     readlink)
+        if [[ -f /health-mode && $* == *'/proc/123/exe'* ]]; then
+            mode=$(cat /health-mode)
+            sample=$(cat /health-sample)
+            case $mode in
+                delayed-exec) if ((sample <= 2)); then printf '/usr/lib/systemd/systemd\n'; exit; fi ;;
+                unreadable-exe) exit 1 ;;
+                wrong-exe) printf '/usr/bin/other-service\n'; exit ;;
+                lost-exe) if ((sample >= 3)); then exit 1; fi ;;
+            esac
+        fi
+        if [[ -f /health-mode && $(cat /health-mode) == delayed-wrapper && $* == *'/proc/124/exe'* ]] && (($(cat /health-sample) <= 2)); then
+            printf '/usr/bin/other-service\n'; exit
+        fi
         if [[ -f /wrapper-main ]]; then
             case $* in
                 *'/proc/123/exe'|'-f /bin/sh') printf '/usr/bin/dash\n'; exit ;;
                 *'/proc/124/exe') printf '/usr/local/bin/periphery\n'; exit ;;
             esac
         fi
-        if [[ $* == *'/proc/123/exe'* ]]; then
+        if [[ $* == *'/proc/123/exe'* || $* == *'/proc/124/exe'* ]]; then
             if [[ -f '/opt/custom path/periphery' ]]; then printf '/opt/custom path/periphery\n'; else printf '/usr/local/bin/periphery\n'; fi
         else exec /usr/bin/readlink-real "$@"; fi ;;
     uname) printf 'x86_64\n' ;;
@@ -26,15 +39,33 @@ case ${0##*/} in
     journalctl)
         [[ $* == '-u periphery.service --since @'*' -n 20 --no-pager --output=json --output-fields=MESSAGE' ]] || exit 98
         [[ ! -f /fail-diagnostics ]] || exit 1
-        [[ -f /startup-failed ]] || exit 98
+        [[ -f /startup-failed || -f /health-mode ]] || exit 98
         cat /startup-journal ;;
     systemctl)
         case $1 in
             show)
-                if [[ $* == *'--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts' ]]; then
+                if [[ -f /health-mode && $* == 'show periphery.service --property=ActiveState,MainPID,NRestarts' ]]; then
+                    sample=0
+                    [[ ! -f /health-sample ]] || sample=$(cat /health-sample)
+                    sample=$((sample+1)); printf '%s\n' "$sample" > /health-sample
+                    active=active; pid=123; restarts=0
+                    case $(cat /health-mode) in
+                        activating) if ((sample <= 2)); then active=activating; fi ;;
+                        zero-pid) if ((sample <= 2)); then pid=0; fi ;;
+                        restart) if ((sample >= 3)); then restarts=1; fi ;;
+                        pid-change) if ((sample >= 3)); then pid=124; fi ;;
+                    esac
+                    printf 'ActiveState=%s\nMainPID=%s\nNRestarts=%s\n' "$active" "$pid" "$restarts"
+                    exit
+                fi
+                if [[ $* == *'--property=ActiveState,SubState,Result,ExecMainCode,ExecMainStatus,NRestarts,MainPID' ]]; then
                     [[ ! -f /fail-diagnostics ]] || exit 1
+                    if [[ -f /health-mode ]]; then
+                        printf 'ActiveState=active\nSubState=running\nResult=success\nExecMainCode=0\nExecMainStatus=0\nNRestarts=0\nMainPID=123\n'
+                        exit
+                    fi
                     [[ -f /startup-failed ]] || exit 98
-                    printf 'ActiveState=failed\nSubState=failed\nResult=exit-code\nExecMainCode=1\nExecMainStatus=203\nNRestarts=3\n'
+                    printf 'ActiveState=failed\nSubState=failed\nResult=exit-code\nExecMainCode=1\nExecMainStatus=203\nNRestarts=3\nMainPID=123\n'
                     exit
                 fi
                 if [[ ! -f /etc/systemd/system/periphery.service ]]; then printf 'LoadState=not-found\n'; exit; fi
@@ -62,7 +93,7 @@ case ${0##*/} in
                     : > /startup-failed
                     printf 'failed\n' > /active
                     [[ -f /fail-new-health ]] && exit 0
-                    printf 'Job for periphery.service failed: Permission denied\n' >&2
+                    if [[ ! -f /silent-start-failure ]]; then printf 'Job for periphery.service failed: Permission denied\n' >&2; fi
                     exit 1
                 fi
                 rm -f /startup-failed

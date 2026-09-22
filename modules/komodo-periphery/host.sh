@@ -59,7 +59,7 @@ kp_host_diagnostics() { # <outcome JSON> <protected request>; human output only
             message='[credential-bearing journal entry withheld]'
         fi
         warn "  $message"
-    done < <(jq -c '.diagnostics | .service, .journal[]' <<<"$result")
+    done < <(jq -c '.diagnostics | (.health // empty | select(type=="string" and length>0)), .service, .journal[]' <<<"$result")
 }
 kp_guest_source() { printf '%s/modules/komodo-periphery/guest.sh' "$TOOLBOX_ROOT"; }
 kp_host_inspect() { # <ctid> -> KP_INSPECTION_JSON, KP_TARGET_IDENTITY

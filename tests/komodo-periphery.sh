@@ -145,3 +145,16 @@ JOURNAL
     else grep -q 2.3.2 "$KP_TEST_BINARY" || fail 'failed update not rolled back'; fi
 done
 printf 'ok startup diagnostics survive rollback and filter credentials\n'
+
+# Even an active service with successful exit fields can fail executable checks.
+kp_fixture absent
+kp_host_fixture
+printf 'unreadable-exe\n' > "$KP_TEST_ROOT/health-mode"
+jq -nc '{MESSAGE:("x" * 20000)}' > "$KP_TEST_ROOT/startup-journal"
+if kp_confirm accept install komodo-periphery > "$KP_WORK/session"; then fail 'unverifiable executable reported healthy'; fi
+grep -Fq 'cannot read the service MainPID executable' "$KP_WORK/session" || fail 'host hid the failed health check'
+grep -Fq 'MainPID=123' "$KP_WORK/session" || fail 'diagnostics omitted MainPID'
+grep -Fq 'ActiveState=active' "$KP_WORK/session" || fail 'diagnostics lost pre-rollback active state'
+grep -Fq 'rollback: restored' "$KP_WORK/session" || fail 'health rejection did not report rollback'
+[[ ! -e $KP_TEST_BINARY ]] || fail 'health rejection retained new installation'
+printf 'ok host reports the exact failed health check even without usable journal entries\n'
