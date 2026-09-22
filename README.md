@@ -130,6 +130,7 @@ without regenerating anything. See
 | --- | --- |
 | [backup-audit](https://quwisky.github.io/pve-toolbox/modules/backup-audit/) | Finds uncovered guests, stale or failed backups, excluded volumes, weak retention, and unhealthy backup storage |
 | [certificate-watch](https://quwisky.github.io/pve-toolbox/modules/certificate-watch/) | Checks cluster TLS expiry, hostname coverage, chains, reachability, and ACME task history |
+| [komodo-periphery](https://quwisky.github.io/pve-toolbox/modules/komodo-periphery/) | Installs and updates a systemd Periphery v2 agent in an existing Debian 13 LXC, including adoption and rollback |
 | [lxc-update](https://quwisky.github.io/pve-toolbox/modules/lxc-update/) | Updates local running Debian/Ubuntu containers through confirmed runs or an opt-in safe schedule, with exclusions, previews, and optional Discord reporting |
 | [config-backup](https://quwisky.github.io/pve-toolbox/modules/config-backup/) | Snapshots `/etc/pve` and host config into verified tar.gz archives on a timer |
 | [restore-drill](https://quwisky.github.io/pve-toolbox/modules/restore-drill/) | Plans and explicitly runs isolated, ownership-checked VM or container restore drills |

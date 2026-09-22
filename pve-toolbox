@@ -61,6 +61,8 @@ source "$TOOLBOX_ROOT/lib/report.sh"
 source "$TOOLBOX_ROOT/lib/doctor.sh"
 
 FORCE=0
+# Never inherit selection authorization from the environment.
+TOOLBOX_UPDATE_EXPLICIT=0
 OUTPUT_JSON=0
 OUTPUT_QUIET=0
 
@@ -264,10 +266,11 @@ cmd_list() {
 cmd_each() { # cmd_each <function> [--check] <modules...>
     local fn=$1; shift
     local extra=""
-    local failed=0
+    local failed=0 TOOLBOX_UPDATE_EXPLICIT=0
     [[ ${1:-} == --check ]] && { extra=--check; shift; }
     discover
     local list=("$@") m
+    [[ $fn != module_update || ${#list[@]} == 0 ]] || TOOLBOX_UPDATE_EXPLICIT=1
     if [[ ${#list[@]} -eq 0 ]]; then
         for m in "${MODULES[@]}"; do
             is_installed "$m" || continue
@@ -405,7 +408,7 @@ UI_PICKED=""
 ui_pick() { # ui_pick <title> <all|installed> <on|off> -> sets UI_PICKED
     local title=$1 pool=$2 default=$3
     local -a items=()
-    local m st
+    local m st selected_default
     UI_PICKED=""
 
     # One module_status per module, and some of them shell out to zpool.
@@ -413,7 +416,9 @@ ui_pick() { # ui_pick <title> <all|installed> <on|off> -> sets UI_PICKED
     for m in "${MODULES[@]}"; do
         st=$(status_line "$m")
         [[ $pool == installed && $st == "not installed" ]] && continue
-        items+=("$m" "$(meta "$m" MODULE_TITLE) - $st" "$default")
+        selected_default=$default
+        if [[ $title == Update && $(meta "$m" MODULE_EXPLICIT_UPDATE) == 1 ]]; then selected_default=off; fi
+        items+=("$m" "$(meta "$m" MODULE_TITLE) - $st" "$selected_default")
     done
 
     if [[ ${#items[@]} -eq 0 ]]; then
@@ -426,6 +431,8 @@ ui_pick() { # ui_pick <title> <all|installed> <on|off> -> sets UI_PICKED
 
 ui_run() { # ui_run <fn> <modules> [extra-arg]
     local fn=$1 picked=$2 extra=${3:-} m
+    # shellcheck disable=SC2034 # Module hook reads the scoped dispatch context.
+    local TOOLBOX_UPDATE_EXPLICIT=1
     local -a mods=()
 
     # Collect the whole list before running anything. `done <<<` redirects

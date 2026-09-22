@@ -1,0 +1,63 @@
+#!/usr/bin/expect -f
+set timeout 30
+set mode [lindex $argv 0]
+if {[info exists env(KP_CAPTURE)]} { log_file -noappend $env(KP_CAPTURE) }
+spawn -noecho {*}[lrange $argv 1 end]
+if {$mode eq "plain"} {
+    expect {
+        -re {> $} {}
+        timeout { exit 90 }
+    }
+    send -- "$env(KP_ROW)\r"
+    expect {
+        -re {> $} {}
+        timeout { exit 90 }
+    }
+    send -- "i\r"
+}
+if {$mode eq "ui" || $mode eq "ui-default"} {
+    expect {
+        -re {Remove installed modules} {}
+        timeout { exit 90 }
+    }
+    if {$mode eq "ui-default"} { send -- "\033\[B" }
+    send -- "\r"
+    expect {
+        -re {Space toggles} {}
+        timeout { exit 90 }
+    }
+    if {$mode eq "ui"} {
+        for {set i 1} {$i < $env(KP_ROW)} {incr i} { send -- "\033\[B" }
+        send -- " "
+    }
+    send -- "\r"
+    if {$mode eq "ui-default"} {
+        expect {
+            -re {Remove installed modules} { send -- "\033" }
+            -re {Container ID} { puts stderr "FAIL guest module preselected"; exit 1 }
+            timeout { exit 90 }
+        }
+        expect eof
+        exit [lindex [wait] 3]
+    }
+}
+expect {
+    -re {Container ID[^:]*: } { send -- "101\r"; exp_continue }
+    -re {Adopt this existing[^\r\n]*: } { send -- "y\r"; exp_continue }
+    -re {Exact stable Periphery[^:]*: } { send -- "2.3.3\r"; exp_continue }
+    -re {Core HTTPS URL[^:]*: } { send -- "https://core.example.invalid\r"; exp_continue }
+    -re {Server name in Core[^:]*: } { send -- "test-lxc\r"; exp_continue }
+    -re {Core v2 onboarding key: } { send -- "fixture-secret\r"; exp_continue }
+    -re {Apply this operation[^\r\n]*: } {
+        if {$mode eq "decline"} { send -- "n\r" } elseif {$mode eq "cancel"} { send -- "\003" } else { send -- "y\r" }
+        exp_continue
+    }
+    -re {Reconcile the completed transaction[^\r\n]*: } { send -- "y\r"; exp_continue }
+    -re {press any key to go back} { send -- " "; exp_continue }
+    -re {Remove installed modules} { send -- "\033"; exp_continue }
+    -re {> $} { send -- "q\r"; exp_continue }
+    timeout { puts stderr "FAIL prompt timeout"; exit 90 }
+    eof {}
+}
+set result [wait]
+exit [lindex $result 3]

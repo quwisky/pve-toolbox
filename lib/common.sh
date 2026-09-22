@@ -151,6 +151,31 @@ gh_release() {
     [[ -n $GH_TAG && $GH_TAG != null ]] || die "no tag_name in release metadata"
 }
 
+# gh_exact_asset <exact-name> -> GH_ASSET_URL, GH_ASSET_SHA256
+# For releases publishing GitHub asset digests instead of a checksum manifest.
+# Outputs are cleared on every error; callers must never reuse another asset.
+# shellcheck disable=SC2034 # Public result variables are consumed by modules.
+gh_exact_asset() {
+    GH_ASSET_URL="" GH_ASSET_SHA256=""
+    local asset
+    asset=$(jq -ce --arg name "$1" '
+        [.assets[] | select(.name == $name)]
+        | if length == 1 then .[0] else error("ambiguous asset") end
+        | select(.digest | type == "string" and test("^sha256:[0-9a-fA-F]{64}$"))
+        | select(.browser_download_url | type == "string" and
+            startswith("https://") and (explode | all(. > 32 and . != 127)))
+    ' <<<"${GH_JSON:-}" 2>/dev/null) || return 1
+    GH_ASSET_URL=$(jq -r '.browser_download_url' <<<"$asset")
+    GH_ASSET_SHA256=$(jq -r '.digest | ltrimstr("sha256:") | ascii_downcase' <<<"$asset")
+}
+
+verify_sha256() { # <regular file> <SHA-256 hex digest>
+    local actual
+    [[ -f $1 && ! -L $1 && $2 =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+    actual=$(sha256sum -- "$1") || return 1
+    [[ ${actual%% *} == "${2,,}" ]]
+}
+
 # gh_asset <name-fragment> <arch-fragment> -> prints download url
 gh_asset() {
     jq -r --arg frag "$1" --arg arch "$2" '

@@ -61,6 +61,7 @@ got=$(offers 3 ./pve-toolbox install "")
 [[ $got == *zfs-scrub* ]] || fail "no modules offered for install: $got"
 [[ $got != *native-notifications* ]] \
     || fail "obsolete notification provisioning offered for install: $got"
+[[ $got == *komodo-periphery* ]] || fail "Periphery missing from install completion"
 print "ok  zsh offers modules after install"
 
 got=$(offers 4 ./pve-toolbox install zfs-scrub "")

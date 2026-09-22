@@ -44,6 +44,10 @@ cleanup() {
             status=1
         fi
     fi
+    if [[ -e $WORK/guest-mutation ]]; then
+        printf 'FAIL package lifecycle attempted to enter a guest\n' >&2
+        status=1
+    fi
     if ! rm -rf -- "$WORK"; then
         printf 'FAIL could not remove package-test workspace: %s\n' "$WORK" >&2
         status=1
@@ -163,6 +167,20 @@ cmp -s "$ROOT/completions/_pve-toolbox" \
     || fail "packaged Zsh completion differs from source"
 [[ $(<"$WORK/root/usr/lib/pve-toolbox/VERSION") == "$(<VERSION)" ]] \
     || fail "packaged VERSION differs from source"
+for helper in module.sh host.sh guest.sh; do
+    [[ -f $WORK/root/usr/lib/pve-toolbox/modules/komodo-periphery/$helper ]] \
+        || fail "package is missing Periphery helper $helper"
+done
+PVE_TOOLBOX_ROOT="$WORK/root/usr/lib/pve-toolbox" \
+    bash "$WORK/root/usr/bin/pve-toolbox" _complete modules \
+    | grep -Fxq komodo-periphery || fail "packaged Periphery discovery failed"
+if [[ $EUID == 0 ]] && command -v expect >/dev/null; then
+    PVE_TOOLBOX_ROOT="$WORK/root/usr/lib/pve-toolbox" \
+        bash "$ROOT/tests/komodo-periphery.sh" > "$WORK/periphery-runtime.log" 2>&1 \
+        || { cat "$WORK/periphery-runtime.log"; fail "packaged Periphery lifecycle failed"; }
+fi
+pass "packaged Periphery helpers, discovery and isolated lifecycle"
+
 [[ ! -e $WORK/root/usr/lib/pve-toolbox/modules/_template ]] \
     || fail "package shipped the module template"
 pass "package layout matches every runtime source"
@@ -229,6 +247,15 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
             | grep -q '^installed$' || fail "$dependency must be installed for the lifecycle test"
     done
 
+    mkdir -p "$WORK/no-guest-bin"
+    cat > "$WORK/no-guest-bin/pct" <<'PCT'
+#!/bin/sh
+: > "$PVE_PACKAGE_GUEST_GUARD"
+exit 98
+PCT
+    chmod 0755 "$WORK/no-guest-bin/pct"
+    export PVE_PACKAGE_GUEST_GUARD="$WORK/guest-mutation"
+    export PATH="$WORK/no-guest-bin:$PATH"
     PACKAGE_TOUCHED=1
     dpkg -i "$deb" >/dev/null
     [[ $(/usr/bin/pve-toolbox --version) == "pve-toolbox $expected_version" ]] \

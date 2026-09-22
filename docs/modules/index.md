@@ -34,3 +34,10 @@ pve-toolbox list zfs
 | `module_uninstall` | `uninstall`, menu `x` | Remove what install created |
 
 See [Writing a module](../writing-a-module.md) for the full contract.
+
+## Komodo Periphery
+
+[komodo-periphery](komodo-periphery.md) installs and updates systemd agents in
+existing local Debian 13 containers. It supports adoption of existing Periphery
+v2 installations, protected credentials and rollback. Container creation and
+Docker installation are outside its scope.
