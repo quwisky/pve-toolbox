@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/quwisky/pve-toolbox/compare/v0.8.1...v0.9.0) (2026-09-22)
+
+
+### Features
+
+* **komodo-periphery:** support configuration-only updates ([#77](https://github.com/quwisky/pve-toolbox/issues/77)) ([fdc50fb](https://github.com/quwisky/pve-toolbox/commit/fdc50fbddca3ce9ddaaf2a8bf24900e7339fa029))
+
+
+### Bug Fixes
+
+* **komodo-periphery:** allow HTTP Core URLs ([#75](https://github.com/quwisky/pve-toolbox/issues/75)) ([ecf4f99](https://github.com/quwisky/pve-toolbox/commit/ecf4f99d7020c13e33f1a55038f2948c6dc80b7e))
+* **komodo-periphery:** prompt for configuration during reinstall ([#78](https://github.com/quwisky/pve-toolbox/issues/78)) ([b83c9a0](https://github.com/quwisky/pve-toolbox/commit/b83c9a0418886916f3e630b91f106d69f0828212))
+
 ## [0.8.1](https://github.com/quwisky/pve-toolbox/compare/v0.8.0...v0.8.1) (2026-09-22)
 
 
