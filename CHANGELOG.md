@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.1](https://github.com/quwisky/pve-toolbox/compare/v0.8.0...v0.8.1) (2026-09-22)
+
+
+### Bug Fixes
+
+* **komodo-periphery:** show detailed startup failures ([#73](https://github.com/quwisky/pve-toolbox/issues/73)) ([bc7279e](https://github.com/quwisky/pve-toolbox/commit/bc7279e0347814ac44ad02efb0489db758c3cba5))
+
 ## [0.8.0](https://github.com/quwisky/pve-toolbox/compare/v0.7.1...v0.8.0) (2026-09-22)
 
 
