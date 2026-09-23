@@ -76,3 +76,43 @@ pve_lxc_ready() { # <local-node> <ctid> -> PVE_LXC_CONFIG_JSON, PVE_LXC_ERROR
     jq -e 'type == "object" and .status == "running"' <<<"$status" >/dev/null 2>&1 || return 1
     PVE_LXC_CONFIG_JSON=$config PVE_LXC_ERROR=""
 }
+
+# Exact local QEMU target checks. The VM transport applies further guest-agent
+# or SSH identity requirements after these read-only checks.
+pve_qemu_inventory() { # <local-node> -> PVE_QEMU_JSON, PVE_QEMU_ERROR
+    PVE_QEMU_JSON="" PVE_QEMU_ERROR="invalid local node"
+    [[ $# -eq 1 && $1 =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || return 1
+    local result
+    PVE_QEMU_ERROR="could not read local QEMU inventory"
+    result=$(pvesh get "/nodes/$1/qemu" --output-format json 2>/dev/null) || return 1
+    PVE_QEMU_ERROR="invalid or ambiguous local QEMU inventory"
+    jq -e 'type == "array" and all(.[];
+        (.vmid | type == "number" and floor == . and . >= 100 and . <= 999999999)
+        and (.status == "running" or .status == "stopped"))
+        and (([.[].vmid] | unique | length) == length)' <<<"$result" >/dev/null 2>&1 || return 1
+    PVE_QEMU_JSON=$result PVE_QEMU_ERROR=""
+}
+
+pve_qemu_ready() { # <local-node> <vmid> -> PVE_QEMU_CONFIG_JSON, PVE_QEMU_ERROR
+    PVE_QEMU_CONFIG_JSON="" PVE_QEMU_ERROR="invalid local node or VM ID"
+    [[ $# -eq 2 && $1 =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ && $2 =~ ^[1-9][0-9]{2,8}$ ]] || return 1
+    pve_qemu_inventory "$1" || return 1
+    PVE_QEMU_ERROR="VM is absent, stopped, or no longer on this node"
+    jq -e --argjson id "$2" 'any(.[]; .vmid == $id and .status == "running")' \
+        <<<"$PVE_QEMU_JSON" >/dev/null 2>&1 || return 1
+    local config status
+    PVE_QEMU_ERROR="local VM configuration unavailable"
+    config=$(pvesh get "/nodes/$1/qemu/$2/config" --output-format json 2>/dev/null) || return 1
+    PVE_QEMU_ERROR="VM is locked or a template"
+    jq -e 'type == "object" and (.template // 0) == 0 and (.lock // "") == ""' \
+        <<<"$config" >/dev/null 2>&1 || return 1
+    PVE_QEMU_ERROR="VM is not running on this node"
+    status=$(pvesh get "/nodes/$1/qemu/$2/status/current" --output-format json 2>/dev/null) || return 1
+    jq -e 'type == "object" and .status == "running"' <<<"$status" >/dev/null 2>&1 || return 1
+    # A VM can migrate between the first inventory lookup and the status read.
+    pve_qemu_inventory "$1" || return 1
+    PVE_QEMU_ERROR="VM moved or stopped during inspection"
+    jq -e --argjson id "$2" 'any(.[]; .vmid == $id and .status == "running")' \
+        <<<"$PVE_QEMU_JSON" >/dev/null 2>&1 || return 1
+    PVE_QEMU_CONFIG_JSON=$config PVE_QEMU_ERROR=""
+}

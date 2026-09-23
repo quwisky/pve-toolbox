@@ -167,7 +167,7 @@ cmp -s "$ROOT/completions/_pve-toolbox" \
     || fail "packaged Zsh completion differs from source"
 [[ $(<"$WORK/root/usr/lib/pve-toolbox/VERSION") == "$(<VERSION)" ]] \
     || fail "packaged VERSION differs from source"
-for helper in module.sh host.sh guest.sh; do
+for helper in module.sh host.sh guest.sh vm.sh transport-qga.sh transport-ssh.sh qga-bridge.pl stage-receiver.sh stage-cleanup.sh; do
     [[ -f $WORK/root/usr/lib/pve-toolbox/modules/komodo-periphery/$helper ]] \
         || fail "package is missing Periphery helper $helper"
 done
@@ -256,7 +256,8 @@ if [[ ${PACKAGING_INSTALL_TEST_REQUIRED:-0} == 1 ]]; then
 : > "$PVE_PACKAGE_GUEST_GUARD"
 exit 98
 PCT
-    chmod 0755 "$WORK/no-guest-bin/pct"
+    for guest_command in ssh pvesh qm; do cp "$WORK/no-guest-bin/pct" "$WORK/no-guest-bin/$guest_command"; done
+    chmod 0755 "$WORK/no-guest-bin/"{pct,ssh,pvesh,qm}
     export PVE_PACKAGE_GUEST_GUARD="$WORK/guest-mutation"
     export PATH="$WORK/no-guest-bin:$PATH"
     PACKAGE_TOUCHED=1
