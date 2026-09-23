@@ -40,5 +40,5 @@ See [Writing a module](../writing-a-module.md) for the full contract.
 [komodo-periphery](komodo-periphery.md) installs, updates and reconfigures systemd agents in
 selected local Debian 13 containers or QEMU VMs. VM access uses QGA or pinned SSH.
 It supports adoption of existing Periphery
-v2 installations, protected credentials and rollback. Container creation and
+v2 installations, protected credentials and rollback. Guest creation and
 Docker installation are outside its scope.
