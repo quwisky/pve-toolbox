@@ -91,6 +91,11 @@ jobs:
           apt-get install -y --no-install-recommends \
             apt-utils build-essential ca-certificates curl debhelper devscripts \
             dpkg-dev expect git gnupg jq make rsync shellcheck tar gzip whiptail zsh
+          # Minimal Debian containers have no machine ID; guest transfer
+          # fixtures verify staging against this host's test identity.
+          if [[ ! -s /etc/machine-id ]]; then
+            printf '0123456789abcdef0123456789abcdef\n' > /etc/machine-id
+          fi
 
       - name: Check out source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
