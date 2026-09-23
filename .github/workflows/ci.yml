@@ -90,7 +90,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             apt-utils build-essential ca-certificates curl debhelper devscripts \
-            dpkg-dev expect git gnupg jq make openssh-client rsync shellcheck tar gzip whiptail zsh
+            dpkg-dev expect git gnupg jq make openssh-client openssh-server rsync shellcheck tar gzip whiptail zsh
           # Minimal Debian containers have no machine ID; guest transfer
           # fixtures verify staging against this host's test identity.
           if [[ ! -s /etc/machine-id ]]; then

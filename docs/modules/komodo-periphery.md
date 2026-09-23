@@ -28,8 +28,9 @@ the PVE host**. Add the guest's verified host key to that file through your
 normal trusted provisioning process; the toolbox does not run `ssh-keyscan` or
 trust a key on first use. Enter the address or DNS name, port, and absolute
 paths during the VM flow. Use an address that remains tied to the selected VM.
-The SSH session uses root key authentication, strict host-key checking, and
-disables agent and connection forwarding. Every SSH transfer command checks
+Only the dedicated file supplies trusted host keys; system-wide known-hosts
+files are excluded. The SSH session uses root key authentication, strict host-key
+checking, and disables agent and connection forwarding. Every SSH transfer command checks
 the DMI UUID in that same connection; each staged chunk also checks the guest
 machine ID. A changed key or mismatched guest identity stops staging.
 
@@ -166,8 +167,10 @@ helpers in `/etc/pve-toolbox/komodo-periphery-CTID.conf`. The managed ID list is
 host state. VM records use `/etc/pve-toolbox/komodo-periphery-qemu-VMID.conf`,
 `/etc/pve-toolbox/komodo-periphery-qemu.conf`, and
 `/var/lib/pve-toolbox/komodo-periphery-qemu-VMID.state`; these are separate from
-LXC records even when the numeric IDs match. VM transfer uses a protected
-nonce-bound directory under guest `/run`. Files are sent in verified chunks,
+LXC records even when the numeric IDs match. Updates to the shared VM list are
+serialized, so operations on different VMs preserve each other's entries.
+VM transfer uses a protected nonce-bound directory under guest `/run`.
+Files are sent in verified chunks,
 then removed after a completed operation. An interrupted operation retains the
 transaction ID for explicit recovery.
 
@@ -207,6 +210,8 @@ recover a pending guest transaction or reconcile a completed guest transaction
 whose host bookkeeping failed before attempting another change. If identity or
 locality no longer matches, inspect it manually first. Incomplete cleanup retains
 the protected staging location's transaction identifier in host configuration.
+An uninstalled VM remains listed as pending until staging cleanup succeeds;
+rerun the flow for that VM to reconcile it.
 
 Rollback covers agent binary, service and toolbox-owned configuration changes.
 It cannot undo commands already executed by Core or changes made to workloads.
@@ -242,5 +247,8 @@ with controlled Proxmox and systemd boundaries. Release acceptance also requires
 a disposable PVE 9 LXC and a Core v2 instance to check actual systemd startup,
 agent enrollment, updates and reboot persistence. Mocked guest tests do not prove
 live Core connectivity. QGA and SSH transport tests use controlled PVE and
-guest doubles; a disposable PVE 9 VM is still required to verify PVE's actual
-agent API, SSH pairing, systemd startup and Core enrollment.
+guest doubles. A separate OpenSSH client/server handshake fixture checks host-key
+pinning without changing SSH accounts or system configuration; it requires root
+and `openssh-server` in the Debian validation runner. A disposable PVE 9 VM is
+still required to verify PVE's actual agent API, SSH pairing, systemd startup
+and Core enrollment.

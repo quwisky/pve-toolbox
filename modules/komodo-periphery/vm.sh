@@ -1,10 +1,25 @@
 # shellcheck shell=bash
 # VM records and orchestration. Sourcing this file has no side effects.
 
-kp_vm_ids() {
-    KP_VM_IDS=()
-    local id ids
-    kp_host_safe "$(conf_file komodo-periphery-qemu)" || return 1
+kp_vm_registry() ( # <list|add|remove> [vmid]; serialize the shared index only.
+    local action=$1 target=${2:-} id ids found=0 lock file
+    local path="$TOOLBOX_STATE_DIR/komodo-periphery-qemu.lock"
+    local -a updated=()
+    case $action in
+        list) ;;
+        add|remove)
+            kp_target_key qemu "$target" >/dev/null || return 1
+            for file in "$(conf_file "komodo-periphery-qemu-$target")" "$TOOLBOX_STATE_DIR/komodo-periphery-qemu-$target.state"; do
+                kp_host_safe "$file" && [[ ! -e $file || -f $file ]] || return 1
+            done ;;
+        *) return 1 ;;
+    esac
+    file=$(conf_file komodo-periphery-qemu)
+    kp_host_safe "$path" && [[ ! -e $path || -f $path ]] &&
+        kp_host_safe "$file" && [[ ! -e $file || -f $file ]] || return 1
+    mkdir -p -- "$TOOLBOX_STATE_DIR" || return 1
+    exec {lock}>"$path" || return 1
+    flock -w 10 "$lock" || { warn 'managed-VM registry is busy'; return 1; }
     ids=$(conf_get komodo-periphery-qemu KP_VM_IDS)
     for id in $ids; do # Validated whitespace-separated decimal VMIDs.
         kp_target_key qemu "$id" >/dev/null || { warn 'invalid saved VM ID'; return 1; }
@@ -12,43 +27,50 @@ kp_vm_ids() {
             kp_host_safe "$TOOLBOX_STATE_DIR/komodo-periphery-qemu-$id.state" || {
                 warn 'unsafe managed-VM record'; return 1;
             }
-        KP_VM_IDS+=("$id")
+        if [[ $id == "$target" ]]; then
+            found=1
+            [[ $action != remove ]] || continue
+        fi
+        updated+=("$id")
     done
+    if [[ $action == list ]]; then
+        printf '%s' "${updated[*]}"
+    elif [[ $action == add && $found == 1 ]]; then
+        return 0
+    else
+        if [[ $action == add ]]; then updated+=("$target"); fi
+        if ((${#updated[@]})); then
+            conf_set komodo-periphery-qemu KP_VM_IDS "${updated[*]}"
+        else
+            conf_clear komodo-periphery-qemu
+        fi
+    fi
+)
+
+kp_vm_ids() {
+    KP_VM_IDS=()
+    local ids
+    ids=$(kp_vm_registry list) || return 1
+    # The registry emits validated whitespace-separated decimal VMIDs.
+    read -r -a KP_VM_IDS <<<"$ids"
 }
 
 kp_vm_save() { # <vmid> <version> <identity> <fingerprint> <install|update|uninstall>
-    local id=$1 version=$2 identity=$3 fingerprint=$4 action=$5 old found=0
-    local -a ids=()
+    local id=$1 version=$2 identity=$3 fingerprint=$4 action=$5
     kp_target_key qemu "$id" >/dev/null || return 1
     [[ $action == install || $action == update || $action == uninstall || $action == configure ]] || return 1
-    kp_vm_ids || return 1
-    for old in "${KP_VM_IDS[@]}"; do
-        if [[ $old == "$id" ]]; then
-            found=1
-            [[ $action != uninstall ]] || continue
-        fi
-        ids+=("$old")
-    done
-    if [[ $found == 0 && $action != uninstall ]]; then ids+=("$id"); fi
+    # Even an uninstalled VM remains visible until staging cleanup succeeds.
+    kp_vm_register "$id" || return 1
     conf_set "komodo-periphery-qemu-$id" KP_VERSION "$version" &&
         conf_set "komodo-periphery-qemu-$id" KP_IDENTITY "$identity" &&
         state_set "komodo-periphery-qemu-$id" version "$version" &&
         state_set "komodo-periphery-qemu-$id" machine_id "${KP_VM_MACHINE:-}" &&
         state_set "komodo-periphery-qemu-$id" fingerprint "$fingerprint" &&
-        state_set "komodo-periphery-qemu-$id" result "$action completed; Core connectivity unverified" || return 1
-    if ((${#ids[@]})); then
-        conf_set komodo-periphery-qemu KP_VM_IDS "${ids[*]}"
-    else
-        conf_clear komodo-periphery-qemu
-    fi
+        state_set "komodo-periphery-qemu-$id" result "$action completed; Core connectivity unverified"
 }
 
 kp_vm_register() { # Include a first-install target before staging can fail.
-    local id=$1 old
-    kp_target_key qemu "$id" >/dev/null && kp_vm_ids || return 1
-    for old in "${KP_VM_IDS[@]}"; do [[ $old != "$id" ]] || return 0; done
-    KP_VM_IDS+=("$id")
-    conf_set komodo-periphery-qemu KP_VM_IDS "${KP_VM_IDS[*]}"
+    kp_vm_registry add "$1"
 }
 
 kp_vm_uuid() { # <QEMU config JSON>; absent SMBIOS is permitted for QGA only.
@@ -67,7 +89,7 @@ kp_vm_inspect() { # <vmid>; uses selected KP_VM_* connection globals
     config=$PVE_QEMU_CONFIG_JSON
     uuid=$(kp_vm_uuid "$config") || { warn 'invalid PVE SMBIOS UUID'; return 1; }
     if [[ $KP_VM_TRANSPORT == qga ]]; then
-        jq -e '(.agent == 1 or .agent == "1" or (.agent | type=="string" and test("(^|,)enabled=1(,|$)")))' \
+        jq -e '(.agent == 1 or (.agent | type=="string" and test("(^1(,|$)|(^|,)enabled=1(,|$))")))' \
             <<<"$config" >/dev/null 2>&1 || { warn 'QEMU Guest Agent is not enabled for this VM'; return 1; }
         [[ $(stat -c %s -- "$(kp_guest_source)") -le 49152 ]] || { warn 'guest inspection helper exceeds QGA input limit'; return 1; }
         command='["/bin/bash","-s","--","inspect"]'
@@ -128,6 +150,12 @@ kp_vm_cleanup() { # <vmid> <stage-directory>; leave pending on any uncertainty
     [[ $(jq -r .transaction <<<"$KP_INSPECTION_JSON") != pending ]] || return 1
     command=$(jq -nc --arg dir "$dir" --arg machine "$KP_VM_MACHINE" '["/bin/bash","-s","--",$dir,$machine]')
     kp_vm_command "$id" "$command" "$TOOLBOX_ROOT/modules/komodo-periphery/stage-cleanup.sh" >/dev/null || return 1
+    # A rolled-back uninstall must stay registered. Only remove the entry for
+    # the committed uninstall whose staging we have just verified as cleaned.
+    if jq -e --arg txn "${dir##*-}" '.transaction=="committed" and .transaction_id==$txn and .last_action=="uninstall"' \
+        <<<"$KP_INSPECTION_JSON" >/dev/null; then
+        kp_vm_registry remove "$id" || return 1
+    fi
     conf_set "komodo-periphery-qemu-$id" KP_PENDING ''
 }
 

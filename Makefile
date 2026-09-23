@@ -32,6 +32,7 @@ test: syntax
 	@./tests/komodo-periphery-vm-receiver.sh
 	@./tests/komodo-periphery-vm-qga-transport.sh
 	@./tests/komodo-periphery-vm-ssh.sh
+	@./tests/komodo-periphery-vm-ssh-host-key.sh
 	@./tests/komodo-periphery-vm-module.sh
 	@./tests/komodo-periphery-vm-inspect.sh
 	@./tests/komodo-periphery-vm-flow.sh

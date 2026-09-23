@@ -20,8 +20,14 @@ identity=$KP_TARGET_IDENTITY
 [[ $KP_VM_UUID == 11111111-2222-3333-4444-555555555555 ]] || fail 'PVE UUID lost'
 MACHINE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 if kp_vm_match 201 "$identity" 0123456789abcdef0123456789abcdef; then fail 'reused VM with another machine ID accepted'; fi
-PVE_QEMU_CONFIG_JSON='{"agent":"enabled=0","smbios1":"uuid=11111111-2222-3333-4444-555555555555"}'
-if kp_vm_inspect 201; then fail 'disabled QGA accepted'; fi
+for agent in '1' '"1"' '"enabled=1"' '"1,fstrim_cloned_disks=1"' '"enabled=1,fstrim_cloned_disks=1"' '"type=virtio,enabled=1"'; do
+    PVE_QEMU_CONFIG_JSON=$(jq -nc --argjson agent "$agent" '{agent:$agent}')
+    kp_vm_inspect 201 || fail "enabled QGA configuration rejected: $agent"
+done
+for agent in '0' '"0"' '"enabled=0"' '"0,fstrim_cloned_disks=1"' '"fstrim_cloned_disks=1"' '"11,fstrim_cloned_disks=1"' '"disabled=1"' 'null'; do
+    PVE_QEMU_CONFIG_JSON=$(jq -nc --argjson agent "$agent" '{agent:$agent}')
+    if kp_vm_inspect 201; then fail "disabled or invalid QGA configuration accepted: $agent"; fi
+done
 KP_VM_TRANSPORT=ssh KP_VM_ADDRESS=vm.example.invalid KP_VM_PORT=22 KP_VM_KEY=/root/key KP_VM_HOSTS=/root/hosts
 PVE_QEMU_CONFIG_JSON='{"agent":"enabled=0"}'
 kp_ssh_inspect() { fail 'SSH called without PVE UUID'; }

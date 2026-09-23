@@ -7,6 +7,7 @@ WORK=$(mktemp -d)
 trap 'rm -rf -- "$WORK"' EXIT
 export TOOLBOX_ROOT=$PWD TOOLBOX_CONF_DIR="$WORK/conf" TOOLBOX_STATE_DIR="$WORK/state"
 source lib/common.sh
+source lib/report.sh
 source modules/komodo-periphery/host.sh
 source modules/komodo-periphery/transport-qga.sh
 source modules/komodo-periphery/transport-ssh.sh
@@ -14,7 +15,7 @@ source modules/komodo-periphery/vm.sh
 KP_NODE=pve1 KP_VM_TRANSPORT=qga KP_VM_IDENTITY=identity KP_VM_MACHINE=0123456789abcdef0123456789abcdef
 KP_VM_FINGERPRINT=absent KP_TRANSACTION=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 KP_INSPECTION_JSON='{"schema":1,"transaction":"none","fingerprint":"absent","machine_id":"0123456789abcdef0123456789abcdef"}'
-kp_vm_match() { [[ $1 == 201 && $2 == identity && $3 == "$KP_VM_MACHINE" ]]; }
+kp_vm_match() { [[ ${KP_VM_FAIL_MATCH:-0} == 0 && $1 == 201 && $2 == identity && $3 == "$KP_VM_MACHINE" ]]; }
 kp_qga_bootstrap() { printf 'bootstrap\n' >> "$WORK/calls"; }
 kp_vm_stage() {
     printf 'stage %s\n' "$2" >> "$WORK/calls"
@@ -55,4 +56,31 @@ conf_set komodo-periphery-qemu-201 KP_PENDING "$KP_TRANSACTION"
 KP_INSPECTION_JSON='{"schema":1,"transaction":"pending","fingerprint":"absent","machine_id":"0123456789abcdef0123456789abcdef"}'
 if kp_vm_cleanup 201 "/run/pve-toolbox-komodo-$KP_TRANSACTION"; then fail 'pending guest journal cleaned'; fi
 [[ $(conf_get komodo-periphery-qemu-201 KP_PENDING) == "$KP_TRANSACTION" ]] || fail 'pending journal lost host marker'
+
+# Uninstall commits before staging cleanup. A lost connection must keep the
+# target discoverable, and rerunning the public flow must reconcile it safely.
+KP_INSPECTION_JSON=$(jq -nc --arg txn "$KP_TRANSACTION" --arg machine "$KP_VM_MACHINE" \
+    '{schema:1,transaction:"committed",transaction_id:$txn,last_action:"uninstall",layout:"absent",version:"",fingerprint:"absent",machine_id:$machine}')
+conf_set komodo-periphery-qemu-201 KP_TRANSPORT qga
+kp_vm_save 201 '' identity absent uninstall || fail 'uninstall bookkeeping failed'
+KP_VM_FAIL_MATCH=1
+if kp_vm_cleanup 201 "/run/pve-toolbox-komodo-$KP_TRANSACTION"; then fail 'cleanup succeeded without identity proof'; fi
+status=$(kp_vm_status 2>&1) && fail 'failed uninstall cleanup reported healthy'
+[[ $status == *'VM 201: pending transaction'* ]] || fail 'uninstall cleanup omitted from status'
+[[ $(conf_get komodo-periphery-qemu-201 KP_PENDING) == "$KP_TRANSACTION" ]] || fail 'failed uninstall cleanup lost transaction'
+unset KP_VM_FAIL_MATCH
+pve_qemu_inventory() { PVE_QEMU_JSON='[{"vmid":201,"name":"fixture","status":"running"}]'; }
+kp_vm_inspect() { KP_TARGET_IDENTITY=identity; }
+ask() {
+    case $1 in
+        id) printf -v "$1" '%s' 201 ;;
+        transport) printf -v "$1" '%s' qga ;;
+        *) fail "unexpected reconciliation prompt $1" ;;
+    esac
+}
+confirm() { return 0; }
+kp_vm_change uninstall || fail 'completed uninstall could not be reconciled'
+[[ -z $(conf_get komodo-periphery-qemu-201 KP_PENDING) ]] || fail 'reconciled uninstall left pending marker'
+[[ -z $(conf_get komodo-periphery-qemu KP_VM_IDS) ]] || fail 'cleaned uninstall still registered'
+[[ $(kp_vm_status) == 'no managed VMs' ]] || fail 'cleaned uninstall reported incomplete'
 printf 'ok VM transfer intent, staging failure, secret isolation and cleanup\n'

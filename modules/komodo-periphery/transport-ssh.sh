@@ -28,7 +28,8 @@ kp_ssh_run() { # <remote command> [stdin file]
     [[ -z $input || ( -f $input && ! -L $input ) ]] || return 1
     local -a args=(-F /dev/null -T -o BatchMode=yes -o PasswordAuthentication=no
         -o KbdInteractiveAuthentication=no -o StrictHostKeyChecking=yes
-        -o "UserKnownHostsFile=$KP_SSH_HOSTS" -o "IdentityFile=$KP_SSH_KEY"
+        -o GlobalKnownHostsFile=/dev/null -o "UserKnownHostsFile=$KP_SSH_HOSTS"
+        -o "IdentityFile=$KP_SSH_KEY"
         -o IdentitiesOnly=yes -o ForwardAgent=no -o ClearAllForwardings=yes
         -o ControlMaster=no -o ConnectTimeout=8 -p "$KP_SSH_PORT"
         "root@$KP_SSH_ADDRESS" "$command")
