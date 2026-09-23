@@ -16,7 +16,8 @@ The guest must be running, unlocked, and use systemd. It needs Bash, jq,
 coreutils, util-linux (`flock`), sed, findutils and dpkg-query. A missing
 prerequisite is reported before installation. If necessary, an administrator
 can install missing packages inside the guest; the module does not do this.
-The host needs its usual Proxmox tools, curl and jq. For VMs, select one transport
+The host needs its usual Proxmox tools, curl and jq. SSH transport also needs
+`openssh-client` on the host. For VMs, select one transport
 explicitly. **QGA** requires the VM's QEMU Guest Agent to be enabled, responsive,
 and permitted to execute commands. **SSH** requires an already configured root
 key login, a pinned host key, and a PVE `smbios1` UUID matching the guest's DMI

@@ -196,7 +196,7 @@ expected_version=$(<VERSION)
     || fail "package version does not match VERSION"
 [[ $control == *'Architecture: all'* ]] || fail "package architecture is not all"
 [[ $control == *'Depends: curl, jq'* ]] || fail "hard dependencies are incomplete"
-[[ $control == *'Recommends: whiptail, zfsutils-linux'* ]] \
+[[ $control == *'Recommends: whiptail, zfsutils-linux, openssh-client'* ]] \
     || fail "recommended dependencies are incomplete"
 [[ $control == *'Suggests: smartmontools, sanoid'* ]] \
     || fail "suggested dependencies are incomplete"
