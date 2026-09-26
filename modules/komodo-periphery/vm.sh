@@ -225,6 +225,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
     done
     saved_transport=$(conf_get "$record" KP_TRANSPORT)
     ask_choice transport 'VM transport' "${saved_transport:-qga}" qga ssh
+    case $transport in qga|ssh) ;; *) return 1 ;; esac
     KP_VM_TRANSPORT=$transport KP_VM_HOST_FINGERPRINT='' KP_VM_ADDRESS='' KP_VM_PORT='' KP_VM_KEY='' KP_VM_HOSTS=''
     if [[ $transport == ssh ]]; then
         ask_valid address 'Pinned SSH address or DNS name' "$(conf_get "$record" KP_ADDRESS)" kp_valid_ssh_address
@@ -288,7 +289,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         info "Configuration: $(kp_display "$(jq -r '.config_paths | join(", ")' <<<"$inspected")")"
         if [[ $action == install ]]; then
             ask_choice choice 'Existing agent action' update update configure
-            action=$choice
+            case $choice in update|configure) action=$choice ;; *) return 1 ;; esac
         fi
         if [[ $action == configure ]]; then
             [[ $(jq '.config_paths|length' <<<"$inspected") == 1 && $(jq -r '.config_paths[0]' <<<"$inspected") == *.toml ]] || { warn 'configuration editing requires one TOML file'; return 1; }
@@ -304,7 +305,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         if [[ $(jq -r .retained <<<"$inspected") == true && $(jq '.config_paths|length' <<<"$inspected") == 1 ]]; then
             retained=true
             ask_choice choice 'Retained configuration action' configure configure reuse
-            [[ $choice != configure ]] || configure_retained=true
+            case $choice in configure) configure_retained=true ;; reuse) ;; *) return 1 ;; esac
         fi
     fi
     KP_TRANSACTION=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')

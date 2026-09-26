@@ -217,6 +217,8 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     ask_choice guest_kind 'Guest type' lxc lxc vm
     case $guest_kind in
         vm) kp_vm_change "$action"; return $? ;;
+        lxc) ;;
+        *) warn 'unsupported guest type'; return 1 ;;
     esac
     pve_lxc_inventory "$KP_NODE" || { warn "$PVE_LXC_ERROR"; return 1; }
     info 'Existing local containers:'
@@ -281,7 +283,7 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
         info 'Binary updates preserve existing configuration, identity keys and service customizations.'
         if [[ $action == install ]]; then
             ask_choice choice 'Existing agent action' update update configure
-            action=$choice
+            case $choice in update|configure) action=$choice ;; *) return 1 ;; esac
         fi
         if [[ $action == configure ]]; then
             [[ $(jq '.config_paths|length' <<<"$inspected") == 1 && $(jq -r '.config_paths[0]' <<<"$inspected") == *.toml ]] || { warn 'configuration editing requires one explicit TOML file'; return 1; }
@@ -304,6 +306,7 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
                     configure_retained=true
                     info 'Editing retained settings requires Python 3.11+ in the guest; identity and unrelated settings are preserved.' ;;
                 reuse) info 'Reinstall will reuse the retained configuration unchanged.' ;;
+                *) return 1 ;;
             esac
         fi
     fi
