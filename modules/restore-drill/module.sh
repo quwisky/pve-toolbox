@@ -55,16 +55,28 @@ module_install() {
     require_root; require_pve; _rd_defaults
     if conf_exists "$MODULE_NAME"; then conf_load "$MODULE_NAME"; fi
     pkg_ensure flock:util-linux
-    local probe unattended
+    local key
+    # The toggles are stored as 1/0 but asked as y/n; ask_yn also accepts
+    # 1/0, yes/no and true/false presets and leaves y or n behind.
+    for key in RD_BOOT_PROBE RD_ALLOW_UNATTENDED; do
+        case ${!key} in
+            1) printf -v "$key" y ;;
+            0) printf -v "$key" n ;;
+        esac
+    done
     ask_valid RD_STORAGE "isolated restore target storage" "$RD_STORAGE" _rd_valid_storage
     ask_int RD_VMID_START "temporary VMID range start" "$RD_VMID_START" 100 999999999
-    probe=$RD_BOOT_PROBE; ask_yn probe "boot probe" "$probe"
+    ask_yn RD_BOOT_PROBE "enable the boot probe" "$RD_BOOT_PROBE"
     ask_int RD_BOOT_TIMEOUT "boot probe timeout (seconds)" "$RD_BOOT_TIMEOUT" 1
-    unattended=$RD_ALLOW_UNATTENDED; ask_yn unattended "allow explicit --unattended runs" "$unattended"
-    RD_BOOT_PROBE=0; [[ $probe == n ]] || RD_BOOT_PROBE=1
-    RD_ALLOW_UNATTENDED=0; [[ $unattended == n ]] || RD_ALLOW_UNATTENDED=1
+    ask_yn RD_ALLOW_UNATTENDED "allow explicit --unattended runs" "$RD_ALLOW_UNATTENDED"
+    for key in RD_BOOT_PROBE RD_ALLOW_UNATTENDED; do
+        case ${!key} in
+            y) printf -v "$key" 1 ;;
+            n) printf -v "$key" 0 ;;
+        esac
+    done
     _rd_validate || die "$RD_ERROR"
-    local key; for key in "${RD_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
+    for key in "${RD_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
     _rd_install_helper
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
     ok "installed guarded restore drill helper"

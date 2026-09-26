@@ -175,5 +175,32 @@ pass "cleanup fails closed when ownership proof does not match"
         fail "an out-of-range preset was accepted under -y"
     fi
     [[ ! -e $WORK/rd-yes-conf/restore-drill.conf ]] || fail "a rejected -y preset still wrote configuration"
+    # The stored 0/0 comes back as the n/n default: accepting every default
+    # on reinstall keeps both toggles off.
+    out=$(printf '%s\n' '' '' '' '' '' | module_install 2>&1) \
+        || fail "reinstall with default answers failed: $out"
+    [[ $(conf_get restore-drill RD_BOOT_PROBE) == 0 ]] || fail "boot probe default did not round-trip: $out"
+    [[ $(conf_get restore-drill RD_ALLOW_UNATTENDED) == 0 ]] || fail "unattended default did not round-trip: $out"
+    # A bad toggle preset under -y names the variable the operator set.
+    if out=$( TOOLBOX_CONF_DIR="$WORK/rd-probe-conf" TOOLBOX_STATE_DIR="$WORK/rd-probe-state" \
+        TOOLBOX_BIN_DIR="$WORK/rd-probe-bin" ASSUME_YES=1 RD_BOOT_PROBE=2 \
+        module_install 2>&1 ); then
+        fail "an invalid boot probe preset was accepted under -y"
+    fi
+    [[ $out == *'invalid value for RD_BOOT_PROBE'* ]] || fail "-y error did not name RD_BOOT_PROBE: $out"
+    [[ ! -e $WORK/rd-probe-conf/restore-drill.conf ]] || fail "a rejected toggle preset still wrote configuration"
+    # Legacy 1/0 presets and yes/false spellings store as 1/0.
+    ( export TOOLBOX_CONF_DIR="$WORK/rd-legacy-conf" TOOLBOX_STATE_DIR="$WORK/rd-legacy-state" \
+        TOOLBOX_BIN_DIR="$WORK/rd-legacy-bin"
+      ASSUME_YES=1 RD_BOOT_PROBE=1 RD_ALLOW_UNATTENDED=0 module_install >/dev/null 2>&1 \
+          || fail "legacy 1/0 presets were rejected"
+      [[ $(conf_get restore-drill RD_BOOT_PROBE) == 1 && $(conf_get restore-drill RD_ALLOW_UNATTENDED) == 0 ]] \
+          || fail "legacy 1/0 presets did not store as 1/0"
+      conf_clear restore-drill
+      ASSUME_YES=1 RD_BOOT_PROBE=false RD_ALLOW_UNATTENDED=yes module_install >/dev/null 2>&1 \
+          || fail "false/yes presets were rejected"
+      [[ $(conf_get restore-drill RD_BOOT_PROBE) == 0 && $(conf_get restore-drill RD_ALLOW_UNATTENDED) == 1 ]] \
+          || fail "false/yes presets did not store as 0/1"
+    ) || exit 1
 ) || exit 1
 pass "restore drill validates storage and probe settings at the prompt"

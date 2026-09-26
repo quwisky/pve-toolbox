@@ -36,7 +36,10 @@ At the install prompt, `RD_STORAGE` must start with a letter or digit and
 contain only `[A-Za-z0-9._-]`. `RD_VMID_START` accepts 100-999999999.
 `RD_BOOT_TIMEOUT` accepts any positive integer number of seconds. The boot
 probe and the unattended-run toggle are each asked as a yes/no question but
-stored in the config as `1` (yes) or `0` (no).
+stored in the config as `1` (yes) or `0` (no). Presets for `RD_BOOT_PROBE`
+and `RD_ALLOW_UNATTENDED` accept `1`/`0`, `y`/`n`, `yes`/`no` or
+`true`/`false`; any other value stops a `-y` install with an error naming the
+variable.
 
 ## Plan first
 
