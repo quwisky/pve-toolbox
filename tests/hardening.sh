@@ -737,6 +737,43 @@ pass "scrutiny updates stage first and restore timers on failure"
 ) || exit 1
 pass "scrutiny install validates the endpoint, host id and metrics schedule"
 
+(
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    while IFS='|' read -r endpoint stored; do
+        _sc_valid_endpoint "$endpoint" \
+            || fail "a valid scrutiny endpoint was rejected: $endpoint ($ASK_REASON)"
+        [[ ${ASK_NORMALIZED:-$endpoint} == "$stored" ]] \
+            || fail "scrutiny endpoint $endpoint was stored as $ASK_NORMALIZED, not $stored"
+    done <<'EOF'
+http://10.0.0.10:8080|http://10.0.0.10:8080
+https://scrutiny.example.com|https://scrutiny.example.com
+http://10.0.0.10:8080/|http://10.0.0.10:8080
+http://h/scrutiny/|http://h/scrutiny
+http://[fd00::10]:8080|http://[fd00::10]:8080
+https://[::1]/|https://[::1]
+EOF
+    # The value lands in a YAML double-quoted string, so " and \ cannot be
+    # allowed through into it.
+    while IFS= read -r endpoint; do
+        if _sc_valid_endpoint "$endpoint"; then
+            fail "an invalid scrutiny endpoint was accepted: $endpoint"
+        fi
+    done <<'EOF'
+not a url
+ftp://10.0.0.10
+http://
+http://h/"x
+http://h/a\b
+http://h/a b
+http://[fd00::10
+EOF
+) || exit 1
+pass "scrutiny endpoints accept IPv6 literals and refuse YAML-breaking paths"
+
 # The run-now question used to come after the binaries, the token-bearing
 # collector config and the enabled timers were written, so closed input there
 # left a half-installed module that status reported as installed.

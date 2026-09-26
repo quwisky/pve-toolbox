@@ -54,8 +54,12 @@ _sc_defaults() {
     : "${SCRUTINY_SCHEDULE_PERFORMANCE:=Sun *-*-* 02:00:00}"
 }
 
+# The host is a name, an IPv4 address or a bracketed IPv6 literal. The path
+# must not carry " or \ because the endpoint is written into a YAML
+# double-quoted string in _sc_write_config.
 _sc_valid_endpoint() {
-    [[ $1 =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]]*)?$ ]] \
+    local re='^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]+)?(/[^[:space:]"\]*)?$'
+    [[ $1 =~ $re ]] \
         || { ASK_REASON="enter an http:// or https:// URL, e.g. http://10.0.0.10:8080"; return 1; }
     ASK_NORMALIZED=${1%/}
 }
