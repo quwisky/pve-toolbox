@@ -86,6 +86,11 @@ lxc_help=$(launch help lxc-update)
 lxc_root_count=$(grep -o "Requires root" <<<"$lxc_help" | wc -l)
 [[ $lxc_root_count -eq 1 ]] \
     || fail "help lxc-update should say 'Requires root' exactly once, got $lxc_root_count"
+# Wrapped description lines carry no trailing spaces, in any command's help.
+for c in "" menu ui list install update check status doctor lxc-update uninstall link self-update help; do
+    ! launch help ${c:+"$c"} | grep -n ' $' \
+        || fail "'help $c' has a line ending in a space"
+done
 rc=0; launch help definitely-not >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 64 ]] || fail "help <unknown> exited $rc, want 64"
 pass "top-level and per-command help"

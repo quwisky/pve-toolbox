@@ -219,7 +219,8 @@ cli_help_overview() {
 cli_help_command() { # cli_help_command <command>
     local c=$1 f spec line
     printf 'Usage: pve-toolbox %s\n\n%s\n' "${CLI_USAGE[$c]}" "${CLI_SUMMARY[$c]}"
-    if [[ -n ${CLI_DESC[$c]:-} ]]; then printf '\n'; fold -s -w 78 <<<"${CLI_DESC[$c]}"; fi
+    # fold -s breaks after the space, so strip what it leaves at line ends.
+    if [[ -n ${CLI_DESC[$c]:-} ]]; then printf '\n'; fold -s -w 78 <<<"${CLI_DESC[$c]}" | sed 's/ *$//'; fi
     [[ -z ${CLI_ROOT[$c]:-} ]] || printf '\nRequires root.\n'
     printf '\nOptions:\n'
     for f in ${CLI_FLAGS[$c]:-}; do printf '  %-16s %s\n' "$f" "${CLI_FLAG_DESC[$f]}"; done
