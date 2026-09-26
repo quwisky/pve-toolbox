@@ -414,3 +414,51 @@ webhook_eof config-backup CB_WEBHOOK
 webhook_eof zfs-scrub ZFS_SCRUB_WEBHOOK
 webhook_eof zfs-replication ZFS_REPL_WEBHOOK
 pass "webhook prompts are secret and fail closed on EOF"
+
+# Answers that run out part-way must stop an install before it writes
+# anything: no binary, lib, conf, state or unit file. The questions about what
+# to do after the install are asked before its first write for this reason.
+install_eof() { # install_eof <module> <answers> <unanswered prompt> [VAR=value]...
+    local module=$1 answers=$2 stop=$3 dir="$WORK/partial-$1" rc=0 out left
+    shift 3
+    mkdir -p "$dir"/{bin,lib,conf,state,systemd,data,fake}
+    cat > "$dir/fake/systemctl" <<'SH'
+#!/bin/sh
+case $1 in is-enabled|is-active) exit 1 ;; esac
+exit 0
+SH
+    chmod +x "$dir/fake/systemctl"
+    out=$(printf '%b' "$answers" | env "$@" PATH="$dir/fake:$PATH" timeout 20 bash -c '
+        set -euo pipefail
+        export TOOLBOX_BIN_DIR=$1/bin TOOLBOX_LIB_DIR=$1/lib TOOLBOX_CONF_DIR=$1/conf
+        export TOOLBOX_STATE_DIR=$1/state TOOLBOX_SYSTEMD_DIR=$1/systemd TOOLBOX_ROOT=$PWD
+        source lib/common.sh
+        source "modules/$2/module.sh"
+        require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+        have_zfs() { return 0; }; _zs_native_owner() { return 1; }
+        _zs_pools() { printf "tank\n"; }
+        zpool() { printf "ok\n"; }
+        systemd-analyze() { [[ $1 == calendar ]]; }
+        module_install
+    ' _ "$dir" "$module" 2>&1) || rc=$?
+    [[ $rc -ne 124 ]] || fail "$module hung on closed input"
+    [[ $rc -ne 0 ]] || fail "$module installed on closed input: $out"
+    [[ $out == *"$stop"* ]] || fail "$module did not stop at \"$stop\": $out"
+    left=$(find "$dir"/{bin,lib,conf,state,systemd} -type f)
+    [[ -z $left ]] || fail "$module wrote files before its last question: $left"
+}
+hook=https://discord.com/api/webhooks/1/token
+install_eof config-backup "$hook\n\n\n\n\n\n\n\n\n" \
+    'no answer for "send a test notification to Discord now' \
+    CB_ARCHIVE_DIR="$WORK/partial-config-backup/data/archives"
+install_eof zfs-scrub "$hook\n\n\n\n\n" \
+    'no answer for "send a test notification to Discord now'
+install_eof zfs-replication "$hook\n" \
+    'no answer for "also notify when a job starts' ZFS_REPL_JOBS=nightly
+pass "installs stop before writing when the answers run out"
+
+# Under -y an invalid preset is refused before anything is written, and the
+# error names the variable to fix.
+install_eof config-backup "" 'invalid value for CB_WEBHOOK' \
+    ASSUME_YES=1 CB_WEBHOOK=http://x
+pass "an invalid webhook preset under -y names its variable and writes nothing"

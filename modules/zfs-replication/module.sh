@@ -282,6 +282,14 @@ module_install() {
     _zr_jobs_unique "${want[@]}" \
         || die "job names normalize to the same config key: $ZR_COLLISION"
 
+    # These come before the first write: answers that run out must stop the
+    # install here. The per-job questions below still write as they go.
+    ask_yn ZFS_REPL_NOTIFY_START "also notify when a job starts" "$ZFS_REPL_NOTIFY_START"
+    step "After the install"
+    local t=y now=n
+    ask_yn t "send a test notification to Discord now" "y"
+    ask_yn now "run the jobs once right now" "n"
+
     conf_set "$MODULE_NAME" DISCORD_WEBHOOK "$ZFS_REPL_WEBHOOK"
     conf_set "$MODULE_NAME" LOG_DIR "$ZR_LOG_DIR"
 
@@ -292,7 +300,6 @@ module_install() {
     done
     [[ ${#kept[@]} -eq 0 ]] && { warn "no usable jobs"; return 1; }
 
-    ask_yn ZFS_REPL_NOTIFY_START "also notify when a job starts" "$ZFS_REPL_NOTIFY_START"
     local notify_start=0
     [[ $ZFS_REPL_NOTIFY_START == y ]] && notify_start=1
     conf_set "$MODULE_NAME" NOTIFY_START "$notify_start"
@@ -311,8 +318,6 @@ module_install() {
     done
 
     step "Verification"
-    local t=y
-    ask_yn t "send a test notification to Discord now" "y"
     if [[ $t == y ]]; then
         if SYNC_CONF="$(conf_file "$MODULE_NAME")" PVE_TOOLBOX_LIB="$TOOLBOX_LIB_DIR" \
            "$TOOLBOX_BIN_DIR/$ZR_BIN" --test "${kept[0]}"; then
@@ -322,8 +327,6 @@ module_install() {
         fi
     fi
 
-    local now=n
-    ask_yn now "run the jobs once right now" "n"
     if [[ $now == y ]]; then
         for job in "${kept[@]}"; do
             systemctl start --no-block "$ZR_UNIT@$job.service"

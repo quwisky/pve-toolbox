@@ -403,6 +403,21 @@ module_install() {
         fi
     fi
 
+    # A seed run (below) already takes the first snapshot, so the run-now
+    # question then defaults to n, which is also what -y takes. Answering y
+    # still starts a run.
+    local seed_git=0
+    [[ $CB_GIT_ENABLED == y && $git_was -eq 0 ]] && seed_git=1
+    [[ $seed_git -eq 0 ]] || CB_RUN_NOW=n
+
+    # Every question comes before the first write: answers that run out must
+    # stop the install here, not leave a timer running for a half-written one.
+    step "After the install"
+    # The only prompt without an env var of its own, which made every -y
+    # install fire an outbound webhook call whether or not anyone wanted one.
+    ask_yn CB_TEST_NOTIFY "send a test notification to Discord now" "$CB_TEST_NOTIFY"
+    ask_yn CB_RUN_NOW "take the first snapshot right now" "$CB_RUN_NOW"
+
     step "Install"
     install_toolbox_lib discord.sh
     install -m 0755 "$(_cb_src)" "$TOOLBOX_BIN_DIR/$CB_BIN"
@@ -415,9 +430,6 @@ module_install() {
         "$(_cb_exec)" "$CB_SCHEDULE"
 
     step "Verification"
-    # The only prompt without an env var of its own, which made every -y
-    # install fire an outbound webhook call whether or not anyone wanted one.
-    ask_yn CB_TEST_NOTIFY "send a test notification to Discord now" "$CB_TEST_NOTIFY"
     if [[ $CB_TEST_NOTIFY == y ]]; then
         if _cb_run_helper --test; then
             ok "sent - check the channel"
@@ -430,14 +442,13 @@ module_install() {
     # otherwise leave the repo empty until the configuration next moves - which
     # on a stable host is never - while the status line reports git:0 as though
     # that were healthy. Seed it once, now.
-    if [[ $CB_GIT_ENABLED == y && $git_was -eq 0 ]]; then
+    if [[ $seed_git -eq 1 ]]; then
         info "seeding the git history with the current configuration"
         if _cb_run_helper run --force; then
             ok "git history seeded"
         else
             warn "the seed run failed - check journalctl -u $CB_UNIT"
         fi
-        CB_RUN_NOW=n
     fi
 
     # State before the unit starts: the runner writes this same file, so
@@ -449,7 +460,6 @@ module_install() {
     state_set "$MODULE_NAME" SCRIPT_SUM "$(_cb_sum "$(_cb_src)")"
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
 
-    ask_yn CB_RUN_NOW "take the first snapshot right now" "$CB_RUN_NOW"
     if [[ $CB_RUN_NOW == y ]]; then
         systemctl start --no-block "$CB_UNIT.service"
         ok "started $CB_UNIT.service (runs in the background)"
