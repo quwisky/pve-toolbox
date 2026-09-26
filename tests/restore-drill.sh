@@ -235,3 +235,48 @@ pass "restore drill validates storage and probe settings at the prompt"
     done
 ) || exit 1
 pass "saved VMID start is checked against the install range"
+
+# Doctor and the short status report a saved configuration the helper would
+# refuse, instead of passing or showing it as ready.
+(
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=lib/report.sh
+    source "$ROOT/lib/report.sh"
+    # shellcheck source=lib/doctor.sh
+    source "$ROOT/lib/doctor.sh"
+    # shellcheck source=modules/restore-drill/module.sh
+    source "$ROOT/modules/restore-drill/module.sh"
+    unset "${RD_CONF_KEYS[@]}"
+    export TOOLBOX_CONF_DIR="$WORK/rd-doctor-conf" TOOLBOX_STATE_DIR="$WORK/rd-doctor-state" \
+        TOOLBOX_BIN_DIR="$WORK/rd-doctor-bin"
+    mkdir -p "$TOOLBOX_BIN_DIR"
+    install -m 0755 "$HELPER" "$TOOLBOX_BIN_DIR/$RD_BIN"
+    doctor_lines() { # one "state id summary | detail" line per result
+        local i
+        doctor_reset
+        module_doctor
+        for ((i = 0; i < ${#REPORT_IDS[@]}; i++)); do
+            printf '%s %s %s | %s\n' "${REPORT_STATES[$i]}" "${REPORT_IDS[$i]}" \
+                "${REPORT_SUMMARIES[$i]}" "${REPORT_DETAILS[$i]}"
+        done
+    }
+    conf_set restore-drill RD_STORAGE local-lvm
+    conf_set restore-drill RD_BOOT_PROBE 1
+    conf_set restore-drill RD_BOOT_TIMEOUT 60
+    conf_set restore-drill RD_ALLOW_UNATTENDED 0
+    conf_set restore-drill RD_VMID_START 50
+    out=$(doctor_lines)
+    [[ $out == *'fail configuration VMID start must be between 100 and 999999999 | reconfigure with: pve-toolbox install restore-drill'* ]] \
+        || fail "doctor passed a VMID start below 100: $out"
+    status=$(module_status) || fail "invalid configuration was reported as not installed: $status"
+    [[ $status == 'invalid configuration  [VMID start must be between 100 and 999999999]' ]] \
+        || fail "status did not report the invalid configuration: $status"
+    conf_set restore-drill RD_VMID_START 900000
+    out=$(doctor_lines)
+    [[ $out == *'pass configuration restore drill configuration is valid'* ]] \
+        || fail "doctor did not pass a valid configuration: $out"
+    [[ $out != *'fail configuration'* ]] || fail "doctor failed a valid configuration: $out"
+    [[ $(module_status) == 'ready, dry-run by default' ]] || fail 'valid configuration was not ready'
+) || exit 1
+pass "doctor and status report an invalid saved configuration"

@@ -102,7 +102,9 @@ module_update() {
 module_status() {
     conf_exists "$MODULE_NAME" && [[ -x $TOOLBOX_BIN_DIR/$RD_BIN ]] \
         || { printf 'not installed'; return 1; }
-    if [[ -f $(_rd_run_state) ]]; then printf 'attention: unfinished drill'; else printf 'ready, dry-run by default'; fi
+    if [[ -f $(_rd_run_state) ]]; then printf 'attention: unfinished drill'
+    elif ! _rd_load; then printf 'invalid configuration  [%s]' "$RD_ERROR"
+    else printf 'ready, dry-run by default'; fi
 }
 
 module_status_long() {
@@ -117,6 +119,14 @@ module_status_long() {
 }
 
 module_doctor() {
+    if conf_exists "$MODULE_NAME"; then
+        if _rd_load; then
+            doctor_result pass configuration "restore drill configuration is valid"
+        else
+            doctor_result fail configuration "$RD_ERROR" \
+                "reconfigure with: pve-toolbox install restore-drill"
+        fi
+    fi
     if [[ ! -x $TOOLBOX_BIN_DIR/$RD_BIN ]]; then
         doctor_result fail helper "restore drill helper is missing"
     else

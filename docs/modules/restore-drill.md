@@ -43,8 +43,10 @@ variable.
 
 The helper holds the saved `RD_VMID_START` to the same 100-999999999 range. A
 configuration from an older release with a start below 100 makes every helper
-run, including `--cleanup`, stop with `invalid VMID start`, and `pve-toolbox
-status restore-drill` leaves out the configuration details. Run
+run, including `--cleanup`, stop with `invalid VMID start`. `pve-toolbox doctor`
+reports an invalid saved configuration as a failed `configuration` check, and
+`pve-toolbox status restore-drill` shows `invalid configuration` with the reason
+instead of `ready` and leaves out the configuration details. Run
 `pve-toolbox install restore-drill` as root to choose a start of 100 or more.
 
 ## Plan first
