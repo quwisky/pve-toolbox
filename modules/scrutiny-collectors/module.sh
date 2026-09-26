@@ -54,6 +54,16 @@ _sc_defaults() {
     : "${SCRUTINY_SCHEDULE_PERFORMANCE:=Sun *-*-* 02:00:00}"
 }
 
+# The host is a name, an IPv4 address or a bracketed IPv6 literal. The path
+# must not carry " or \ because the endpoint is written into a YAML
+# double-quoted string in _sc_write_config.
+_sc_valid_endpoint() {
+    local re='^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]+)?(/[^[:space:]"\]*)?$'
+    [[ $1 =~ $re ]] \
+        || { ASK_REASON="enter an http:// or https:// URL, e.g. http://10.0.0.10:8080"; return 1; }
+    ASK_NORMALIZED=${1%/}
+}
+
 _sc_installed() {
     SC_PRESENT=()
     local s
@@ -186,12 +196,10 @@ module_install() {
     pkg_ensure curl:curl jq:jq smartctl:smartmontools
 
     step "Scrutiny web instance"
-    while [[ -z $SCRUTINY_API_ENDPOINT ]]; do
-        ask SCRUTINY_API_ENDPOINT "API endpoint of the Scrutiny web container" "http://10.0.0.10:8080"
-    done
-    SCRUTINY_API_ENDPOINT=${SCRUTINY_API_ENDPOINT%/}
-    ask_secret SCRUTINY_API_TOKEN "collector API token (blank if auth is off)"
-    ask SCRUTINY_HOST_ID "host id shown in the dashboard" "$SCRUTINY_HOST_ID"
+    ask_valid SCRUTINY_API_ENDPOINT "API endpoint of the Scrutiny web container" \
+        "${SCRUTINY_API_ENDPOINT:-http://10.0.0.10:8080}" _sc_valid_endpoint
+    ask_secret SCRUTINY_API_TOKEN "collector API token (optional; leave empty if auth is off)"
+    ask_valid SCRUTINY_HOST_ID "host id shown in the dashboard" "$SCRUTINY_HOST_ID" valid_required
 
     if curl -fsS --max-time 8 "$SCRUTINY_API_ENDPOINT/api/health" >/dev/null 2>&1; then
         ok "web API reachable"
@@ -219,14 +227,20 @@ module_install() {
     [[ $pick == y ]] && want+=(performance)
 
     [[ ${#want[@]} -eq 0 ]] && { warn "nothing selected"; return 1; }
-    _sc_require_runtime_deps "${want[@]}"
 
     local s var
     for s in "${want[@]}"; do
         var="SCRUTINY_SCHEDULE_${s^^}"
-        ask "$var" "  $s schedule (systemd OnCalendar)" "${!var}"
+        ask_schedule "$var" "  $s schedule (systemd OnCalendar)" "${!var}"
     done
     ask SCRUTINY_VERSION "release tag" "$SCRUTINY_VERSION"
+
+    # Every question comes before the first write: answers that run out must
+    # stop the install here, not leave enabled timers behind for a module
+    # that never recorded itself as installed.
+    local run=y
+    ask_yn run "run each collector once now?" "y"
+    _sc_require_runtime_deps "${want[@]}"
 
     step "Download"
     gh_release "$REPO" "$SCRUTINY_VERSION"
@@ -286,8 +300,6 @@ module_install() {
     done
 
     step "Verification"
-    local run=y
-    ask_yn run "run each collector once now?" "y"
     if [[ $run == y ]]; then
         for s in "${got[@]}"; do
             [[ $s == performance ]] && { warn "skipping fio test run (heavy I/O)"; continue; }

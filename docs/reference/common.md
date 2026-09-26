@@ -56,7 +56,8 @@ Every prompt follows the same rules:
 `ask_valid <var> <prompt> <default> <fn>`
 : Free text checked by a validator: `fn <value>` returns 0 to accept,
   optionally setting `ASK_NORMALIZED` to the form to store, or sets
-  `ASK_REASON` and returns 1.
+  `ASK_REASON` and returns 1. `valid_required` rejects a blank value with
+  reason `a value is required`, for any prompt that must not be left empty.
 
 `ask_int <var> <prompt> <default> [min] [max]`
 : A whole number without leading zeros, inside the bounds.

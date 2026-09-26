@@ -25,11 +25,24 @@ there is no `zpool` binary. Every selected release asset is downloaded and
 verified before any binary is installed; a missing asset leaves the existing
 collector set untouched.
 
-Selecting the performance collector also installs Debian's `fio` package,
-which the collector validates before starting. Running `update` repairs this
-dependency on installations created by older toolbox versions, even when the
-collector release itself is already current. A check-only run remains
-read-only.
+`SCRUTINY_API_ENDPOINT` must be an `http://` or `https://` URL whose host is a
+name, an IPv4 address or a bracketed IPv6 literal such as
+`http://[fd00::10]:8080`, optionally followed by a port and a path. A trailing
+slash is stripped. Anything else — including a URL with a user name or
+password in it, or a path containing `"` or `\` — is re-asked with a reminder
+of the expected form. `SCRUTINY_HOST_ID` cannot be left blank. Each
+collector's schedule is validated the same way as any other module's timer,
+with `systemd-analyze calendar`.
+
+Install asks every question, including whether to run each collector once
+at the end, before it downloads the release. If the answers run out, it stops
+without installing a binary, a collector config or a timer.
+
+Selecting the performance collector also installs Debian's `fio` package
+once the last question is answered, and the collector validates it before
+starting. Running `update` repairs this dependency on installations created by
+older toolbox versions, even when the collector release itself is already
+current. A check-only run remains read-only.
 
 The performance collector is deliberately not started as an update smoke test
 because it creates real disk load. After repairing a failed older installation,
@@ -93,7 +106,7 @@ one release, not an available update.
 | Variable | Meaning |
 | --- | --- |
 | `SCRUTINY_API_ENDPOINT` | Base URL of the Scrutiny web instance |
-| `SCRUTINY_API_TOKEN` | Collector token, blank if auth is off |
+| `SCRUTINY_API_TOKEN` | Collector token, optional — leave empty if auth is off |
 | `SCRUTINY_HOST_ID` | Host id shown in the dashboard |
 | `SCRUTINY_VERSION` | Release tag, or `latest` |
 | `SCRUTINY_SCHEDULE_METRICS` | `OnCalendar` per collector |

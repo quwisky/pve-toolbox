@@ -121,6 +121,28 @@ _cb_safe_data_dir() { # _cb_safe_data_dir <path> -> canonical path, or 1
     printf '%s' "$p"
 }
 
+_cb_valid_data_dir() { # _cb_valid_data_dir <path> -> 0 with ASK_NORMALIZED, or 1 with ASK_REASON
+    local p
+    p=$(_cb_safe_data_dir "$1") || { ASK_REASON="refusing unsafe directory: $1"; return 1; }
+    ASK_NORMALIZED=$p
+}
+_cb_valid_git_dir() { # _cb_valid_git_dir <path> -> like _cb_valid_data_dir, also rejects nesting under CB_ARCHIVE_DIR
+    _cb_valid_data_dir "$1" || return 1
+    ! _cb_dirs_nested "$ASK_NORMALIZED" "$CB_ARCHIVE_DIR" \
+        || { ASK_REASON="the git directory and the archive directory must not nest"; return 1; }
+}
+_cb_valid_remote() { # _cb_valid_remote <url> -> 0, or 1 with ASK_REASON (blank is fine: local history only)
+    [[ -n $1 ]] || return 0
+    ! _cb_remote_has_credential "$1" \
+        || { ASK_REASON="the remote URL carries a credential - use CB_GIT_TOKEN_FILE instead, so it does not land in .git/config"; return 1; }
+    case $1 in
+        http://*|git://*|ftp://*|ftps://*)
+            ASK_REASON="a ${1%%:*}:// remote sends the whole host configuration in cleartext - use https:// or ssh"
+            return 1 ;;
+    esac
+}
+_cb_valid_readable() { [[ -z $1 || -r $1 ]] || { ASK_REASON="cannot read $1"; return 1; }; }
+
 _cb_webhook_shown() {
     local f url
     f=$(conf_file "$MODULE_NAME")
@@ -322,27 +344,25 @@ module_install() {
 
     step "Backends"
     dim "  archives are self-contained snapshots; git is a history of the changes"
-    ask_yn CB_LOCAL_ENABLED "keep timestamped tar.gz archives" "$CB_LOCAL_ENABLED"
-    ask_yn CB_GIT_ENABLED   "also keep a git history"          "$CB_GIT_ENABLED"
-    [[ $CB_LOCAL_ENABLED == y || $CB_GIT_ENABLED == y ]] \
-        || die "at least one backend has to be enabled"
+    while true; do
+        ask_yn CB_LOCAL_ENABLED "keep timestamped tar.gz archives" "$CB_LOCAL_ENABLED"
+        ask_yn CB_GIT_ENABLED   "also keep a git history"          "$CB_GIT_ENABLED"
+        [[ $CB_LOCAL_ENABLED == y || $CB_GIT_ENABLED == y ]] && break
+        [[ $ASSUME_YES -eq 1 ]] && die "at least one backend has to be enabled"
+        warn "at least one backend has to be enabled"
+    done
     local git_was=0
     [[ $(conf_get "$MODULE_NAME" CB_GIT_ENABLED) == 1 ]] && git_was=1
 
     step "Archives"
-    ask CB_ARCHIVE_DIR "directory for the archives" "$CB_ARCHIVE_DIR"
-    CB_ARCHIVE_DIR=$(_cb_safe_data_dir "$CB_ARCHIVE_DIR") \
-        || die "refusing unsafe archive directory: $CB_ARCHIVE_DIR"
+    ask_valid CB_ARCHIVE_DIR "directory for the archives" "$CB_ARCHIVE_DIR" _cb_valid_data_dir
 
-    ask CB_RETENTION_COUNT "keep at least this many archives, whatever their age" "$CB_RETENTION_COUNT"
-    ask CB_RETENTION_DAYS  "beyond that, prune archives older than this many days" "$CB_RETENTION_DAYS"
-    [[ $CB_RETENTION_COUNT =~ ^[0-9]+$ ]] || die "retention count has to be a number (0 = unlimited)"
-    [[ $CB_RETENTION_DAYS  =~ ^[0-9]+$ ]] || die "retention days has to be a number (0 = unlimited)"
+    ask_int CB_RETENTION_COUNT "keep at least this many archives, whatever their age (0 = unlimited)" "$CB_RETENTION_COUNT" 0
+    ask_int CB_RETENTION_DAYS  "beyond that, prune archives older than this many days (0 = unlimited)" "$CB_RETENTION_DAYS" 0
     dim "  keeps the newest $CB_RETENTION_COUNT runs whatever their age, then prunes past $CB_RETENTION_DAYS days"
 
     step "Schedule"
-    ask CB_SCHEDULE "systemd OnCalendar" "$CB_SCHEDULE"
-    [[ -n $CB_SCHEDULE ]] || die "a schedule is required"
+    ask_schedule CB_SCHEDULE "systemd OnCalendar" "$CB_SCHEDULE"
 
     step "Reporting"
     dim "  a failed capture always reports; this is about the quiet case"
@@ -353,45 +373,30 @@ module_install() {
     ask_yn CB_INCLUDE_SECRETS "include them, encrypted to an age recipient" "$CB_INCLUDE_SECRETS"
     if [[ $CB_INCLUDE_SECRETS == y ]]; then
         command -v age >/dev/null 2>&1 || die "including secrets needs age installed (apt install age)"
-        while [[ -z $CB_AGE_RECIPIENT ]]; do
-            [[ $ASSUME_YES -eq 1 ]] && die "set CB_AGE_RECIPIENT to include secrets non-interactively"
-            ask CB_AGE_RECIPIENT "age recipient (age1...)" ""
-        done
+        ask_valid CB_AGE_RECIPIENT "age recipient (age1...)" "$CB_AGE_RECIPIENT" valid_required
         warn "secrets will be archived encrypted - keep the age identity somewhere else"
     fi
 
     if [[ $CB_GIT_ENABLED == y ]]; then
         step "Git history"
-        pkg_ensure git:git rsync:rsync
-        ask CB_GIT_DIR    "working clone directory" "$CB_GIT_DIR"
-        ask CB_GIT_BRANCH "branch"                  "$CB_GIT_BRANCH"
-        CB_GIT_DIR=$(_cb_safe_data_dir "$CB_GIT_DIR") \
-            || die "refusing unsafe git directory: $CB_GIT_DIR"
-        _cb_dirs_nested "$CB_GIT_DIR" "$CB_ARCHIVE_DIR" \
-            && die "the git directory and the archive directory must not nest"
+        ask_valid CB_GIT_DIR    "working clone directory" "$CB_GIT_DIR" _cb_valid_git_dir
+        ask_valid CB_GIT_BRANCH "branch"                  "$CB_GIT_BRANCH" valid_required
 
-        ask CB_GIT_REMOTE "remote to push to (blank for local history only)" "$CB_GIT_REMOTE"
+        ask_valid CB_GIT_REMOTE "remote to push to (blank for local history only)" "$CB_GIT_REMOTE" _cb_valid_remote
         if [[ -n $CB_GIT_REMOTE ]]; then
-            _cb_remote_has_credential "$CB_GIT_REMOTE" \
-                && die "the remote URL carries a credential - use CB_GIT_TOKEN_FILE instead, so it does not land in .git/config"
             ask_yn CB_GIT_PUSH "push after each commit" "y"
             case $CB_GIT_REMOTE in
-                http://*|git://*|ftp://*|ftps://*)
-                    die "a ${CB_GIT_REMOTE%%:*}:// remote sends the whole host configuration in cleartext - use https:// or ssh" ;;
                 https://*)
                     CB_GIT_SSH_KEY=""
-                    ask CB_GIT_TOKEN_FILE "file holding an access token" "$CB_GIT_TOKEN_FILE"
-                    [[ -n $CB_GIT_TOKEN_FILE && ! -r $CB_GIT_TOKEN_FILE ]] \
-                        && die "cannot read $CB_GIT_TOKEN_FILE"
+                    ask_valid CB_GIT_TOKEN_FILE "file holding an access token" "$CB_GIT_TOKEN_FILE" _cb_valid_readable
                     ;;
                 *)
                     # An https remote's token file must not survive a switch to
                     # ssh, or the credential helper stays attached to every git
                     # invocation for a transport that never needs it.
                     CB_GIT_TOKEN_FILE=""
-                    ask CB_GIT_SSH_KEY "deploy key path (blank for the root default)" "$CB_GIT_SSH_KEY"
+                    ask_valid CB_GIT_SSH_KEY "deploy key path (blank for the root default)" "$CB_GIT_SSH_KEY" _cb_valid_readable
                     if [[ -n $CB_GIT_SSH_KEY ]]; then
-                        [[ -r $CB_GIT_SSH_KEY ]] || die "cannot read $CB_GIT_SSH_KEY"
                         local mode; mode=$(stat -c '%a' "$CB_GIT_SSH_KEY" 2>/dev/null || printf '')
                         [[ -n $mode && $mode != 600 && $mode != 400 ]] \
                             && warn "$CB_GIT_SSH_KEY is mode $mode - ssh may refuse it"
@@ -419,6 +424,9 @@ module_install() {
     ask_yn CB_RUN_NOW "take the first snapshot right now" "$CB_RUN_NOW"
 
     step "Install"
+    # Packages too wait for the last answer: closed input must leave the host
+    # as it was.
+    if [[ $CB_GIT_ENABLED == y ]]; then pkg_ensure git:git rsync:rsync; fi
     install_toolbox_lib discord.sh
     install -m 0755 "$(_cb_src)" "$TOOLBOX_BIN_DIR/$CB_BIN"
     ok "installed $TOOLBOX_BIN_DIR/$CB_BIN"

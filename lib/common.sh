@@ -192,6 +192,9 @@ ask_schedule() { # ask_schedule <var> <prompt> <default>
     _ask_read "$1" "$2" "$3" valid_schedule
 }
 
+# A validator for any prompt that must not be left blank.
+valid_required() { [[ -n ${1:-} ]] || { ASK_REASON="a value is required"; return 1; }; }
+
 # Never echoed and never shown as a default. With a value already present,
 # Enter keeps it and "none" clears it. A validator that refuses an empty value
 # makes the secret required. Under -y only a value already present counts.

@@ -28,9 +28,11 @@ Unit        pve-toolbox-config-backup.{service,timer}
 | Retention | `CB_RETENTION_COUNT` / `CB_RETENTION_DAYS` | none — history is the point |
 | Holds | everything captured | configuration only |
 
-Either can be turned off, but not both. They share one capture: the tree is
-collected, classified, scanned and hashed once, and only then handed to
-whichever backends are enabled.
+Either can be turned off, but not both: install asks the two backend
+questions again until at least one is `y`, and only under `-y` — where there
+is no one to answer the follow-up — is turning both off a hard failure. They
+share one capture: the tree is collected, classified, scanned and hashed once,
+and only then handed to whichever backends are enabled.
 
 !!! warning "A cross-node restore has to be asked for explicitly"
 
@@ -213,10 +215,12 @@ journal.
 !!! warning "Do not put a credential in the remote URL"
 
     `https://<token>@host/repo.git` is the habitual way to configure a remote,
-    and install refuses it — along with any other userinfo, and any `http://`
-    remote, which would send both the token and the whole host configuration in
-    cleartext. Git would otherwise write the credential verbatim into
-    `.git/config`, re-apply it on every run, and print it in `status --long`.
+    and install refuses it at the remote prompt — before it ever asks about
+    pushing — along with any other userinfo, and any `http://`, `git://` or
+    `ftp(s)://` remote, which would send both the token and the whole host
+    configuration in cleartext. Git would otherwise write the credential
+    verbatim into `.git/config`, re-apply it on every run, and print it in
+    `status --long`.
 
 ```bash
 pve-config-backup log          # commit history
@@ -433,6 +437,10 @@ such as `/`, `/etc`, `/etc/pve`, `/var/lib` and the toolbox's own shared
 directories are refused; use a dedicated child directory instead. The same
 check follows existing symlinks, so a harmless-looking path cannot redirect a
 recursive operation onto a protected root.
+
+`CB_SCHEDULE` is validated with `systemd-analyze calendar` at the prompt, the
+same check every other module's timer gets, so a typo is caught before the
+timer is written rather than surfacing as a unit that never fires.
 
 ## Env vars for `-y`
 

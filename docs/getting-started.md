@@ -218,8 +218,8 @@ ZFS_SCRUB_POOLS='rpool tank' \
 ```
 
 Presets read through validated prompts are checked under `-y` before the
-module writes its configuration, and an invalid one stops the install with the
-variable's name; the remaining modules are being migrated. Without `-y`,
+module writes its configuration, and an invalid one stops the install naming
+the setting or prompt; the remaining modules are being migrated. Without `-y`,
 answers may be piped in, but running out of them is an error. The toolbox
 never fills in defaults for unanswered prompts.
 

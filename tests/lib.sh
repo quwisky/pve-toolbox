@@ -433,3 +433,12 @@ prompt_run '' t_secret_yes_local
 expect_rc nonzero "ask_secret missing local value under -y"
 expect_out 'invalid value for "Discord webhook URL": a webhook URL is required' "ask_secret missing local value under -y"
 pass "-y errors name the prompt when the variable cannot be preset"
+
+# --- valid_required ------------------------------------------------------------
+
+t_req() { local v=""; ask_valid v "name" "" valid_required; printf 'got=[%s]\n' "$v"; }
+
+prompt_run $'\nx\n' t_req
+expect_out 'a value is required' "valid_required rejection"
+expect_out 'got=[x]' "valid_required re-prompt"
+pass "valid_required rejects a blank value"
