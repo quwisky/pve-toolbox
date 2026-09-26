@@ -47,10 +47,21 @@ kp_fixture absent
 kp_host_fixture
 kp_confirm decline install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'decline failed'; }
 [[ ! -e $KP_TEST_BINARY && ! -e $KP_TEST_ROOT/var/lib/pve-toolbox ]] || fail 'decline changed guest'
+# A mistyped answer is re-asked; the install then goes ahead.
+kp_confirm typo install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'mistyped guest type ended the install'; }
+grep -Fq 'choose one of lxc/vm' "$KP_WORK/session" || fail 'mistyped guest type not re-asked'
+[[ -f $KP_TEST_BINARY ]] || fail 'install after a re-asked guest type did not run'
+# An unsupported Core URL is refused and re-asked; drive.exp answers the
+# re-ask with https://core.example.invalid, which the install must then use.
 for url in ftp://core.example.invalid http://user:password@core.example.invalid 'http://core.example.invalid/?query=1' 'http://core.example.invalid/#fragment'; do
-    if KP_CORE_URL=$url kp_confirm accept install komodo-periphery > "$KP_WORK/session"; then fail 'unsupported Core URL accepted'; fi
-    [[ ! -e $KP_TEST_BINARY && ! -e $KP_TEST_ROOT/var/lib/pve-toolbox ]] || fail 'invalid Core URL changed guest'
+    kp_fixture absent
+    kp_host_fixture
+    KP_CORE_URL=$url kp_confirm accept install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail "install after rejecting Core URL $url failed"; }
+    grep -Fq 'provide an HTTP or HTTPS URL without credentials, query or fragment' "$KP_WORK/session" || fail "unsupported Core URL $url accepted"
+    grep -Fq 'core_address = "https://core.example.invalid"' "$KP_TEST_CONFIG" || fail "install did not use the re-asked Core URL after $url"
 done
+kp_fixture absent
+kp_host_fixture
 KP_CORE_URL=http://192.0.2.10:9120/komodo kp_confirm accept install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'HTTP Core installation failed'; }
 [[ -f $KP_TEST_CONFIG ]] || fail 'configuration missing'
 grep -Fq 'core_address = "http://192.0.2.10:9120/komodo"' "$KP_TEST_CONFIG" || fail 'HTTP Core URL not preserved'

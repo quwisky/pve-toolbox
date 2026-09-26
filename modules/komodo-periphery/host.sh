@@ -4,6 +4,31 @@ kp_target_key() { # <lxc|qemu> <numeric-id>; never use an unvalidated ID in a pa
     [[ $# -eq 2 && ( $1 == lxc || $1 == qemu ) && $2 =~ ^[1-9][0-9]{2,8}$ ]] || return 1
     printf '%s-%s' "$1" "$2"
 }
+# Prompt validators for ask_valid (lib/common.sh); vm.sh reuses them. The ask
+# helpers read the ASK_REASON and ASK_NORMALIZED they set.
+# shellcheck disable=SC2034
+kp_valid_core_url() {
+    [[ $1 =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $1 != *@* ]] \
+        || { ASK_REASON='provide an HTTP or HTTPS URL without credentials, query or fragment'; return 1; }
+}
+kp_valid_core_url_or_blank() { [[ -z $1 ]] || kp_valid_core_url "$1"; }
+# shellcheck disable=SC2034
+kp_valid_release() { # stores the version without a leading v
+    [[ ${1#v} =~ ^2\.[0-9]+\.[0-9]+$ ]] || { ASK_REASON='choose an exact stable v2 release, e.g. 2.3.3'; return 1; }
+    ASK_NORMALIZED=${1#v}
+}
+# shellcheck disable=SC2034
+kp_valid_ctid() { # a container listed in PVE_LXC_JSON by pve_lxc_inventory
+    [[ $1 =~ ^[1-9][0-9]{2,8}$ ]] && jq -e --argjson id "$1" 'any(.[];.vmid==$id)' <<<"$PVE_LXC_JSON" >/dev/null \
+        || { ASK_REASON='select one listed local container'; return 1; }
+}
+# shellcheck disable=SC2034
+kp_valid_vmid() { # a VM listed in PVE_QEMU_JSON by pve_qemu_inventory
+    kp_target_key qemu "$1" >/dev/null && jq -e --argjson id "$1" 'any(.[];.vmid==$id)' <<<"$PVE_QEMU_JSON" >/dev/null \
+        || { ASK_REASON='select one listed local VM'; return 1; }
+}
+# shellcheck disable=SC2034
+kp_valid_abs_path() { [[ $1 == /* ]] || { ASK_REASON='enter an absolute path'; return 1; }; }
 kp_host_require() {
     require_root
     local cmd
@@ -173,17 +198,14 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     local key_action=keep choice="" guest_kind="" configure_retained=false retained_config=false
     [[ ${ASSUME_YES:-0} == 0 && ${FORCE:-0} == 0 && -t 0 && -t 1 ]] || { warn 'Periphery changes require a terminal and explicit confirmation; --yes/--force are unsupported'; return 1; }
     kp_host_require || return 1
-    ask guest_kind 'Guest type (lxc/vm)' lxc
+    ask_choice guest_kind 'Guest type' lxc lxc vm
     case $guest_kind in
         vm) kp_vm_change "$action"; return $? ;;
-        lxc) ;;
-        *) warn 'choose lxc or vm'; return 1 ;;
     esac
     pve_lxc_inventory "$KP_NODE" || { warn "$PVE_LXC_ERROR"; return 1; }
     info 'Existing local containers:'
     jq -r '.[] | [.vmid, (.name // "unnamed"), .status] | @tsv' <<<"$PVE_LXC_JSON" | while IFS= read -r row; do kp_display "$row"; printf '\n'; done
-    ask id 'Container ID' ''
-    [[ $id =~ ^[1-9][0-9]{2,8}$ ]] && jq -e --argjson id "$id" 'any(.[];.vmid==$id)' <<<"$PVE_LXC_JSON" >/dev/null || { warn 'select one listed local container'; return 1; }
+    ask_valid id 'Container ID' '' kp_valid_ctid
     KP_CTID=$id
     for file in "$(conf_file "komodo-periphery-$id")" "$TOOLBOX_STATE_DIR/komodo-periphery-$id.state" "$(conf_file komodo-periphery)"; do
         kp_host_safe "$file" && [[ ! -e $file || -f $file ]] || { warn 'unsafe host record path'; return 1; }
@@ -242,11 +264,8 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
         info 'Connection mode: existing configuration (not inferred or changed).'
         info 'Binary updates preserve existing configuration, identity keys and service customizations.'
         if [[ $action == install ]]; then
-            ask choice 'Existing agent action (update/configure)' update
-            case $choice in
-                update|configure) action=$choice ;;
-                *) warn 'choose update or configure'; return 1 ;;
-            esac
+            ask_choice choice 'Existing agent action' update update configure
+            action=$choice
         fi
         if [[ $action == configure ]]; then
             [[ $(jq '.config_paths|length' <<<"$inspected") == 1 && $(jq -r '.config_paths[0]' <<<"$inspected") == *.toml ]] || { warn 'configuration editing requires one explicit TOML file'; return 1; }
@@ -263,13 +282,12 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
         if [[ $(jq -r .retained <<<"$inspected") == true && $(jq '.config_paths|length' <<<"$inspected") == 1 ]]; then
             retained_config=true
             info 'Configuration and agent identity from the previous installation were retained.'
-            ask choice 'Retained configuration action (configure/reuse)' configure
+            ask_choice choice 'Retained configuration action' configure configure reuse
             case $choice in
                 configure)
                     configure_retained=true
                     info 'Editing retained settings requires Python 3.11+ in the guest; identity and unrelated settings are preserved.' ;;
                 reuse) info 'Reinstall will reuse the retained configuration unchanged.' ;;
-                *) warn 'choose configure or reuse'; return 1 ;;
             esac
         fi
     fi
@@ -277,9 +295,7 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     [[ $KP_TRANSACTION =~ ^[a-f0-9]{32}$ ]] || return 1
     if [[ $action == install || $action == update ]]; then
         release=$(conf_get "komodo-periphery-$id" KP_VERSION)
-        ask release 'Exact stable Periphery v2 version compatible with your Core (e.g. 2.3.3)' "${release:-$version}"
-        release=${release#v}
-        [[ $release =~ ^2\.[0-9]+\.[0-9]+$ ]] || { warn 'choose an exact stable v2 release'; return 1; }
+        ask_valid release 'Exact stable Periphery v2 version compatible with your Core (e.g. 2.3.3)' "${release:-$version}" kp_valid_release
         [[ -z $version || $release == "$version" ]] || is_newer "$release" "$version" || { warn 'downgrades are unsupported'; return 1; }
         gh_release moghtech/komodo "v$release"
         [[ $GH_TAG == "v$release" ]] && gh_exact_asset periphery-x86_64 || { warn 'release has no unambiguous verified amd64 asset'; return 1; }
@@ -292,24 +308,17 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     fi
     : > "$KP_WORK/key"; chmod 0600 "$KP_WORK/key"
     if [[ $action == configure || $configure_retained == true ]]; then
-        ask core 'Core URL (HTTP or HTTPS; blank keeps current)' ''
-        [[ -z $core || ( $core =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ) ]] || { warn 'provide an HTTP or HTTPS URL without credentials, query or fragment'; return 1; }
+        ask_valid core 'Core URL (HTTP or HTTPS; blank keeps current)' '' kp_valid_core_url_or_blank
         ask name 'Server name in Core (blank keeps current)' ''
-        ask key_action 'Onboarding key action (keep/replace/remove)' keep
-        case $key_action in
-            keep|remove) ;;
-            replace)
-                ask_secret key 'Core v2 onboarding key'
-                [[ -n $key ]] || { warn 'replacement onboarding key is required'; return 1; }
-                printf '%s' "$key" > "$KP_WORK/key"; unset key ;;
-            *) warn 'choose keep, replace or remove'; return 1 ;;
-        esac
+        ask_choice key_action 'Onboarding key action' keep keep replace remove
+        if [[ $key_action == replace ]]; then
+            ask_secret key 'Core v2 onboarding key' valid_required
+            printf '%s' "$key" > "$KP_WORK/key"; unset key
+        fi
     elif [[ $layout == absent && $retained_config == false ]]; then
-        ask core 'Core URL (HTTP or HTTPS)' ''
-        [[ $core =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ]] || { warn 'provide an HTTP or HTTPS URL without credentials, query or fragment'; return 1; }
-        ask name 'Server name in Core' "ct-$id"
-        ask_secret key 'Core v2 onboarding key'
-        [[ -n $key && -n $name ]] || { warn 'server name and onboarding key are required'; return 1; }
+        ask_valid core 'Core URL (HTTP or HTTPS)' '' kp_valid_core_url
+        ask_valid name 'Server name in Core' "ct-$id" valid_required
+        ask_secret key 'Core v2 onboarding key' valid_required
         printf '%s' "$key" > "$KP_WORK/key"; unset key
     fi
     info "Node $KP_NODE / CT $id: $action Periphery ${version:-absent} -> $release"

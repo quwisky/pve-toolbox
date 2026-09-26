@@ -71,13 +71,21 @@ status=$(kp_vm_status 2>&1) && fail 'failed uninstall cleanup reported healthy'
 unset KP_VM_FAIL_MATCH
 pve_qemu_inventory() { PVE_QEMU_JSON='[{"vmid":201,"name":"fixture","status":"running"}]'; }
 kp_vm_inspect() { KP_TARGET_IDENTITY=identity; }
-ask() {
+ask() { fail "unexpected reconciliation prompt $1"; }
+ask_valid() {
     case $1 in
-        id) printf -v "$1" '%s' 201 ;;
+        id) "$4" 201 || fail "listed VM rejected: $ASK_REASON"; printf -v "$1" '%s' 201 ;;
+        *) fail "unexpected reconciliation prompt $1" ;;
+    esac
+}
+ask_choice() {
+    case $1 in
         transport) printf -v "$1" '%s' qga ;;
         *) fail "unexpected reconciliation prompt $1" ;;
     esac
 }
+ask_int() { fail "unexpected reconciliation prompt $1"; }
+ask_secret() { fail "unexpected reconciliation prompt $1"; }
 confirm() { return 0; }
 kp_vm_change uninstall || fail 'completed uninstall could not be reconciled'
 [[ -z $(conf_get komodo-periphery-qemu-201 KP_PENDING) ]] || fail 'reconciled uninstall left pending marker'
