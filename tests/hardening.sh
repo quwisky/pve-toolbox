@@ -737,6 +737,57 @@ pass "scrutiny updates stage first and restore timers on failure"
 ) || exit 1
 pass "scrutiny install validates the endpoint, host id and metrics schedule"
 
+# The run-now question used to come after the binaries, the token-bearing
+# collector config and the enabled timers were written, so closed input there
+# left a half-installed module that status reported as installed.
+(
+    dir="$WORK/sc-eof"
+    export TOOLBOX_BIN_DIR="$dir/bin" TOOLBOX_LIB_DIR="$dir/lib"
+    export TOOLBOX_CONF_DIR="$dir/conf" TOOLBOX_STATE_DIR="$dir/state"
+    export TOOLBOX_SYSTEMD_DIR="$dir/systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    unset SCRUTINY_API_ENDPOINT SCRUTINY_API_TOKEN SCRUTINY_HOST_ID SCRUTINY_VERSION \
+          SCRUTINY_SCHEDULE_METRICS SCRUTINY_SCHEDULE_ZFS SCRUTINY_SCHEDULE_MDADM \
+          SCRUTINY_SCHEDULE_PERFORMANCE
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    CONFIG_DIR="$dir/config"
+    require_root() { :; }
+    require_pve() { :; }
+    pkg_ensure() { :; }
+    detect_arch() { printf 'amd64'; }
+    curl() { return 0; }
+    systemctl() { return 0; }
+    gh_release() { GH_TAG=v2.0.0; }
+    gh_fetch_checksums() { CHECKSUM_FILE=""; }
+    _sc_stage_binary() { printf 'metrics\n' > "$3"; }
+    have_zfs() { return 1; }
+    have_mdadm() { return 1; }
+    systemd-analyze() { printf '  Next elapse: Thu 2026-10-01 00:00:00 UTC\n'; }
+
+    answers=$'http://10.0.0.10:8080\n'  # endpoint
+    answers+=$'\n'                       # token: Enter
+    answers+=$'pve1\n'                   # host id
+    answers+=$'y\n'                      # SMART metrics collector
+    answers+=$'n\n'                      # fio performance collector
+    answers+=$'daily\n'                  # metrics schedule
+    answers+=$'\n'                       # release tag: Enter; input ends here
+
+    rc=0
+    out=$(printf '%s' "$answers" | module_install 2>&1) || rc=$?
+    [[ $rc -ne 0 ]] || fail "scrutiny installed on closed input: $out"
+    [[ $out == *'no answer for "run each collector once now?'* ]] \
+        || fail "scrutiny did not stop at the run-now question: $out"
+    left=$(find "$dir" -type f)
+    [[ -z $left ]] || fail "scrutiny wrote files before its last question: $left"
+    [[ ! -e $CONFIG_DIR ]] || fail "scrutiny created $CONFIG_DIR before its last question"
+) || exit 1
+pass "scrutiny asks whether to run the collectors before it writes anything"
+
 # --- webhook prompts ----------------------------------------------------------
 
 # A webhook URL is a credential: it must never be read with the echoing ask.

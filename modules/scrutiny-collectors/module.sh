@@ -232,6 +232,12 @@ module_install() {
     done
     ask SCRUTINY_VERSION "release tag" "$SCRUTINY_VERSION"
 
+    # Every question comes before the first write: answers that run out must
+    # stop the install here, not leave enabled timers behind for a module
+    # that never recorded itself as installed.
+    local run=y
+    ask_yn run "run each collector once now?" "y"
+
     step "Download"
     gh_release "$REPO" "$SCRUTINY_VERSION"
     ok "release: $GH_TAG"
@@ -290,8 +296,6 @@ module_install() {
     done
 
     step "Verification"
-    local run=y
-    ask_yn run "run each collector once now?" "y"
     if [[ $run == y ]]; then
         for s in "${got[@]}"; do
             [[ $s == performance ]] && { warn "skipping fio test run (heavy I/O)"; continue; }
