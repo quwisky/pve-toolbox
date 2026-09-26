@@ -87,9 +87,10 @@ Every schedule is validated with `systemd-analyze calendar` before its timer is
 written. A timer that systemd cannot enable fails installation or update rather
 than being counted as a working job.
 
-Install asks every question, for every job, before it writes anything. If the
-answers run out, a `-y` preset is invalid, or no job has both a source and a
-target, it stops without writing a config, runner, unit or timer file.
+Install asks every question, for every job, before it writes any
+configuration. If the answers run out, a `-y` preset is invalid, or no job has
+both a source and a target, it stops without writing a config, runner, unit or
+timer file.
 
 !!! tip "Why the payload is built with `jq`"
 
