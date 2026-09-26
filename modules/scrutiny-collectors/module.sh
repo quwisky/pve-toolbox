@@ -54,6 +54,12 @@ _sc_defaults() {
     : "${SCRUTINY_SCHEDULE_PERFORMANCE:=Sun *-*-* 02:00:00}"
 }
 
+_sc_valid_endpoint() {
+    [[ $1 =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]]*)?$ ]] \
+        || { ASK_REASON="enter an http:// or https:// URL, e.g. http://10.0.0.10:8080"; return 1; }
+    ASK_NORMALIZED=${1%/}
+}
+
 _sc_installed() {
     SC_PRESENT=()
     local s
@@ -186,12 +192,10 @@ module_install() {
     pkg_ensure curl:curl jq:jq smartctl:smartmontools
 
     step "Scrutiny web instance"
-    while [[ -z $SCRUTINY_API_ENDPOINT ]]; do
-        ask SCRUTINY_API_ENDPOINT "API endpoint of the Scrutiny web container" "http://10.0.0.10:8080"
-    done
-    SCRUTINY_API_ENDPOINT=${SCRUTINY_API_ENDPOINT%/}
-    ask_secret SCRUTINY_API_TOKEN "collector API token (blank if auth is off)"
-    ask SCRUTINY_HOST_ID "host id shown in the dashboard" "$SCRUTINY_HOST_ID"
+    ask_valid SCRUTINY_API_ENDPOINT "API endpoint of the Scrutiny web container" \
+        "${SCRUTINY_API_ENDPOINT:-http://10.0.0.10:8080}" _sc_valid_endpoint
+    ask_secret SCRUTINY_API_TOKEN "collector API token (optional; leave empty if auth is off)"
+    ask_valid SCRUTINY_HOST_ID "host id shown in the dashboard" "$SCRUTINY_HOST_ID" valid_required
 
     if curl -fsS --max-time 8 "$SCRUTINY_API_ENDPOINT/api/health" >/dev/null 2>&1; then
         ok "web API reachable"
@@ -224,7 +228,7 @@ module_install() {
     local s var
     for s in "${want[@]}"; do
         var="SCRUTINY_SCHEDULE_${s^^}"
-        ask "$var" "  $s schedule (systemd OnCalendar)" "${!var}"
+        ask_schedule "$var" "  $s schedule (systemd OnCalendar)" "${!var}"
     done
     ask SCRUTINY_VERSION "release tag" "$SCRUTINY_VERSION"
 

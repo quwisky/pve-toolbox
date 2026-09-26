@@ -64,6 +64,11 @@ _zr_jobs_unique() { # _zr_jobs_unique <job>...
 # Unit names carry the job name; refuse anything systemd would mangle.
 _zr_valid_job() { [[ $1 =~ ^[A-Za-z][A-Za-z0-9_.:-]*$ ]]; }
 
+_zr_valid_job_or_blank() {
+    [[ -z $1 ]] || _zr_valid_job "$1" \
+        || { ASK_REASON="job names must start with a letter and hold only [A-Za-z0-9_.:-]"; return 1; }
+}
+
 _zr_valid_schedule() {
     [[ -n ${1:-} ]] || return 1
     command -v systemd-analyze >/dev/null 2>&1 || return 1
@@ -222,13 +227,8 @@ _zr_ask_job() { # _zr_ask_job <job>
     else
         own=""; mode=""; path=""
     fi
-    while true; do
-        ask sched "  schedule (systemd OnCalendar)" "${sched:-$ZFS_REPL_SCHEDULE}"
-        _zr_valid_schedule "$sched" && break
-        [[ $ASSUME_YES -eq 1 ]] && die "invalid systemd OnCalendar for $job: $sched"
-        warn "invalid systemd OnCalendar: $sched"
-        sched=""
-    done
+    sched=${sched:-$ZFS_REPL_SCHEDULE}
+    ask_schedule sched "  schedule (systemd OnCalendar)" "$sched"
 
     conf_set "$MODULE_NAME" "$(_zr_key "$job" SRC)"   "$src"
     conf_set "$MODULE_NAME" "$(_zr_key "$job" DST)"   "$dst"
@@ -265,12 +265,8 @@ module_install() {
         want=("${ZR_JOBS[@]}")
         while true; do
             job=""
-            ask job "job name (blank when done)" ""
+            ask_valid job "job name (blank when done)" "" _zr_valid_job_or_blank
             [[ -z $job ]] && break
-            if ! _zr_valid_job "$job"; then
-                warn "job names must start with a letter and hold only [A-Za-z0-9_.:-]"
-                continue
-            fi
             [[ " ${want[*]:-} " == *" $job "* ]] || want+=("$job")
         done
     fi

@@ -221,6 +221,46 @@ pass "zfs-replication rejects key and timer failures"
 ) || exit 1
 pass "zfs-replication locks and fixups fail closed"
 
+(
+    export TOOLBOX_BIN_DIR="$WORK/zr-ask-bin" TOOLBOX_LIB_DIR="$WORK/zr-ask-lib"
+    export TOOLBOX_CONF_DIR="$WORK/zr-ask-conf" TOOLBOX_STATE_DIR="$WORK/zr-ask-state"
+    export TOOLBOX_SYSTEMD_DIR="$WORK/zr-ask-systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    unset ZFS_REPL_OPTS ZFS_REPL_SCHEDULE \
+          ZFS_REPL_JOB1_SRC ZFS_REPL_JOB1_DST ZFS_REPL_JOB1_OPTS \
+          ZFS_REPL_JOB1_CHOWN ZFS_REPL_JOB1_CHMOD ZFS_REPL_JOB1_PATH \
+          ZFS_REPL_JOB1_SCHEDULE
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/zfs-replication/module.sh
+    source "$ROOT/modules/zfs-replication/module.sh"
+
+    have_zfs() { return 1; }
+    _zr_write_timer() { :; }
+    systemd-analyze() {
+        [[ $1 == calendar && $2 == --iterations=1 ]] || return 2
+        case $3 in
+            daily) printf '  Next elapse: Thu 2026-10-01 00:00:00 UTC\n' ;;
+            *)     return 1 ;;
+        esac
+    }
+    _zr_defaults
+
+    answers=$'tank/a\n'    # source dataset
+    answers+=$'backup/a\n' # target dataset
+    answers+=$'\n'         # syncoid options: Enter
+    answers+=$'n\n'        # fix ownership
+    answers+=$'bogus\n'    # schedule: rejected
+    answers+=$'daily\n'    # schedule: accepted
+
+    out=$(printf '%s' "$answers" | _zr_ask_job job1 2>&1) \
+        || fail "_zr_ask_job with valid answers failed: $out"
+    grep -Fq 'not a systemd OnCalendar expression: bogus' <<<"$out" \
+        || fail "_zr_ask_job accepted an invalid schedule: $out"
+) || exit 1
+pass "zfs-replication job prompt validates the schedule"
+
 # --- zfs-scrub --------------------------------------------------------------
 
 (
@@ -329,6 +369,7 @@ pass "scrutiny installs require every selected release asset"
     detect_arch() { printf 'amd64'; }
     curl() { :; }
     ask() { :; }
+    ask_valid() { :; }
     ask_secret() { :; }
     ask_yn() {
         case $2 in
@@ -336,6 +377,7 @@ pass "scrutiny installs require every selected release asset"
             *) printf -v "$1" n ;;
         esac
     }
+    ask_schedule() { :; }
     have_zfs() { return 1; }
     have_mdadm() { return 1; }
     gh_release() { GH_TAG=v2.0.0; }
@@ -442,6 +484,65 @@ pass "scrutiny performance installs and repairs its fio dependency"
     fi
 ) || exit 1
 pass "scrutiny updates stage first and restore timers on failure"
+
+(
+    export TOOLBOX_BIN_DIR="$WORK/sc-prompt-bin" TOOLBOX_LIB_DIR="$WORK/sc-prompt-lib"
+    export TOOLBOX_CONF_DIR="$WORK/sc-prompt-conf" TOOLBOX_STATE_DIR="$WORK/sc-prompt-state"
+    export TOOLBOX_SYSTEMD_DIR="$WORK/sc-prompt-systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    unset SCRUTINY_API_ENDPOINT SCRUTINY_API_TOKEN SCRUTINY_HOST_ID SCRUTINY_VERSION \
+          SCRUTINY_SCHEDULE_METRICS SCRUTINY_SCHEDULE_ZFS SCRUTINY_SCHEDULE_MDADM \
+          SCRUTINY_SCHEDULE_PERFORMANCE
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    CONFIG_DIR="$WORK/sc-prompt-config"
+    require_root() { :; }
+    require_pve() { :; }
+    pkg_ensure() { :; }
+    detect_arch() { printf 'amd64'; }
+    curl() { return 1; }
+    gh_release() { GH_TAG=v2.0.0; }
+    gh_fetch_checksums() { CHECKSUM_FILE=""; }
+    _sc_stage_binary() { printf 'metrics\n' > "$3"; }
+    systemd_oneshot() { :; }
+    state_set() { :; }
+    systemd-analyze() {
+        [[ $1 == calendar && $2 == --iterations=1 ]] || return 2
+        case $3 in
+            daily) printf '  Next elapse: Thu 2026-10-01 00:00:00 UTC\n' ;;
+            *)     return 1 ;;
+        esac
+    }
+
+    answers=$'not a url\n'         # endpoint: rejected
+    answers+=$'http://10.0.0.10:8080\n'
+    answers+=$'\n'                 # token: Enter
+    answers+=$'\n'                 # host id: Enter
+    answers+=$'y\n'                # continue anyway (curl fails)
+    answers+=$'y\n'                # SMART metrics collector
+    answers+=$'n\n'                # fio performance collector
+    answers+=$'never-ever\n'       # metrics schedule: rejected
+    answers+=$'daily\n'            # metrics schedule: accepted
+    answers+=$'\n'                 # release tag: Enter
+    answers+=$'n\n'                # run now
+
+    out=$(printf '%s' "$answers" | module_install 2>&1) \
+        || fail "scrutiny install with valid answers failed: $out"
+
+    for reason in \
+        'enter an http:// or https:// URL' \
+        'not a systemd OnCalendar expression: never-ever'
+    do
+        count=$(grep -Fc "$reason" <<<"$out")
+        [[ $count -eq 1 ]] \
+            || fail "expected exactly one rejection for [$reason], got $count: $out"
+    done
+) || exit 1
+pass "scrutiny install validates the endpoint, host id and metrics schedule"
 
 # --- webhook prompts ----------------------------------------------------------
 
