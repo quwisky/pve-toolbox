@@ -156,10 +156,11 @@ pass "certificate thresholds fail closed"
     [[ $(conf_get certificate-watch CW_WARN_DAYS) == 30 ]] || fail "warning threshold not stored"
     # A fresh conf dir: conf_load would otherwise overwrite the env preset.
     # Its own subshell: the expected die must not end this test block.
-    if ( TOOLBOX_CONF_DIR="$WORK/cw-yes-conf" TOOLBOX_STATE_DIR="$WORK/cw-yes-state" \
-        ASSUME_YES=1 CW_ACME_STALE_DAYS=0 module_install ) >/dev/null 2>&1; then
+    if out=$( TOOLBOX_CONF_DIR="$WORK/cw-yes-conf" TOOLBOX_STATE_DIR="$WORK/cw-yes-state" \
+        ASSUME_YES=1 CW_ACME_STALE_DAYS=0 module_install 2>&1 ); then
         fail "an out-of-range preset was accepted under -y"
     fi
+    [[ $out == *'invalid value for CW_ACME_STALE_DAYS'* ]] || fail "-y error did not name CW_ACME_STALE_DAYS: $out"
     [[ ! -e $WORK/cw-yes-conf/certificate-watch.conf ]] || fail "a rejected -y preset still wrote configuration"
 ) || exit 1
 pass "certificate watch validates thresholds at the prompt"

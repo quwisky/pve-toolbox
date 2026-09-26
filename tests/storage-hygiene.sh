@@ -185,10 +185,11 @@ pass "storage hygiene thresholds fail closed"
         || fail "capacity thresholds not stored"
     # A fresh conf dir: conf_load would otherwise overwrite the env preset.
     # Its own subshell: the expected die must not end this test block.
-    if ( TOOLBOX_CONF_DIR="$WORK/sh-yes-conf" ASSUME_YES=1 SH_THIN_WARN=150 \
-        module_install ) >/dev/null 2>&1; then
+    if out=$( TOOLBOX_CONF_DIR="$WORK/sh-yes-conf" TOOLBOX_STATE_DIR="$WORK/sh-yes-state" \
+        ASSUME_YES=1 SH_THIN_WARN=150 module_install 2>&1 ); then
         fail "an out-of-range preset was accepted under -y"
     fi
+    [[ $out == *'invalid value for SH_THIN_WARN'* ]] || fail "-y error did not name SH_THIN_WARN: $out"
     [[ ! -e $WORK/sh-yes-conf/storage-hygiene.conf ]] || fail "a rejected -y preset still wrote configuration"
 ) || exit 1
 pass "storage hygiene validates thresholds at the prompt"

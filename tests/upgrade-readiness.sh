@@ -142,10 +142,11 @@ pass "upgrade policy input fails closed"
     [[ $(conf_get upgrade-readiness UR_MIN_FREE_MB) == 4096 ]] || fail "corrected free-space threshold not stored"
     # A fresh conf dir: conf_load would otherwise overwrite the env preset.
     # Its own subshell: the expected die must not end this test block.
-    if ( TOOLBOX_CONF_DIR="$WORK/ur-yes-conf" TOOLBOX_STATE_DIR="$WORK/ur-yes-state" \
-        ASSUME_YES=1 UR_MIN_FREE_MB=0 module_install ) >/dev/null 2>&1; then
+    if out=$( TOOLBOX_CONF_DIR="$WORK/ur-yes-conf" TOOLBOX_STATE_DIR="$WORK/ur-yes-state" \
+        ASSUME_YES=1 UR_MIN_FREE_MB=0 module_install 2>&1 ); then
         fail "an out-of-range preset was accepted under -y"
     fi
+    [[ $out == *'invalid value for UR_MIN_FREE_MB'* ]] || fail "-y error did not name UR_MIN_FREE_MB: $out"
     [[ ! -e $WORK/ur-yes-conf/upgrade-readiness.conf ]] || fail "a rejected -y preset still wrote configuration"
 ) || exit 1
 pass "upgrade readiness validates policy and thresholds at the prompt"
