@@ -138,10 +138,35 @@ got=$(launch _complete flag-help lxc-update)
 [[ $got == *$'\n--dry-run:'* ]] || fail "'_complete flag-help lxc-update' lost --dry-run: $got"
 [[ " $(launch _complete flags status | tr '\n' ' ') " == *" --yes "* ]] \
     || fail "'_complete flags status' lost --yes"
-out=$(launch -y lxc-update --dry-run 2>&1) && rc=0 || rc=$?
-[[ $rc -ne 64 && $out != *"not supported by"* ]] \
-    || fail "the launcher started rejecting -y for lxc-update: $out"
 pass "help and completion leave out the globals lxc-update refuses"
+
+# The launcher still accepts --yes and --force for lxc-update and passes them
+# on, so the runner remains the one that refuses them. A stub runner under a
+# fixture root records what reaches it; the real run.sh never runs here.
+stub_root=$(tmp)
+mkdir -p "$stub_root/modules/lxc-update"
+cp -r "$ROOT/lib" "$ROOT/VERSION" "$ROOT/pve-toolbox" "$stub_root/"
+printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "ASSUME_YES=%s FORCE=%s ARGS=%s\n" "${ASSUME_YES:-unset}" "${FORCE:-unset}" "$*"' \
+    > "$stub_root/modules/lxc-update/run.sh"
+launch_bin() { # launch_bin <launcher> [args...]
+    local bin=$1; shift
+    TOOLBOX_BIN_DIR=$(tmp) TOOLBOX_STATE_DIR=$(tmp) \
+    TOOLBOX_SYSTEMD_DIR=$(tmp) TOOLBOX_CONF_DIR=$(tmp) \
+    "$bin" "$@"
+}
+stub() { # stub [args...] -> the fixture launcher, reaching only the stub runner
+    PVE_TOOLBOX_ROOT="$stub_root" launch_bin "$stub_root/pve-toolbox" "$@"
+}
+out=$(stub -y lxc-update --dry-run 2>&1) || fail "-y lxc-update --dry-run rejected: $out"
+[[ $out == "ASSUME_YES=1 FORCE=0 ARGS=--dry-run" ]] \
+    || fail "-y lxc-update --dry-run did not reach the runner as given: $out"
+out=$(stub lxc-update --yes --force --allow-removals 101 2>&1) \
+    || fail "lxc-update --yes --force rejected: $out"
+[[ $out == "ASSUME_YES=1 FORCE=1 ARGS=--allow-removals 101" ]] \
+    || fail "lxc-update --yes --force did not reach the runner as given: $out"
+pass "the launcher passes --yes and --force through to the lxc-update runner"
 
 # --- flags and suggestions ----------------------------------------------------
 
