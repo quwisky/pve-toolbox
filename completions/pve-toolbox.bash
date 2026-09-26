@@ -8,8 +8,8 @@
 # launcher is invoked as COMP_WORDS[0], so completing ./pve-toolbox in a
 # checkout asks that checkout rather than whatever is on PATH.
 
-_pve_toolbox_candidates() { # _pve_toolbox_candidates <target>
-    "${COMP_WORDS[0]}" _complete "$1" 2>/dev/null
+_pve_toolbox_candidates() { # _pve_toolbox_candidates <target> [args...]
+    "${COMP_WORDS[0]}" _complete "$@" 2>/dev/null
 }
 
 _pve_toolbox() {
@@ -27,18 +27,22 @@ _pve_toolbox() {
         if [[ -z $cmd ]]; then cmd=$word; else nargs=$((nargs + 1)); fi
     done
 
+    # --color's value is not read from the command table: it is the same
+    # three words for every command.
+    if [[ $cur == --color=* ]]; then
+        mapfile -t COMPREPLY < <(compgen -W '--color=auto --color=always --color=never' -- "$cur")
+        return
+    fi
     if [[ $cur == -* ]]; then
-        if [[ $cmd == lxc-update ]]; then
-            mapfile -t COMPREPLY < <(compgen -W '--dry-run --allow-removals --notify --help' -- "$cur")
-            return
-        fi
-        mapfile -t COMPREPLY < <(compgen -W \
-            '-y --yes -f --force --json --quiet -V --version -h --help' -- "$cur")
+        mapfile -t COMPREPLY < <(compgen -W "$(_pve_toolbox_candidates flags "$cmd")" -- "$cur")
         return
     fi
 
     case $cmd in
         "")        candidates=$(_pve_toolbox_candidates commands) ;;
+        help)      # takes a single optional command name
+                   [[ $nargs -eq 0 ]] || return
+                   candidates=$(_pve_toolbox_candidates commands) ;;
         list)      # takes a single optional tag
                    [[ $nargs -eq 0 ]] || return
                    candidates=$(_pve_toolbox_candidates tags) ;;

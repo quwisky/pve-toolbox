@@ -239,6 +239,29 @@ cli_long_flags() { # cli_long_flags -> every long flag, in table order, once eac
     done
 }
 
+cli_global_flag_names() { # cli_global_flag_names -> one global flag token per line
+    local spec p
+    local -a parts
+    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do
+        IFS='|' read -ra parts <<<"$spec"
+        for p in "${parts[@]}"; do
+            if [[ $p == *=* ]]; then printf '%s=\n' "${p%%=*}"; else printf '%s\n' "$p"; fi
+        done
+    done
+}
+
+cli_global_flag_help() { # cli_global_flag_help -> "flag:description" lines, one per flag token
+    local spec p
+    local -a parts
+    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do
+        IFS='|' read -ra parts <<<"$spec"
+        for p in "${parts[@]}"; do
+            [[ $p != *=* ]] || p=${p%%=*}=
+            printf '%s:%s\n' "$p" "${CLI_GLOBAL_DESC[$spec]}"
+        done
+    done
+}
+
 cli_in() { # cli_in <word> <item>... -> true when word is one of the items
     local word=$1 item
     shift
@@ -780,12 +803,11 @@ link_completions() {
 
 # Candidates for the completion scripts. Separate from `list` because that
 # prints a status per module, and a TAB press should not shell out to zpool.
-cmd_complete() { # cmd_complete <commands|modules|installed|tags>
-    local m
+cmd_complete() { # cmd_complete <commands|modules|installed|tags|flags <cmd>|flag-help <cmd>>
+    local m f
     case ${1:-} in
         commands)
-            printf '%s\n' menu ui list install update check status doctor uninstall \
-                lxc-update link self-update ;;
+            printf '%s\n' "${CLI_COMMANDS[@]}" ;;
         modules)
             discover; printf '%s\n' "${MODULES[@]}" ;;
         installed)
@@ -797,6 +819,18 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags>
             done ;;
         tags)
             module_tags ;;
+        flags)
+            cli_global_flag_names
+            # shellcheck disable=SC2086 # CLI_FLAGS values are space-separated lists.
+            [[ -z ${CLI_FLAGS[${2:-}]:-} ]] || printf '%s\n' ${CLI_FLAGS[${2:-}]} ;;
+        flag-help)
+            cli_global_flag_help
+            if [[ -n ${CLI_FLAGS[${2:-}]:-} ]]; then
+                # shellcheck disable=SC2086 # CLI_FLAGS values are space-separated lists.
+                for f in ${CLI_FLAGS[${2:-}]}; do
+                    printf '%s:%s\n' "$f" "${CLI_FLAG_DESC[$f]}"
+                done
+            fi ;;
         *)  usage_error "unknown completion target: ${1:-}" ;;
     esac
 }

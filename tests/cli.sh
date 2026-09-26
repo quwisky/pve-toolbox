@@ -154,3 +154,25 @@ for args in "$bogus" "install $bogus" "status --$bogus" "list $bogus"; do
     [[ $elapsed -le 3 ]] || fail "'$args' took ${elapsed}s, suggestion matching is too slow"
 done
 pass "a 3000-character bogus word stays fast"
+
+# --- completion drift ----------------------------------------------------------
+
+# Every command the completion scripts can offer must actually work with
+# 'help', so a command added to the table is never left uncompletable or
+# undocumented.
+while read -r c; do
+    launch help "$c" >/dev/null || fail "'help $c' failed for a command _complete commands offers"
+done < <(launch _complete commands)
+
+# Every flag the command table lists for a command must be offered by that
+# command's flags completion, read from the table itself so this catches a
+# command added to CLI_FLAGS but not wired into completion.
+declare -A drift_flags=()
+eval "$(sed -n '/^declare -A CLI_FLAGS=/,/^)/p' ./pve-toolbox | sed 's/CLI_FLAGS/drift_flags/')"
+for c in "${!drift_flags[@]}"; do
+    got=$(launch _complete flags "$c" | tr '\n' ' ')
+    for f in ${drift_flags[$c]}; do
+        [[ " $got " == *" $f "* ]] || fail "'_complete flags $c' is missing $f from CLI_FLAGS"
+    done
+done
+pass "completion targets track the command table"

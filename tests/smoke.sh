@@ -124,12 +124,34 @@ has "$got" zfs-scrub || fail "a flag before the command broke it, got: $got"
 pass "bash finds the command past a flag"
 
 got=$(complete_words 1 ./pve-toolbox "-")
-for flag in -y --yes -f --force --json --quiet -V --version -h --help; do
+for flag in -y --yes -f --force --color= -V --version -h --help; do
     has "$got" "$flag" || fail "flags missing $flag, got: $got"
 done
+has_not "$got" --json || fail "--json offered with no command chosen, got: $got"
 got=$(complete_words 1 ./pve-toolbox "--f")
 [[ $got == --force ]] || fail "prefix --f<TAB> should give --force, got: $got"
 pass "bash offers flags"
+
+# Flags are read from the command table: a command's own flags join the
+# globals, and a command without any offers only the globals.
+got=$(complete_words 2 ./pve-toolbox status "-")
+has "$got" --json  || fail "status did not offer --json, got: $got"
+has "$got" --quiet || fail "status did not offer --quiet, got: $got"
+got=$(complete_words 2 ./pve-toolbox install "-")
+has_not "$got" --json || fail "install offered --json, which it does not accept, got: $got"
+pass "bash offers a command's own flags, not another command's"
+
+# help completes command names, the same list as the bare prompt.
+got=$(complete_words 2 ./pve-toolbox help "")
+has "$got" status || fail "help offered no command names, got: $got"
+pass "bash completes command names after help"
+
+# --color's value is the same three words for every command.
+got=$(complete_words 1 ./pve-toolbox "--color=")
+for value in --color=auto --color=always --color=never; do
+    has "$got" "$value" || fail "--color= missing $value, got: $got"
+done
+pass "bash offers --color's values"
 
 # menu, ui, link and self-update take nothing, and neither does a typo.
 for verb in menu ui doctor link self-update definitely-not-a-command; do
