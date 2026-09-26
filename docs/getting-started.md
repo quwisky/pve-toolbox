@@ -222,10 +222,8 @@ ZFS_SCRUB_POOLS='rpool tank' \
 Presets read through validated prompts are checked under `-y` before the
 module writes its configuration, and an invalid one stops the install naming
 the setting or prompt. Every module's install prompts are now validated where
-they are asked, with two exceptions: lxc-update checks its excluded container
-IDs right after the prompt, and a bad ID ends the configuration instead of being
-asked again; and zfs-scrub's check interval (`ZFS_SCRUB_INTERVAL`) is not
-validated yet. zfs-scrub's own schedule prompts are handled with #56 and #57.
+they are asked, with one exception: zfs-scrub's check interval
+(`ZFS_SCRUB_INTERVAL`) is not validated yet. zfs-scrub's own schedule prompts are handled with #56 and #57.
 Free-text settings with no fixed form — dataset names, syncoid options,
 ownership/mode overrides and release tags — take whatever is typed. Without
 `-y`, answers may be piped in, but running out of them is an error. The toolbox

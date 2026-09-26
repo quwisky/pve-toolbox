@@ -280,6 +280,17 @@ if LX_SCHEDULE_ENABLED=y LX_SCHEDULE_PRESET=custom LX_SCHEDULE='*-02-30 04:00:00
 fi
 cmp -s "$(conf_file lxc-update)" "$LX_TEST/conf-before-invalid" \
     || fail 'dead schedule changed configuration'
+exclude_output=""
+if exclude_output=$(LX_EXCLUDE='101 abc' LX_SCHEDULE_ENABLED=y LX_SCHEDULE_PRESET=daily \
+    LX_SCHEDULE_NOTIFY=n ./pve-toolbox --yes install lxc-update 2>&1); then
+    fail 'invalid excluded container ID preset was accepted'
+fi
+[[ $exclude_output == *'invalid value for LX_EXCLUDE: '* ]] \
+    || fail "invalid excluded container ID preset was not named: $exclude_output"
+cmp -s "$timer" "$LX_TEST/timer-before-invalid" \
+    || fail 'invalid excluded container IDs changed the working timer'
+cmp -s "$(conf_file lxc-update)" "$LX_TEST/conf-before-invalid" \
+    || fail 'invalid excluded container IDs changed configuration'
 
 : > "$LX_TEST/fail-enable"
 if LX_SCHEDULE_ENABLED=y LX_SCHEDULE_PRESET=daily LX_SCHEDULE_NOTIFY=n \
@@ -333,6 +344,24 @@ status=$(./pve-toolbox status lxc-update)
 [[ $status == *'Automatic updates: disabled'* ]] \
     || fail "disabled schedule status is wrong: $status"
 pass 'invalid and disabled schedules preserve the last working operator state'
+
+# Excluded container IDs are checked where they are asked: a -y preset is
+# honored and normalized, and a bad typed answer is asked again.
+LX_EXCLUDE=' 101	 102 ' LX_SCHEDULE_ENABLED=n ./pve-toolbox --yes install lxc-update >/dev/null \
+    || fail 'valid excluded container ID preset was refused'
+[[ $(conf_get lxc-update LX_EXCLUDE) == '101 102' ]] \
+    || fail "excluded container ID preset was not stored: $(conf_get lxc-update LX_EXCLUDE)"
+LX_EXCLUDE=none LX_SCHEDULE_ENABLED=n ./pve-toolbox --yes install lxc-update >/dev/null \
+    || fail 'excluded container ID preset none was refused'
+[[ -z $(conf_get lxc-update LX_EXCLUDE) ]] || fail 'excluded container ID preset none did not clear'
+exclude_output=$(printf '%s\n' abc '101 99' 101 '' n \
+    | ./pve-toolbox install lxc-update 2>&1) \
+    || fail "install with a corrected container ID failed: $exclude_output"
+[[ $(grep -c 'enter container IDs (100-999999999) separated by spaces, or none' \
+    <<<"$exclude_output") == 2 ]] \
+    || fail "invalid excluded container IDs were not re-asked: $exclude_output"
+[[ $(conf_get lxc-update LX_EXCLUDE) == 101 ]] || fail 'corrected container ID was not stored'
+pass 'excluded container IDs are validated at the prompt and presets are honored'
 
 # Re-enable so uninstall has a complete scheduled installation to remove.
 LX_SCHEDULE_ENABLED=y LX_SCHEDULE_PRESET=weekly LX_SCHEDULE_NOTIFY=n \
