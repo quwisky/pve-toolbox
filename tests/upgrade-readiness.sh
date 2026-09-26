@@ -149,3 +149,19 @@ pass "upgrade policy input fails closed"
     [[ ! -e $WORK/ur-yes-conf/upgrade-readiness.conf ]] || fail "a rejected -y preset still wrote configuration"
 ) || exit 1
 pass "upgrade readiness validates policy and thresholds at the prompt"
+
+# A reinstall stores what the operator typed, not the previously stored conf.
+(
+    unset "${UR_CONF_KEYS[@]}"
+    require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+    export TOOLBOX_CONF_DIR="$WORK/ur-reinstall-conf" TOOLBOX_STATE_DIR="$WORK/ur-reinstall-state"
+    out=$(printf '%s\n' pve-9 24 4096 | module_install 2>&1) \
+        || fail "first install failed: $out"
+    [[ $(conf_get upgrade-readiness UR_BACKUP_HOURS) == 24 ]] || fail "first install did not store 24 hours"
+    unset "${UR_CONF_KEYS[@]}"
+    out=$(printf '%s\n' pve-9 72 8192 | module_install 2>&1) \
+        || fail "reinstall with new answers failed: $out"
+    [[ $(conf_get upgrade-readiness UR_BACKUP_HOURS) == 72 ]] || fail "reinstall discarded the typed backup age: $out"
+    [[ $(conf_get upgrade-readiness UR_MIN_FREE_MB) == 8192 ]] || fail "reinstall discarded the typed free-space threshold: $out"
+) || exit 1
+pass "upgrade readiness reinstall stores the new answers"

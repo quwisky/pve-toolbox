@@ -21,9 +21,15 @@ _ur_module_dir() { cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P; }
 _ur_policy_path() { printf '%s/policies/%s.conf' "$(_ur_module_dir)" "$UR_POLICY"; }
 
 _ur_load() {
-    local policy
     _ur_defaults
     if conf_exists "$MODULE_NAME"; then conf_load "$MODULE_NAME"; fi
+    _ur_validate
+}
+
+# Checks the current UR_* values and sources their release policy. It never
+# reads the stored conf, so install can validate what the operator just typed.
+_ur_validate() {
+    local policy
     UR_ERROR=""
     [[ $UR_POLICY =~ ^[a-z0-9][a-z0-9.-]*$ ]] \
         || { UR_ERROR="policy name contains unsupported characters"; return 1; }
@@ -256,7 +262,7 @@ module_install() {
     ask_choice UR_POLICY "upgrade policy" "$UR_POLICY" "${policies[@]}"
     ask_int UR_BACKUP_HOURS "maximum backup age (hours)" "$UR_BACKUP_HOURS" 1
     ask_int UR_MIN_FREE_MB "minimum free space (MiB)" "$UR_MIN_FREE_MB" 1
-    _ur_load || die "$UR_ERROR"
+    _ur_validate || die "$UR_ERROR"
     local key; for key in "${UR_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
     ok "configured read-only $UR_POLICY upgrade preflight"
