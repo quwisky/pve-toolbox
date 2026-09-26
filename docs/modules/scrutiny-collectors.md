@@ -25,6 +25,12 @@ there is no `zpool` binary. Every selected release asset is downloaded and
 verified before any binary is installed; a missing asset leaves the existing
 collector set untouched.
 
+`SCRUTINY_API_ENDPOINT` must be an `http://` or `https://` URL — a trailing
+slash is stripped, anything else is re-asked with a reminder of the expected
+form. `SCRUTINY_HOST_ID` cannot be left blank. Each collector's schedule is
+validated the same way as any other module's timer, with `systemd-analyze
+calendar`.
+
 Selecting the performance collector also installs Debian's `fio` package,
 which the collector validates before starting. Running `update` repairs this
 dependency on installations created by older toolbox versions, even when the
@@ -93,7 +99,7 @@ one release, not an available update.
 | Variable | Meaning |
 | --- | --- |
 | `SCRUTINY_API_ENDPOINT` | Base URL of the Scrutiny web instance |
-| `SCRUTINY_API_TOKEN` | Collector token, blank if auth is off |
+| `SCRUTINY_API_TOKEN` | Collector token, optional — leave empty if auth is off |
 | `SCRUTINY_HOST_ID` | Host id shown in the dashboard |
 | `SCRUTINY_VERSION` | Release tag, or `latest` |
 | `SCRUTINY_SCHEDULE_METRICS` | `OnCalendar` per collector |
