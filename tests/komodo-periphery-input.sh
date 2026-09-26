@@ -9,7 +9,8 @@ ROOT=$PWD
 fail() { printf 'FAIL %s\n' "$*" >&2; exit 1; }
 pass() { printf 'ok %s\n' "$*"; }
 WORK=$(mktemp -d)
-trap 'rm -rf -- "$WORK"' EXIT
+OUTSIDE=$(mktemp -d)
+trap 'rm -rf -- "$WORK" "$OUTSIDE"' EXIT
 export TOOLBOX_ROOT=$ROOT TOOLBOX_CONF_DIR="$WORK/conf" TOOLBOX_STATE_DIR="$WORK/state"
 source lib/common.sh
 source lib/report.sh
@@ -65,12 +66,28 @@ for id in '' 202 101 99 0201 '201 ' '201;touch x' ../201; do
 done
 pass 'guest ID validators accept only listed local guests'
 
-accepts kp_valid_abs_path /root/.ssh/id_ed25519
-# shellcheck disable=SC2088 # a literal tilde, as typed at the prompt
-for path in '' id_ed25519 ./id_ed25519 '~/.ssh/id_ed25519'; do
-    rejects kp_valid_abs_path "$path" 'enter an absolute path'
+# The real kp_host_safe needs root-owned files. Like the flows below, the test
+# treats anything under $WORK that is not a symlink as safe, and anything else
+# (such as $OUTSIDE) as unsafe.
+kp_host_safe() { [[ $1 == "$WORK/"* && ! -L $1 ]]; }
+mkdir -p "$WORK/ssh/dir"
+printf 'key\n' > "$WORK/ssh/id_ed25519"
+printf 'hosts\n' > "$WORK/ssh/known_hosts"
+printf 'key\n' > "$OUTSIDE/id_ed25519"
+ln -s id_ed25519 "$WORK/ssh/link"
+# The prompt must be as strict as the file checks in kp_ssh_prepare.
+file_reason='enter an absolute path to an existing root-owned regular file that only root can change, with no symlink in the path'
+for path in "$WORK/ssh/id_ed25519" "$WORK/ssh/known_hosts"; do
+    accepts kp_valid_ssh_file "$path"
+    kp_ssh_file_ok "$path" || fail "kp_ssh_file_ok rejected [$path]"
 done
-pass 'absolute path validator'
+# shellcheck disable=SC2088 # a literal tilde, as typed at the prompt
+for path in '' id_ed25519 ./ssh/id_ed25519 '~/.ssh/id_ed25519' "$WORK/ssh/missing" \
+    "$WORK/ssh/dir" "$WORK/ssh/link" "$OUTSIDE/id_ed25519"; do
+    rejects kp_valid_ssh_file "$path" "$file_reason"
+    if kp_ssh_file_ok "$path"; then fail "kp_ssh_file_ok accepted [$path]"; fi
+done
+pass 'SSH key and known-hosts file validator'
 
 # The prompt must be as strict as kp_ssh_prepare, which checks it again later.
 address_reason='enter a host name or IPv4 address (letters, digits, dots and hyphens)'
@@ -85,7 +102,6 @@ pass 'SSH address validator'
 # --- VM flow through piped answers ----------------------------------------------
 
 kp_host_require() { KP_NODE=pve1; }
-kp_host_safe() { [[ $1 == "$WORK/"* && ! -L $1 ]]; }
 pve_qemu_inventory() { PVE_QEMU_JSON='[{"vmid":201,"name":"fixture","status":"running"}]'; }
 kp_ssh_prepare() {
     printf 'prepare %s\n' "$*" >> "$WORK/calls"
@@ -129,17 +145,20 @@ vm_clean() {
 
 # A fresh SSH install: every prompt gets one bad answer first.
 KP_FIXTURE_INSPECTION=$(inspection absent)
-vm_run install $'202\n201\nsshx\nSSH\n\nhost_name\na b\n192.0.2.20\n70000\n\nid_ed25519\n/root/.ssh/id_ed25519\nknown\n/root/.ssh/known_hosts\n2.3\nv2.3.3\nftp://core.example.invalid\nhttps://core.example.invalid\n\n\nfixture-secret\nn\n'
+vm_run install "$(printf '%s\n' 202 201 sshx SSH '' host_name 'a b' 192.0.2.20 70000 '' \
+    id_ed25519 "$WORK/ssh/link" "$WORK/ssh/id_ed25519" known "$WORK/ssh/missing" "$OUTSIDE/id_ed25519" \
+    "$WORK/ssh/dir" "$WORK/ssh/known_hosts" 2.3 v2.3.3 ftp://core.example.invalid https://core.example.invalid \
+    '' '' fixture-secret n)"
 [[ $VM_RC == 0 ]] || fail "VM install flow exit $VM_RC [$VM_OUT]"
 vm_count 'select one listed local VM' 1 'unlisted VM ID'
 vm_count 'choose one of qga/ssh' 1 'unknown transport'
 vm_count "$address_reason" 3 'blank, underscored and spaced SSH addresses'
 vm_count 'a value is required' 1 'blank onboarding key'
 vm_count 'enter a whole number from 1 to 65535' 1 'SSH port out of range'
-vm_count 'enter an absolute path' 2 'relative key and known-hosts paths'
+vm_count "$file_reason" 6 'relative, symlinked, missing, unsafe and directory key and known-hosts paths'
 vm_count 'choose an exact stable v2 release, e.g. 2.3.3' 1 'inexact release'
 vm_count "$url_reason" 1 'FTP Core URL'
-grep -Fxq 'prepare 201 192.0.2.20 22 /root/.ssh/id_ed25519 /root/.ssh/known_hosts' "$WORK/calls" \
+grep -Fxq "prepare 201 192.0.2.20 22 $WORK/ssh/id_ed25519 $WORK/ssh/known_hosts" "$WORK/calls" \
     || fail "SSH answers not passed on: $(cat "$WORK/calls")"
 grep -Fxq 'release v2.3.3' "$WORK/calls" || fail 'v-prefixed release not normalized once'
 vm_expect 'Node pve1 / VM 201 (ssh): install Periphery absent -> 2.3.3' 'install preview'
@@ -153,11 +172,11 @@ mkdir -p "$TOOLBOX_CONF_DIR"
 conf_set komodo-periphery-qemu-201 KP_TRANSPORT ssh
 conf_set komodo-periphery-qemu-201 KP_ADDRESS 192.0.2.21
 conf_set komodo-periphery-qemu-201 KP_PORT 2222
-conf_set komodo-periphery-qemu-201 KP_KEY_FILE /root/.ssh/saved
-conf_set komodo-periphery-qemu-201 KP_KNOWN_HOSTS /root/.ssh/saved_hosts
+conf_set komodo-periphery-qemu-201 KP_KEY_FILE "$WORK/ssh/id_ed25519"
+conf_set komodo-periphery-qemu-201 KP_KNOWN_HOSTS "$WORK/ssh/known_hosts"
 vm_run install $'201\n\n\n\n\n\n2.3.3\nhttps://core.example.invalid\n\nfixture-secret\nn\n'
 [[ $VM_RC == 0 ]] || fail "saved SSH defaults exit $VM_RC [$VM_OUT]"
-grep -Fxq 'prepare 201 192.0.2.21 2222 /root/.ssh/saved /root/.ssh/saved_hosts' "$WORK/calls" \
+grep -Fxq "prepare 201 192.0.2.21 2222 $WORK/ssh/id_ed25519 $WORK/ssh/known_hosts" "$WORK/calls" \
     || fail "saved SSH settings not offered as defaults: $(cat "$WORK/calls")"
 [[ $VM_OUT != *'!!'* ]] || fail "saved SSH defaults warned [$VM_OUT]"
 [[ $(conf_get komodo-periphery-qemu-201 KP_PORT) == 2222 ]] || fail 'declined change rewrote the saved record'

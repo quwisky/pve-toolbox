@@ -10,7 +10,7 @@ kp_ssh_prepare() { # <vmid> <address> <port> <key> <known-hosts>
     [[ $port =~ ^[0-9]{1,5}$ ]] && ((10#$port >= 1 && 10#$port <= 65535)) || return 1
     port=$((10#$port))
     for lookup in "$key" "$hosts"; do
-        kp_host_safe "$lookup" && [[ -f $lookup && -r $lookup && ! -L $lookup ]] || return 1
+        kp_ssh_file_ok "$lookup" || return 1 # host.sh; a missing helper fails closed
     done
     if [[ $port == 22 ]]; then lookup=$address; else lookup="[$address]:$port"; fi
     matches=$(ssh-keygen -F "$lookup" -f "$hosts" 2>/dev/null) || return 1

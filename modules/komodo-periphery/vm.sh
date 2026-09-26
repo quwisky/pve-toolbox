@@ -230,8 +230,8 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         ask_valid address 'Pinned SSH address or DNS name' "$(conf_get "$record" KP_ADDRESS)" kp_valid_ssh_address
         saved_port=$(conf_get "$record" KP_PORT)
         ask_int port 'SSH port' "${saved_port:-22}" 1 65535
-        ask_valid key_file 'Absolute root-owned SSH private-key path' "$(conf_get "$record" KP_KEY_FILE)" kp_valid_abs_path
-        ask_valid hosts 'Absolute root-owned dedicated known-hosts path' "$(conf_get "$record" KP_KNOWN_HOSTS)" kp_valid_abs_path
+        ask_valid key_file 'Absolute root-owned SSH private-key path' "$(conf_get "$record" KP_KEY_FILE)" kp_valid_ssh_file
+        ask_valid hosts 'Absolute root-owned dedicated known-hosts path' "$(conf_get "$record" KP_KNOWN_HOSTS)" kp_valid_ssh_file
         KP_VM_ADDRESS=$address KP_VM_PORT=$port KP_VM_KEY=$key_file KP_VM_HOSTS=$hosts
         if [[ $saved_transport == ssh ]]; then KP_VM_HOST_FINGERPRINT=$(conf_get "$record" KP_HOST_FINGERPRINT); fi
         kp_ssh_prepare "$id" "$address" "$port" "$key_file" "$hosts" || { warn 'SSH identity files or pinned host key invalid'; return 1; }

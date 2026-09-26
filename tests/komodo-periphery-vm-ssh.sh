@@ -61,6 +61,16 @@ cat "$WORK/known_hosts" >> "$WORK/known_hosts.duplicate"
 cat "$WORK/known_hosts" >> "$WORK/known_hosts.duplicate"
 if kp_ssh_inspect 201 vm.example.invalid 22 "$WORK/id" "$WORK/known_hosts.duplicate" "$uuid"; then fail 'ambiguous pinned host keys accepted'; fi
 if kp_ssh_inspect 201 'vm.example.invalid;touch /tmp/unsafe' 22 "$WORK/id" "$WORK/known_hosts" "$uuid"; then fail 'unsafe address accepted'; fi
+ln -s id "$WORK/id.link"
+mkdir "$WORK/id.dir"
+for bad in id "$WORK/id.link" "$WORK/id.dir" "$WORK/id.missing"; do
+    if kp_ssh_prepare 201 vm.example.invalid 22 "$bad" "$WORK/known_hosts"; then fail "unsafe SSH key file accepted [$bad]"; fi
+    if kp_ssh_prepare 201 vm.example.invalid 22 "$WORK/id" "$bad"; then fail "unsafe known-hosts file accepted [$bad]"; fi
+done
+# The file rule lives in host.sh; without it the SSH transport must refuse.
+if (unset -f kp_ssh_file_ok; kp_ssh_prepare 201 vm.example.invalid 22 "$WORK/id" "$WORK/known_hosts") 2>/dev/null; then
+    fail 'SSH files accepted without the shared file check'
+fi
 printf '[vm.example.invalid]:2222 %s\n' "$(cut -d ' ' -f1-2 "$WORK/id.pub")" > "$WORK/known_hosts-2222"
 kp_ssh_inspect 201 vm.example.invalid 2222 "$WORK/id" "$WORK/known_hosts-2222" "$uuid" || fail 'pinned nonstandard SSH port rejected'
 grep -Fq -- '-p 2222' "$KP_SSH_CALLS" || fail 'selected SSH port not used'

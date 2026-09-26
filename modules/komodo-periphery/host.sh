@@ -27,8 +27,6 @@ kp_valid_vmid() { # a VM listed in PVE_QEMU_JSON by pve_qemu_inventory
     kp_target_key qemu "$1" >/dev/null && jq -e --argjson id "$1" 'any(.[];.vmid==$id)' <<<"$PVE_QEMU_JSON" >/dev/null \
         || { ASK_REASON='select one listed local VM'; return 1; }
 }
-# shellcheck disable=SC2034
-kp_valid_abs_path() { [[ $1 == /* ]] || { ASK_REASON='enter an absolute path'; return 1; }; }
 kp_ssh_address_ok() { # the one address rule for the SSH prompt and kp_ssh_prepare
     [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]
 }
@@ -36,6 +34,16 @@ kp_ssh_address_ok() { # the one address rule for the SSH prompt and kp_ssh_prepa
 kp_valid_ssh_address() {
     kp_ssh_address_ok "$1" \
         || { ASK_REASON='enter a host name or IPv4 address (letters, digits, dots and hyphens)'; return 1; }
+}
+kp_ssh_file_ok() { # the one key/known-hosts file rule for the prompts and kp_ssh_prepare
+    kp_host_safe "$1" && [[ -f $1 && -r $1 && ! -L $1 ]]
+}
+# shellcheck disable=SC2034
+kp_valid_ssh_file() {
+    kp_ssh_file_ok "$1" || {
+        ASK_REASON='enter an absolute path to an existing root-owned regular file that only root can change, with no symlink in the path'
+        return 1
+    }
 }
 kp_host_require() {
     require_root
