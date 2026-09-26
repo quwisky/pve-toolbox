@@ -43,6 +43,28 @@ out=$(pty "cd '$ROOT' && TERM=dumb ./pve-toolbox definitely-not-a-command" || tr
 # stdout redirected away, stderr still the terminal: the error line is coloured.
 out=$(pty "cd '$ROOT' && ./pve-toolbox definitely-not-a-command >/dev/null" || true)
 [[ $out == *"${ESC}31"* ]] || fail "stderr colour followed stdout instead of stderr"
+# The other direction, in one invocation that writes to both streams: stderr
+# redirected to a file, stdout still the terminal. The launcher's step
+# heading on stdout is coloured; the module's error line in the file is not.
+both_root=$(tmp)
+mkdir -p "$both_root/lib" "$both_root/modules/both"
+cp "$ROOT"/lib/*.sh "$both_root/lib/"
+printf '%s\n' \
+    'MODULE_NAME="both"' \
+    'MODULE_TITLE="Both streams fixture"' \
+    'MODULE_DESC="writes to stdout and fails on stderr"' \
+    'MODULE_TAGS="test"' \
+    'module_status() { printf installed; }' \
+    'module_update() { die "deliberate failure"; }' \
+    > "$both_root/modules/both/module.sh"
+both_err=$(tmp)/stderr
+out=$(pty "cd '$ROOT' && PVE_TOOLBOX_ROOT='$both_root' TOOLBOX_CONF_DIR='$(tmp)' \
+    TOOLBOX_STATE_DIR='$(tmp)' ./pve-toolbox update both 2>'$both_err'" || true)
+err=$(<"$both_err")
+[[ $out == *"${ESC}1mBoth streams fixture"* ]] \
+    || fail "stdout lost its colour when only stderr was redirected: $out"
+[[ $err == *"error:"*"deliberate failure"* ]] || fail "the module error did not reach stderr: $err"
+[[ $err != *"$ESC"* ]] || fail "stderr was coloured for stdout's terminal: $err"
 out=$(launch --color=sometimes list 2>&1 && fail "--color=sometimes accepted" || true)
 [[ $out == *"--color"* ]] || fail "bad --color value not reported: $out"
 pass "colour follows each stream, NO_COLOR, --color and TERM=dumb"
