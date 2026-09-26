@@ -775,7 +775,7 @@ EOF
     # Control characters elsewhere in the path (not just " and \) must also be
     # refused, since they would still land unescaped in the YAML double-quoted
     # string.
-    for endpoint in $'http://h/a\x01b' $'http://h/a\x7fb'; do
+    for endpoint in $'http://h/a\x01b' $'http://h/a\x7fb' $'http://h/a\xc2\x85b' $'http://h/a\x80b'; do
         if _sc_valid_endpoint "$endpoint"; then
             fail "an invalid scrutiny endpoint was accepted: $(printf '%q' "$endpoint")"
         fi
@@ -794,25 +794,29 @@ pass "scrutiny endpoints accept IPv6 literals and refuse YAML-breaking paths"
     [[ $ASK_REASON == 'a value is required' ]] \
         || fail "an empty scrutiny host id gave the wrong reason: $ASK_REASON"
 
-    for id in 'h"x' $'h\x01' $'h\x7f'; do
+    # C1 controls (U+0080-U+009F) are control characters too, and a byte that
+    # is not UTF-8 would not survive as YAML text either.
+    for id in 'h"x' $'h\x01' $'h\x7f' $'h\xc2\x85' $'h\x80'; do
         if _sc_valid_host_id "$id"; then
             fail "a YAML-breaking scrutiny host id was accepted: $(printf '%q' "$id")"
         fi
-        [[ $ASK_REASON == 'the host id must not contain quotes, backslashes or control characters' ]] \
+        [[ $ASK_REASON == 'the host id must be UTF-8 text without quotes, backslashes or control characters' ]] \
             || fail "wrong reason for a bad scrutiny host id: $ASK_REASON"
     done
-    _sc_valid_host_id 'pve-1' \
-        || fail "a valid scrutiny host id was rejected: $ASK_REASON"
+    for id in 'pve-1' 'pvé-ünïcødé'; do
+        _sc_valid_host_id "$id" \
+            || fail "a valid scrutiny host id was rejected: $id ($ASK_REASON)"
+    done
 
     # The token is a secret: blank stays accepted (auth off), and a rejection
     # reason must never depend on - or repeat - the value.
     _sc_valid_token '' \
         || fail "a blank scrutiny token was rejected: $ASK_REASON"
-    for token in 'ab"c' 'a\b' $'a\tb'; do
+    for token in 'ab"c' 'a\b' $'a\tb' $'tok\xc2\x85en' $'tok\x80en'; do
         if _sc_valid_token "$token"; then
-            fail "a YAML-breaking scrutiny token was accepted: $(printf '%q' "$token")"
+            fail "a YAML-breaking scrutiny token was accepted"
         fi
-        [[ $ASK_REASON == 'the token must not contain quotes, backslashes or control characters' ]] \
+        [[ $ASK_REASON == 'the token must be UTF-8 text without quotes, backslashes or control characters' ]] \
             || fail "wrong reason for a bad scrutiny token: $ASK_REASON"
     done
     _sc_valid_token 'plain-token-123' \
@@ -858,8 +862,12 @@ pass "scrutiny host id and token validators refuse YAML-breaking characters"
     }
 
     secret='s3cr3t"tok'
+    c1_secret=$'c1s3cr3t\xc2\x85tok'
+    utf8_secret=$'u8s3cr3t\x80tok'
     answers=$'http://10.0.0.10:8080\n'  # endpoint
     answers+="$secret"$'\n'             # token: rejected (quote)
+    answers+="$c1_secret"$'\n'          # token: rejected (C1 control)
+    answers+="$utf8_secret"$'\n'        # token: rejected (not UTF-8)
     answers+=$'\n'                       # token: Enter, accepted (blank)
     answers+=$'pve1\n'                   # host id
     answers+=$'y\n'                       # SMART metrics collector
@@ -871,11 +879,11 @@ pass "scrutiny host id and token validators refuse YAML-breaking characters"
     out=$(printf '%s' "$answers" | module_install 2>&1) \
         || fail "scrutiny install with a rejected token then a valid one failed: $out"
 
-    grep -Fq "$secret" <<<"$out" \
-        && fail "the rejected token value leaked into install output: $out"
-    count=$(grep -Fc 'the token must not contain quotes, backslashes or control characters' <<<"$out")
-    [[ $count -eq 1 ]] \
-        || fail "expected exactly one token rejection, got $count: $out"
+    [[ $out != *s3cr3t* ]] \
+        || fail "a rejected token value leaked into install output"
+    count=$(grep -Fc 'the token must be UTF-8 text without quotes, backslashes or control characters' <<<"$out")
+    [[ $count -eq 3 ]] \
+        || fail "expected three token rejections, got $count"
 ) || exit 1
 pass "scrutiny rejects a YAML-breaking token without leaking its value"
 

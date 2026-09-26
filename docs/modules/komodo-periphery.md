@@ -79,7 +79,8 @@ root-owned sticky directories such as `/tmp` are allowed), a known-hosts file
 that does not pin exactly one host key for the address and port just entered
 (looked up as `address`, or `[address]:port` for a port other than 22), a blank
 onboarding key, and a server name or onboarding key that contains a tab or
-another control character.
+another control character (including C1 controls, U+0080 to U+009F) or is not
+valid UTF-8.
 
 Some problems are only found after the answer is accepted, and they still stop
 the operation instead of being asked again: a well-formed release that does not

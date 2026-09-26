@@ -28,12 +28,9 @@ kp_valid_vmid() { # a VM listed in PVE_QEMU_JSON by pve_qemu_inventory
         || { ASK_REASON='select one listed local VM'; return 1; }
 }
 # The guest refuses bytes below 32 and 127 in the server name and onboarding
-# key, but only after the Apply confirm. The reason never repeats the value.
-# shellcheck disable=SC2034
-kp_valid_printable() { # blank passes; see kp_valid_required_printable
-    local LC_ALL=C
-    [[ $1 != *[[:cntrl:]]* ]] || { ASK_REASON='use printable characters only (no tabs or other control characters)'; return 1; }
-}
+# key, but only after the Apply confirm. The prompts refuse those first, and
+# also C1 controls and invalid UTF-8. The reason never repeats the value.
+kp_valid_printable() { valid_printable "$1"; } # blank passes; see kp_valid_required_printable
 kp_valid_required_printable() { valid_required "$1" && kp_valid_printable "$1"; }
 kp_ssh_address_ok() { # the one address rule for the SSH prompt and kp_ssh_prepare
     [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]

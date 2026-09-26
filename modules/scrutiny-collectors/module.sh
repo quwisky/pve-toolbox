@@ -54,13 +54,12 @@ _sc_defaults() {
     : "${SCRUTINY_SCHEDULE_PERFORMANCE:=Sun *-*-* 02:00:00}"
 }
 
-# The host id, endpoint and token are all written into collector.yaml as YAML
-# double-quoted strings (see _sc_write_config); none of them may carry a ",
-# a \ or a control character (0x00-0x1f, 0x7f), the same technique as
-# komodo-periphery's kp_valid_printable.
+# The host id, endpoint and token are all written into each collector's YAML
+# file as double-quoted strings (see _sc_write_config); none of them may carry
+# a " or a \, and each must pass valid_printable: UTF-8 text without control
+# characters (C0, DEL or C1).
 _sc_yaml_safe() {
-    local LC_ALL=C
-    [[ $1 != *[\"\\[:cntrl:]]* ]]
+    [[ $1 != *[\"\\]* ]] && valid_printable "$1"
 }
 
 # The host is a name, an IPv4 address or a bracketed IPv6 literal. The path
@@ -78,13 +77,13 @@ _sc_valid_endpoint() {
 # value, because the token is a secret.
 _sc_valid_token() {
     [[ -z $1 ]] || _sc_yaml_safe "$1" \
-        || { ASK_REASON="the token must not contain quotes, backslashes or control characters"; return 1; }
+        || { ASK_REASON="the token must be UTF-8 text without quotes, backslashes or control characters"; return 1; }
 }
 
 _sc_valid_host_id() {
     valid_required "$1" || return 1
     _sc_yaml_safe "$1" \
-        || { ASK_REASON="the host id must not contain quotes, backslashes or control characters"; return 1; }
+        || { ASK_REASON="the host id must be UTF-8 text without quotes, backslashes or control characters"; return 1; }
 }
 
 _sc_installed() {
