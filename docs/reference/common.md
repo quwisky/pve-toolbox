@@ -58,6 +58,13 @@ Every prompt follows the same rules:
   optionally setting `ASK_NORMALIZED` to the form to store, or sets
   `ASK_REASON` and returns 1. `valid_required` rejects a blank value with
   reason `a value is required`, for any prompt that must not be left empty.
+  `valid_printable` accepts a blank value and any valid UTF-8 text without
+  control characters. It rejects bytes that are not valid UTF-8 (reason
+  `use valid UTF-8 text`) and every control character, meaning C0 (including
+  tab), DEL and C1 (U+0080 to U+009F), with reason
+  `use printable characters only (no tabs or other control characters)`. It
+  checks in a UTF-8 locale local to the call, so the caller's `LC_ALL` is
+  unchanged. Its reasons never repeat the value, so it can check secrets.
 
 `ask_int <var> <prompt> <default> [min] [max]`
 : A whole number without leading zeros, inside the bounds.

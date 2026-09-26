@@ -442,3 +442,52 @@ prompt_run $'\nx\n' t_req
 expect_out 'a value is required' "valid_required rejection"
 expect_out 'got=[x]' "valid_required re-prompt"
 pass "valid_required rejects a blank value"
+
+# --- valid_printable -----------------------------------------------------------
+
+# C1 controls (U+0080-U+009F) are only visible to [[:cntrl:]] in a UTF-8
+# locale, and a byte that is not UTF-8 at all is refused too. The reason is
+# fixed text, so a rejected secret is never repeated.
+for v in '' plain 'ü' 'ünïcødé' 'a b'; do
+    ASK_REASON=""
+    valid_printable "$v" || fail "valid_printable refused [$v]: $ASK_REASON"
+done
+for v in $'\x01' $'\t' $'\x7f' $'\xc2\x80' $'\xc2\x85' $'\xc2\x9f' $'\x80' $'\xff' $'ok\x80ok'; do
+    ASK_REASON=""
+    ! valid_printable "$v" \
+        || fail "valid_printable accepted [$(printf '%s' "$v" | od -An -tx1)]"
+    [[ -n $ASK_REASON ]] || fail "valid_printable gave no reason for [$(printf '%s' "$v" | od -An -tx1)]"
+    [[ $ASK_REASON != *"$v"* ]] || fail "valid_printable reason repeats the value: $ASK_REASON"
+done
+ASK_REASON=""; valid_printable $'a\tb' || true
+[[ $ASK_REASON == 'use printable characters only (no tabs or other control characters)' ]] \
+    || fail "valid_printable control reason: [$ASK_REASON]"
+ASK_REASON=""; valid_printable $'a\xffb' || true
+[[ $ASK_REASON == 'use valid UTF-8 text' ]] || fail "valid_printable UTF-8 reason: [$ASK_REASON]"
+pass "valid_printable refuses C0, DEL, C1 and invalid UTF-8 without repeating the value"
+
+# The UTF-8 locale is the validator's own: the caller's LC_ALL, set or unset,
+# and the character classes it sees are the same after the call.
+t_locale_kept() {
+    local LC_ALL=C
+    valid_printable $'\xc2\x85' || true
+    printf 'LC_ALL=[%s]\n' "$LC_ALL"
+    if [[ $'\xc2\x85' == *[[:cntrl:]]* ]]; then echo 'class=utf8'; else echo 'class=c'; fi
+}
+t_locale_unset() {
+    unset LC_ALL
+    valid_printable plain
+    printf 'LC_ALL=[%s]\n' "${LC_ALL-unset}"
+}
+prompt_run '' t_locale_kept
+expect_out 'LC_ALL=[C]' "valid_printable keeps the caller's LC_ALL"
+expect_out 'class=c' "valid_printable keeps the caller's character classes"
+prompt_run '' t_locale_unset
+expect_out 'LC_ALL=[unset]' "valid_printable leaves an unset LC_ALL unset"
+
+t_printable() { local v=""; ask_valid v "label" "" valid_printable; printf 'got=[%s]\n' "$v"; }
+prompt_run $'bad\x01val\n\xc2\x85\ngood\n' t_printable
+expect_out 'use printable characters only' "valid_printable at the prompt"
+refuse_out 'bad' "valid_printable at the prompt never repeats the value"
+expect_out 'got=[good]' "valid_printable re-prompt"
+pass "valid_printable leaves the caller's locale alone and re-prompts"
