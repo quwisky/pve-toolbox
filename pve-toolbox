@@ -290,6 +290,14 @@ cli_in() { # cli_in <word> <item>... -> true when word is one of the items
     return 1
 }
 
+# Help for one command. A hidden command is known but has no help topic, so
+# it is neither documented nor called unknown.
+cli_help_topic() { # cli_help_topic <word> -> that command's help, or exits 64
+    ! cli_in "$1" "${CLI_HIDDEN[@]}" || cli_usage_error "'$1' is internal and has no help"
+    cli_in "$1" "${CLI_COMMANDS[@]}" || cli_unknown_command "$1"
+    cli_help_command "$1"
+}
+
 cli_unknown_command() { # cli_unknown_command <word> -> exits 64 with suggestions
     local -a s=()
     mapfile -t s < <(cli_suggest "$1" "${CLI_COMMANDS[@]}")
@@ -936,8 +944,7 @@ if [[ $WANT_HELP -eq 1 ]]; then
         cli_help_overview
         exit 0
     fi
-    cli_in "$command_name" "${CLI_COMMANDS[@]}" || cli_unknown_command "$command_name"
-    cli_help_command "$command_name"
+    cli_help_topic "$command_name"
     exit 0
 fi
 cli_in "$command_name" "${CLI_COMMANDS[@]}" "${CLI_HIDDEN[@]}" \
@@ -986,8 +993,7 @@ case $command_name in
     help)        if [[ ${#ARGS[@]} -eq 1 ]]; then
                      cli_help_overview
                  else
-                     cli_in "${ARGS[1]}" "${CLI_COMMANDS[@]}" || cli_unknown_command "${ARGS[1]}"
-                     cli_help_command "${ARGS[1]}"
+                     cli_help_topic "${ARGS[1]}"
                  fi ;;
     *)           cli_unknown_command "$command_name" ;;
 esac

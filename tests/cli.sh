@@ -177,6 +177,16 @@ out=$(launch _complete tags --json 2>&1 || true)
 [[ $out == *"run 'pve-toolbox help' for usage"* ]] \
     || fail "hidden command's usage error lacks the general help line: $out"
 [[ $out != *"help _complete"* ]] || fail "hidden command's usage error named itself as a topic: $out"
+# Asking for its help says so accurately rather than calling it unknown.
+for args in "_complete --help" "help _complete" "--help _complete tags"; do
+    rc=0; out=$(launch $args 2>&1) || rc=$?
+    [[ $rc -eq 64 ]] || fail "'$args' exited $rc, want 64: $out"
+    [[ $out == *"'_complete' is internal and has no help"* ]] \
+        || fail "'$args' did not say the command is internal: $out"
+    [[ $out != *"unknown command"* ]] || fail "'$args' called _complete unknown: $out"
+    [[ $out == *"run 'pve-toolbox help' for usage"* ]] \
+        || fail "'$args' lacks the general help line: $out"
+done
 pass "hidden commands carry no help topic"
 
 # A pathological word must not make suggestion matching slow: the length
