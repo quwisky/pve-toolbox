@@ -83,3 +83,52 @@ done
 rc=0; launch help definitely-not >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 64 ]] || fail "help <unknown> exited $rc, want 64"
 pass "top-level and per-command help"
+
+# --- flags and suggestions ----------------------------------------------------
+
+expect_usage() { # expect_usage <want-substring> <args...>
+    local want=$1 rc=0 out; shift
+    out=$(launch "$@" 2>&1) || rc=$?
+    [[ $rc -eq 64 ]] || fail "'$*' exited $rc, want 64: $out"
+    [[ $out == *"$want"* ]] || fail "'$*' did not say '$want': $out"
+}
+expect_usage "did you mean: install" instal zfs-scrub
+expect_usage "did you mean: status" stauts
+expect_usage "did you mean: --json" status --jsn
+expect_usage "--json is not supported by 'install'" install --json zfs-scrub
+expect_usage "--dry-run is not supported by 'status'" status --dry-run
+expect_usage "did you mean: zfs-scrub" status zfs-scrubb
+expect_usage "did you mean: storage" list storag
+expect_usage "run 'pve-toolbox help install'" install --json zfs-scrub
+expect_usage "cannot be used together" status --json --quiet
+# Accepted combinations that must keep working (flags anywhere).
+out=$(launch status --json zfs-scrub) ; jq -e .schema_version <<<"$out" >/dev/null || fail "flag after arguments broke status"
+out=$(launch --json status zfs-scrub) ; jq -e .schema_version <<<"$out" >/dev/null || fail "flag before the command broke status"
+launch -y list >/dev/null || fail "-y list rejected"
+launch list --color=never >/dev/null || fail "--color after the command rejected"
+# '--' ends flags: a flag-looking argument is a (bad) module name, not a flag.
+expect_usage "unknown module" install -- --weird-name
+pass "per-command flags, suggestions and accepted combinations"
+
+# The error keeps its first line and exit status; the hint lines follow it.
+out=$(launch stauts 2>&1 || true)
+first=$(head -n 1 <<<"$out")
+[[ ${first# } == "error: unknown command: stauts" ]] || fail "first line changed: $out"
+[[ $out == *$'\n'"did you mean: status?"$'\n'"run 'pve-toolbox help' for usage" ]] \
+    || fail "unknown command lacks the suggestion and help lines: $out"
+expect_usage "did you mean: status" help stauts
+expect_usage "did you mean: status" stauts --help
+expect_usage "run 'pve-toolbox help install'" install
+expect_usage "run 'pve-toolbox help doctor'" doctor extra
+expect_usage "did you mean: --color" --colr=never list
+expect_usage "unknown tag: nope" list nope
+# Nothing close enough: no suggestion line, still the help line.
+out=$(launch zzzzzzzzzz 2>&1 || true)
+[[ $out != *"did you mean"* && $out == *"run 'pve-toolbox help' for usage"* ]] \
+    || fail "an unrelated word got a suggestion: $out"
+# Help is answered before flags are checked against the command.
+launch status --dry-run --help >/dev/null || fail "help refused because of an unsupported flag"
+# Hidden commands are not unknown commands.
+[[ $(launch _complete tags) == *storage* ]] || fail "_complete rejected as an unknown command"
+launch list storage >/dev/null || fail "a known tag was rejected"
+pass "usage errors carry suggestions and a help line"

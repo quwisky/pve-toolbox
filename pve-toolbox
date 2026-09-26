@@ -48,9 +48,71 @@ TOOLBOX_UPDATE_EXPLICIT=0
 OUTPUT_JSON=0
 OUTPUT_QUIET=0
 
-usage_error() {
-    printf '%s error:%s %s\n' "$e_red$e_bold" "$e_reset" "$*" >&2
+# Levenshtein distance between two words, ignoring case.
+_cli_distance() { # _cli_distance <a> <b> -> distance
+    local a=${1,,} b=${2,,} i j cost
+    local -a prev=() cur=()
+    for ((j = 0; j <= ${#b}; j++)); do prev[j]=$j; done
+    for ((i = 1; i <= ${#a}; i++)); do
+        cur=([0]=$i)
+        for ((j = 1; j <= ${#b}; j++)); do
+            cost=1
+            [[ ${a:i-1:1} != "${b:j-1:1}" ]] || cost=0
+            cur[j]=$((prev[j] + 1))
+            if ((cur[j - 1] + 1 < cur[j])); then cur[j]=$((cur[j - 1] + 1)); fi
+            if ((prev[j - 1] + cost < cur[j])); then cur[j]=$((prev[j - 1] + cost)); fi
+        done
+        prev=("${cur[@]}")
+    done
+    printf '%s' "${prev[${#b}]}"
+}
+
+# What the operator probably meant. A candidate that is the only one starting
+# with the word wins outright; otherwise every candidate within two edits
+# qualifies, closest first and then in the order given. At most three.
+cli_suggest() { # cli_suggest <word> <candidate>... -> up to 3, one per line
+    local word=$1 c d n=0
+    local -a prefix=() scored=()
+    shift
+    [[ -n $word ]] || return 0
+    for c in "$@"; do
+        [[ ${c,,} != "${word,,}"* ]] || prefix+=("$c")
+        d=$(_cli_distance "$word" "$c")
+        if ((d <= 2)); then scored+=("$d $n $c"); fi
+        n=$((n + 1))
+    done
+    if ((${#prefix[@]} == 1)); then
+        printf '%s\n' "${prefix[0]}"
+        return 0
+    fi
+    ((${#scored[@]})) || return 0
+    printf '%s\n' "${scored[@]}" | sort -n -k1,1 -k2,2 | head -n 3 | cut -d' ' -f3-
+}
+
+# Every usage error: the error line, what was probably meant, and where the
+# usage is documented. Exit 64 (EX_USAGE).
+cli_usage_error() { # cli_usage_error <message> [<help topic>] [suggestion]...
+    local msg=$1 topic=${2:-} list
+    shift
+    (($# == 0)) || shift
+    printf '%s error:%s %s\n' "$e_red$e_bold" "$e_reset" "$msg" >&2
+    if (($#)); then
+        list=$(printf '%s, ' "$@")
+        printf 'did you mean: %s?\n' "${list%, }" >&2
+    fi
+    printf "run 'pve-toolbox help%s' for usage\n" "${topic:+ $topic}" >&2
     exit 64
+}
+
+usage_error() {
+    cli_usage_error "$*"
+}
+
+cli_unknown_module() { # cli_unknown_module <name> -> exits 64 with suggestions
+    local -a s=()
+    discover
+    mapfile -t s < <(cli_suggest "$1" "${MODULES[@]}")
+    cli_usage_error "unknown module: $1" "${command_name:-}" "${s[@]}"
 }
 
 # ------------------------------------------------------------ command table --
@@ -60,6 +122,9 @@ usage_error() {
 # command here first. Data only: nothing runs while it is defined.
 
 CLI_COMMANDS=(menu ui list install update check status doctor lxc-update uninstall link self-update help)
+# Internal commands the completion scripts call. Never shown or suggested,
+# but not unknown either.
+CLI_HIDDEN=(_complete)
 
 CLI_GLOBAL_FLAGS=("-y|--yes" "-f|--force" "--color=WHEN" "-V|--version" "-h|--help")
 declare -A CLI_GLOBAL_DESC=(
@@ -150,6 +215,36 @@ cli_help_command() { # cli_help_command <command>
     fi
 }
 
+cli_long_flags() { # cli_long_flags -> every long flag, in table order, once each
+    local spec f c
+    local -A seen=()
+    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do
+        f=${spec##*|}
+        f=${f%%=*}
+        [[ -n ${seen[$f]:-} ]] || { seen[$f]=1; printf '%s\n' "$f"; }
+    done
+    for c in "${CLI_COMMANDS[@]}"; do
+        for f in ${CLI_FLAGS[$c]:-}; do
+            [[ -n ${seen[$f]:-} ]] || { seen[$f]=1; printf '%s\n' "$f"; }
+        done
+    done
+}
+
+cli_in() { # cli_in <word> <item>... -> true when word is one of the items
+    local word=$1 item
+    shift
+    for item in "$@"; do
+        [[ $word != "$item" ]] || return 0
+    done
+    return 1
+}
+
+cli_unknown_command() { # cli_unknown_command <word> -> exits 64 with suggestions
+    local -a s=()
+    mapfile -t s < <(cli_suggest "$1" "${CLI_COMMANDS[@]}")
+    cli_usage_error "unknown command: $1" "" "${s[@]}"
+}
+
 # --------------------------------------------------------------- discovery --
 
 discover() {
@@ -179,7 +274,7 @@ meta() { # meta <module> <VAR>
 # Run a module function in a subshell so module globals stay isolated.
 run_module() { # run_module <module> <function> [args...]
     local mod=$1 fn=$2; shift 2
-    [[ -f "$MODULE_DIR/$mod/module.sh" ]] || usage_error "unknown module: $mod"
+    [[ -f "$MODULE_DIR/$mod/module.sh" ]] || cli_unknown_module "$mod"
     (
         # shellcheck source=/dev/null
         source "$MODULE_DIR/$mod/module.sh"
@@ -331,9 +426,31 @@ cmd_lxc_update() {
     bash "$MODULE_DIR/lxc-update/run.sh" "$@"
 }
 
+# Every tag any module carries, sorted, once each.
+module_tags() {
+    local m
+    local -a tags
+    discover
+    for m in "${MODULES[@]}"; do
+        read -r -a tags <<<"$(meta "$m" MODULE_TAGS)"
+        if [[ ${#tags[@]} -gt 0 ]]; then
+            printf '%s\n' "${tags[@]}"
+        fi
+    done | sort -u
+}
+
 cmd_list() {
     discover
-    local tag=${1:-} m
+    local tag=${1:-} m t found=0
+    local -a known=() s=()
+    if [[ -n $tag ]]; then
+        mapfile -t known < <(module_tags)
+        for t in "${known[@]}"; do [[ $t != "$tag" ]] || found=1; done
+        if [[ $found -eq 0 ]]; then
+            mapfile -t s < <(cli_suggest "$tag" "${known[@]}")
+            cli_usage_error "unknown tag: $tag" list "${s[@]}"
+        fi
+    fi
     for m in "${MODULES[@]}"; do
         [[ -n $tag && " $(meta "$m" MODULE_TAGS) " != *" $tag "* ]] && continue
         printf '%s%-24s%s %s\n' "$c_bold" "$m" "$c_reset" "$(meta "$m" MODULE_DESC)"
@@ -358,7 +475,7 @@ cmd_each() { # cmd_each <function> [--check] <modules...>
     fi
     [[ ${#list[@]} -eq 0 ]] && { warn "no installed modules"; return 0; }
     for m in "${list[@]}"; do
-        [[ -f "$MODULE_DIR/$m/module.sh" ]] || usage_error "unknown module: $m"
+        [[ -f "$MODULE_DIR/$m/module.sh" ]] || cli_unknown_module "$m"
     done
     for m in "${list[@]}"; do
         step "$(meta "$m" MODULE_TITLE)"
@@ -398,7 +515,7 @@ cmd_module_report() { # cmd_module_report <status|check> <function> [--check] <m
         done
     fi
     for m in "${list[@]}"; do
-        [[ -f "$MODULE_DIR/$m/module.sh" ]] || usage_error "unknown module: $m"
+        [[ -f "$MODULE_DIR/$m/module.sh" ]] || cli_unknown_module "$m"
         if [[ $command == status ]] && ! is_installed "$m"; then
             report_add skipped "module.$m.status" "module is not installed"
             continue
@@ -656,7 +773,6 @@ link_completions() {
 # prints a status per module, and a TAB press should not shell out to zpool.
 cmd_complete() { # cmd_complete <commands|modules|installed|tags>
     local m
-    local -a tags
     case ${1:-} in
         commands)
             printf '%s\n' menu ui list install update check status doctor uninstall \
@@ -671,13 +787,7 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags>
                 if is_installed "$m"; then printf '%s\n' "$m"; fi
             done ;;
         tags)
-            discover
-            for m in "${MODULES[@]}"; do
-                read -r -a tags <<<"$(meta "$m" MODULE_TAGS)"
-                if [[ ${#tags[@]} -gt 0 ]]; then
-                    printf '%s\n' "${tags[@]}"
-                fi
-            done | sort -u ;;
+            module_tags ;;
         *)  usage_error "unknown completion target: ${1:-}" ;;
     esac
 }
@@ -719,55 +829,62 @@ toolbox_color_setup
 
 ARGS=()
 LXC_FLAGS=()
+# Command-specific flags, in the order given. They are accepted anywhere on
+# the line and checked against CLI_FLAGS once the command is known.
+SEEN_FLAGS=()
 WANT_HELP=0
 while [[ $# -gt 0 ]]; do
     case $1 in
         -y|--yes)   ASSUME_YES=1 ;;
         -f|--force) FORCE=1 ;;
-        --json)     OUTPUT_JSON=1 ;;
-        --quiet)    OUTPUT_QUIET=1 ;;
+        --json)     OUTPUT_JSON=1; SEEN_FLAGS+=("$1") ;;
+        --quiet)    OUTPUT_QUIET=1; SEEN_FLAGS+=("$1") ;;
         --color=*)  case ${1#--color=} in
                         auto|always|never) ;;
                         *) usage_error "--color must be auto, always or never" ;;
                     esac ;;
         --color)    usage_error "--color needs a value: --color=auto|always|never" ;;
-        --dry-run|--allow-removals|--notify) LXC_FLAGS+=("$1") ;;
+        --dry-run|--allow-removals|--notify) LXC_FLAGS+=("$1"); SEEN_FLAGS+=("$1") ;;
         -V|--version) printf 'pve-toolbox %s\n' "$TOOLBOX_VERSION"; exit 0 ;;
         -h|--help)  WANT_HELP=1 ;;
         --)         shift; ARGS+=("$@"); break ;;
-        -*)         usage_error "unknown flag: $1" ;;
+        -*)         mapfile -t _toolbox_s < <(cli_long_flags)
+                    mapfile -t _toolbox_s < <(cli_suggest "${1%%=*}" "${_toolbox_s[@]}")
+                    cli_usage_error "unknown flag: $1" "" "${_toolbox_s[@]}" ;;
         *)          ARGS+=("$1") ;;
     esac
     shift
 done
-[[ $OUTPUT_JSON -eq 0 || $OUTPUT_QUIET -eq 0 ]] \
-    || usage_error "--json and --quiet cannot be used together"
 
 command_name=${ARGS[0]:-menu}
+# Help first: '<command> --help' answers even when other flags on the line
+# would not be accepted by the command itself.
 if [[ $WANT_HELP -eq 1 ]]; then
     if [[ ${#ARGS[@]} -eq 0 ]]; then
         cli_help_overview
         exit 0
     fi
-    [[ -v CLI_SUMMARY[$command_name] ]] || usage_error "unknown command: $command_name"
+    cli_in "$command_name" "${CLI_COMMANDS[@]}" || cli_unknown_command "$command_name"
     cli_help_command "$command_name"
     exit 0
 fi
-[[ ${#LXC_FLAGS[@]} == 0 || $command_name == lxc-update ]] \
-    || usage_error "LXC update flags apply only to lxc-update"
-if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
-    case $command_name in
-        status|check|doctor) ;;
-        *) usage_error "--json and --quiet are supported by status, check, and doctor" ;;
-    esac
-fi
+cli_in "$command_name" "${CLI_COMMANDS[@]}" "${CLI_HIDDEN[@]}" \
+    || cli_unknown_command "$command_name"
+for _toolbox_flag in "${SEEN_FLAGS[@]}"; do
+    # shellcheck disable=SC2086 # CLI_FLAGS values are space-separated lists.
+    cli_in "$_toolbox_flag" ${CLI_FLAGS[$command_name]:-} \
+        || cli_usage_error "$_toolbox_flag is not supported by '$command_name'" "$command_name"
+done
+unset _toolbox_flag
+[[ $OUTPUT_JSON -eq 0 || $OUTPUT_QUIET -eq 0 ]] \
+    || cli_usage_error "--json and --quiet cannot be used together" "$command_name"
 export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED
 
 case $command_name in
     menu)        menu ;;
     lxc-update)  exec bash "$MODULE_DIR/lxc-update/run.sh" "${LXC_FLAGS[@]}" "${ARGS[@]:1}" ;;
     list)        cmd_list "${ARGS[@]:1}" ;;
-    install)     [[ ${#ARGS[@]} -lt 2 ]] && usage_error "install needs a module name"
+    install)     [[ ${#ARGS[@]} -lt 2 ]] && cli_usage_error "install needs a module name" install
                  cmd_each module_install "${ARGS[@]:1}" ;;
     update)      cmd_each module_update "${ARGS[@]:1}" ;;
     check)       if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
@@ -780,9 +897,9 @@ case $command_name in
                  else
                      cmd_each module_status_long "${ARGS[@]:1}"
                  fi ;;
-    doctor)      [[ ${#ARGS[@]} -eq 1 ]] || usage_error "doctor takes no arguments"
+    doctor)      [[ ${#ARGS[@]} -eq 1 ]] || cli_usage_error "doctor takes no arguments" doctor
                  cmd_doctor ;;
-    uninstall)   [[ ${#ARGS[@]} -lt 2 ]] && usage_error "uninstall needs a module name"
+    uninstall)   [[ ${#ARGS[@]} -lt 2 ]] && cli_usage_error "uninstall needs a module name" uninstall
                  cmd_each module_uninstall "${ARGS[@]:1}" ;;
     ui)          cmd_ui ;;
     link)        cmd_link ;;
@@ -791,8 +908,8 @@ case $command_name in
     help)        if [[ ${#ARGS[@]} -eq 1 ]]; then
                      cli_help_overview
                  else
-                     [[ -v CLI_SUMMARY[${ARGS[1]}] ]] || usage_error "unknown command: ${ARGS[1]}"
+                     cli_in "${ARGS[1]}" "${CLI_COMMANDS[@]}" || cli_unknown_command "${ARGS[1]}"
                      cli_help_command "${ARGS[1]}"
                  fi ;;
-    *)           usage_error "unknown command: ${ARGS[0]} (try --help)" ;;
+    *)           cli_unknown_command "$command_name" ;;
 esac
