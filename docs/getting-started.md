@@ -113,10 +113,10 @@ since LXC update execution requires interactive confirmation.
 
 An unknown command, an unsupported flag for the command given, an unknown
 module, or an unknown tag to `list` is a usage error: exit status `64`, the
-message on stderr as `error: <what was wrong>`, a `did you mean: ...?` line
-when a close match exists, and a final line naming where to read the usage
-(`run 'pve-toolbox help <command>' for usage`, or the general help when the
-mistyped word is not itself a known command).
+message on stderr as `error: <what was wrong>` after a single leading space, a
+`did you mean: ...?` line when a close match exists, and a final line naming
+where to read the usage (`run 'pve-toolbox help <command>' for usage`, or the
+general help when the mistyped word is not itself a known command).
 
 ## Colour
 

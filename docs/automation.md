@@ -43,15 +43,22 @@ unsupported subsystems without making a healthy host fail.
 
 ### Usage errors (exit 64)
 
-A rejected command line never runs anything. It always writes to stderr as
-`error: <what was wrong>`, first line, and stops there when nothing close
-matches; when a close candidate exists, a `did you mean: a, b?` line follows
-(at most three, closest match first); and the last line always names where to
+A rejected command line changes nothing and prints no report. Nearly all
+validation happens before the command starts. The exception is `status` and
+`check` with `--json` or `--quiet`: they validate each named module as they
+reach it, so the read-only status or check of a valid module named earlier on
+the line may already have run when a later unknown module is rejected.
+
+The error goes to stderr. Its first line is `error: <what was wrong>`
+preceded by a single space, so match `error:` within the line rather than
+anchoring a pattern on `^error:`. When a close candidate exists, a
+`did you mean: a, b?` line follows (at most three, closest match first);
+otherwise there is no suggestion line. The last line always names where to
 read the usage: `run 'pve-toolbox help <command>' for usage` when the command
 itself is known, or `run 'pve-toolbox help' for usage` otherwise:
 
 ```
-error: unknown command: stauts
+ error: unknown command: stauts
 did you mean: status?
 run 'pve-toolbox help' for usage
 ```
