@@ -70,6 +70,8 @@ for c in menu ui list install update check status doctor lxc-update uninstall li
     [[ $help == *"  $c "* ]] || fail "--help does not list $c"
 done
 [[ $help == *"pve-toolbox help <command>"* ]] || fail "--help lacks the per-command hint"
+[[ $help == *"--json, --quiet"*"status, check, doctor"* ]] \
+    || fail "--help no longer mentions --json/--quiet and where they apply"
 [[ $help != *"set -euo"* && $help != *"#"* ]] || fail "--help leaked source text"
 [[ $(launch help) == "$help" ]] || fail "'help' and '--help' differ"
 for c in list install status lxc-update; do

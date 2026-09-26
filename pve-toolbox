@@ -212,6 +212,7 @@ cli_help_overview() {
     for c in "${CLI_COMMANDS[@]}"; do printf '  %-12s %s\n' "$c" "${CLI_SUMMARY[$c]}"; done
     printf '\nOptions:\n'
     for spec in "${CLI_GLOBAL_FLAGS[@]}"; do printf '  %-16s %s\n' "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
+    printf "  %-16s %s\n" "--json, --quiet" "machine-readable output (status, check, doctor); see 'pve-toolbox help status'"
     printf "\nRun 'pve-toolbox help <command>' for details.\n"
 }
 
