@@ -38,12 +38,19 @@ Every prompt follows the same rules:
 - A value already in `<var>` (an environment preset, or a key loaded with
   `conf_load`) becomes the default. This is how `-y` installs are driven.
 - With `ASSUME_YES=1` nothing is read. The default is validated, and an
-  invalid one ends the module with `invalid value for <VAR>: <reason>` before
-  anything is written.
+  invalid one ends the module with `invalid value for <VAR>: <reason>`. A
+  variable an operator cannot preset (anything not in upper case, such as a
+  local) is not named; the error quotes the prompt instead:
+  `invalid value for "<prompt>": <reason>`.
 - Interactively, a rejected answer prints its reason and the prompt repeats.
 - A read that fails, because stdin is closed or piped answers ran out, ends
-  the module with `no answer for "<prompt>"`. It never falls back to the
-  default.
+  the module with `no answer for "<prompt>" (input closed)`. It never falls
+  back to the default. Without a terminal the error adds
+  `run it in a terminal, or use -y and set <VAR>`; after Ctrl-D at a terminal
+  it adds only `use -y and set <VAR>`. Either hint names `<VAR>` only when it
+  is upper case.
+- Ask every question before the first write. Answers that run out then stop
+  the module before it has changed anything.
 
 `ask <var> <prompt> <default>`
 : Free text.
@@ -73,7 +80,8 @@ Every prompt follows the same rules:
   keeps it and `none` clears it. A validator that rejects an empty value makes
   the secret required. `valid_webhook_url` (from `lib/discord.sh`) is the
   validator for Discord webhooks. A validator's reason must never include the
-  value.
+  value. After storing the value, `ask_secret` clears `ASK_LINE`, `ASK_VALUE`
+  and `ASK_NORMALIZED`, so no copy of the secret is left in them.
 
 `confirm <prompt> [y|n]`
 : Exit status, for use in `if`. Closed input is an error, not the default.

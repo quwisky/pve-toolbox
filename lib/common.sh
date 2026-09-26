@@ -58,13 +58,30 @@ ASK_NORMALIZED=""
 ASK_VALUE=""
 ASK_LINE=""
 
-# Name the variable only when an operator could have preset it.
-_ask_hint() { # _ask_hint <var>
-    if [[ $1 =~ ^[A-Z][A-Z0-9_]*$ ]]; then
-        printf 'run it in a terminal, or use -y and set %s' "$1"
-    else
-        printf 'run it in a terminal'
+# Name the variable only when an operator could have preset it; otherwise
+# name the prompt they saw.
+_ask_presettable() { [[ $1 =~ ^[A-Z][A-Z0-9_]*$ ]]; }
+
+_ask_invalid() { # _ask_invalid <var> <prompt> - dies with ASK_REASON
+    if _ask_presettable "$1"; then
+        die "invalid value for $1: $ASK_REASON"
     fi
+    die "invalid value for \"$2\": $ASK_REASON"
+}
+
+# Closed input on a terminal is the operator's own Ctrl-D, so "run it in a
+# terminal" would be wrong there.
+_ask_eof() { # _ask_eof <var> <prompt>
+    local hint
+    if [[ -t 0 ]]; then
+        hint=""
+        if _ask_presettable "$1"; then hint="; use -y and set $1"; fi
+    elif _ask_presettable "$1"; then
+        hint="; run it in a terminal, or use -y and set $1"
+    else
+        hint="; run it in a terminal"
+    fi
+    die "no answer for \"$2\" (input closed)$hint"
 }
 
 _ask_check() { # _ask_check <validator|""> <value> -> ASK_VALUE, or 1 with ASK_REASON
@@ -89,14 +106,13 @@ _ask_read() { # _ask_read <var> <prompt> <default> [validator]
     local __var=$1 __prompt=$2 __default=$3 __fn=${4:-}
     if [[ -n ${!__var:-} ]]; then __default=${!__var}; fi
     if [[ $ASSUME_YES -eq 1 ]]; then
-        _ask_check "$__fn" "$__default" \
-            || die "invalid value for $__var: $ASK_REASON"
+        _ask_check "$__fn" "$__default" || _ask_invalid "$__var" "$__prompt"
         printf -v "$__var" '%s' "$ASK_VALUE"
         return 0
     fi
     while true; do
         _ask_line "$(printf '%s [%s]: ' "$__prompt" "$c_dim$__default$c_reset")" \
-            || die "no answer for \"$__prompt\" (input closed); $(_ask_hint "$__var")"
+            || _ask_eof "$__var" "$__prompt"
         if _ask_check "$__fn" "${ASK_LINE:-$__default}"; then
             printf -v "$__var" '%s' "$ASK_VALUE"
             return 0
@@ -183,17 +199,16 @@ ask_secret() { # ask_secret <var> <prompt> [validator]
     local __var=$1 __prompt=$2 __fn=${3:-} __current __hint="" __reply
     __current=${!__var:-}
     if [[ $ASSUME_YES -eq 1 ]]; then
-        _ask_check "$__fn" "$__current" \
-            || die "invalid value for $__var: $ASK_REASON"
+        _ask_check "$__fn" "$__current" || _ask_invalid "$__var" "$__prompt"
         printf -v "$__var" '%s' "$ASK_VALUE"
-        ASK_LINE="" ASK_VALUE=""
+        ASK_LINE="" ASK_VALUE="" ASK_NORMALIZED=""
         return 0
     fi
     [[ -z $__current ]] || __hint=' [set; Enter keeps, "none" clears]'
     while true; do
         if ! _ask_line "$__prompt$__hint: " secret; then
             [[ ! -t 0 ]] || printf '\n' >&2
-            die "no answer for \"$__prompt\" (input closed); $(_ask_hint "$__var")"
+            _ask_eof "$__var" "$__prompt"
         fi
         [[ ! -t 0 ]] || printf '\n' >&2   # read -s swallows the newline
         __reply=$ASK_LINE
@@ -202,7 +217,7 @@ ask_secret() { # ask_secret <var> <prompt> [validator]
         fi
         if _ask_check "$__fn" "$__reply"; then
             printf -v "$__var" '%s' "$ASK_VALUE"
-            ASK_LINE="" ASK_VALUE=""
+            ASK_LINE="" ASK_VALUE="" ASK_NORMALIZED=""
             return 0
         fi
         warn "$ASK_REASON"

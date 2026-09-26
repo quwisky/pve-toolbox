@@ -57,4 +57,15 @@ EOF
 chmod +x "$WORK/driver.sh"
 export ASK_SECRET_PTY_DRIVER="$WORK/driver.sh"
 
+# Ctrl-D at a prompt on a terminal: the error must not tell an operator who
+# is already at a terminal to run it in one.
+cat > "$WORK/driver-eof.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+source "$ROOT/lib/common.sh"
+ask SOME_KEY "pick one" "dflt"
+EOF
+chmod +x "$WORK/driver-eof.sh"
+export ASK_EOF_PTY_DRIVER="$WORK/driver-eof.sh"
+
 expect tests/ask-secret-pty.exp

@@ -402,3 +402,34 @@ expect_out 'stored=yes-kept' "-y keeps an already-valid preset without reading"
 prompt_run $'\n' t_hook_keep
 expect_out 'stored=enter-kept' "Enter keeps an already-valid preset for a required secret"
 pass "ask_secret keeps, clears, validates and never echoes"
+
+# The prompt globals outlive the call, so a secret must not linger in any of
+# them once ask_secret has stored it. _t_upper normalizes, which is what puts
+# a copy of the value in ASK_NORMALIZED.
+_t_upper() { ASK_NORMALIZED=${1^^}; }
+t_secret_globals() {
+    local TOKEN=""; ask_secret TOKEN "token" _t_upper
+    printf 'stored=[%s] globals=[%s|%s|%s]\n' "$TOKEN" "$ASK_LINE" "$ASK_VALUE" "$ASK_NORMALIZED"
+}
+t_secret_globals_yes() {
+    ASSUME_YES=1; local TOKEN=s3cret-value; ask_secret TOKEN "token" _t_upper
+    printf 'stored=[%s] globals=[%s|%s|%s]\n' "$TOKEN" "$ASK_LINE" "$ASK_VALUE" "$ASK_NORMALIZED"
+}
+prompt_run $'s3cret-value\n' t_secret_globals
+expect_out 'stored=[S3CRET-VALUE] globals=[||]' "ask_secret clears the prompt globals"
+prompt_run '' t_secret_globals_yes
+expect_out 'stored=[S3CRET-VALUE] globals=[||]' "ask_secret under -y clears the prompt globals"
+pass "ask_secret leaves no copy of the secret in the prompt globals"
+
+# Only a variable an operator could preset is named; a local one would send
+# them looking for a setting that does not exist, so the prompt is named.
+t_valid_yes_local() { ASSUME_YES=1; local n=3; ask_valid n "even number" "" _t_even; printf 'got=[%s]\n' "$n"; }
+t_secret_yes_local() { ASSUME_YES=1; local hook=""; ask_secret hook "Discord webhook URL" valid_webhook_url; printf 'stored=[%s]\n' "$hook"; }
+prompt_run '' t_valid_yes_local
+expect_rc nonzero "ask_valid invalid local default under -y"
+expect_out 'invalid value for "even number": must be even' "ask_valid invalid local default under -y"
+refuse_out 'invalid value for n:' "ask_valid invalid local default under -y"
+prompt_run '' t_secret_yes_local
+expect_rc nonzero "ask_secret missing local value under -y"
+expect_out 'invalid value for "Discord webhook URL": a webhook URL is required' "ask_secret missing local value under -y"
+pass "-y errors name the prompt when the variable cannot be preset"
