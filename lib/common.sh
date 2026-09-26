@@ -41,18 +41,83 @@ step() { printf '\n%s%s%s\n' "$c_bold" "$*" "$c_reset"; }
 dim()  { printf '%s%s%s\n' "$c_dim" "$*" "$c_reset"; }
 
 # ----------------------------------------------------------------- input --
+#
+# Every prompt goes through _ask_read, so its rules hold everywhere:
+#   - a value already in <var> (preset in the environment, or loaded from
+#     conf) is the default, which is how -y installs are driven;
+#   - under ASSUME_YES the default is validated and nothing is read;
+#   - a read that fails is an error, never a silent default. Piped answers
+#     work; running out of them must not quietly configure a host.
+#
+# A validator is called as `fn <value>` in this shell. It returns 0 to accept,
+# optionally setting ASK_NORMALIZED to the form to store, or sets ASK_REASON
+# and returns 1. The reason is shown to the operator, so a validator used for
+# a secret must never put the value in it.
+ASK_REASON=""
+ASK_NORMALIZED=""
+ASK_VALUE=""
+ASK_LINE=""
 
-# ask <varname> <prompt> <default>
-ask() {
-    local __var=$1 __prompt=$2 __default=$3 __reply
+# Name the variable only when an operator could have preset it.
+_ask_hint() { # _ask_hint <var>
+    if [[ $1 =~ ^[A-Z][A-Z0-9_]*$ ]]; then
+        printf 'run it in a terminal, or use -y and set %s' "$1"
+    else
+        printf 'run it in a terminal'
+    fi
+}
+
+_ask_check() { # _ask_check <validator|""> <value> -> ASK_VALUE, or 1 with ASK_REASON
+    ASK_REASON="" ASK_NORMALIZED="" ASK_VALUE=$2
+    [[ -n $1 ]] || return 0
+    if ! "$1" "$2"; then
+        ASK_REASON=${ASK_REASON:-value not accepted}
+        return 1
+    fi
+    [[ -z $ASK_NORMALIZED ]] || ASK_VALUE=$ASK_NORMALIZED
+}
+
+# A last line without a newline still counts as an answer.
+_ask_line() { # _ask_line <prompt> [secret] -> ASK_LINE
+    local -a __flags=(-r)
+    [[ ${2:-} != secret ]] || __flags+=(-s)
+    ASK_LINE=""
+    read "${__flags[@]}" -p "$1" ASK_LINE || [[ -n $ASK_LINE ]]
+}
+
+_ask_read() { # _ask_read <var> <prompt> <default> [validator]
+    local __var=$1 __prompt=$2 __default=$3 __fn=${4:-}
     if [[ -n ${!__var:-} ]]; then __default=${!__var}; fi
     if [[ $ASSUME_YES -eq 1 ]]; then
-        printf -v "$__var" '%s' "$__default"
+        _ask_check "$__fn" "$__default" \
+            || die "invalid value for $__var: $ASK_REASON"
+        printf -v "$__var" '%s' "$ASK_VALUE"
         return 0
     fi
-    read -r -p "$(printf '%s [%s]: ' "$__prompt" "$c_dim$__default$c_reset")" __reply || true
-    printf -v "$__var" '%s' "${__reply:-$__default}"
+    while true; do
+        _ask_line "$(printf '%s [%s]: ' "$__prompt" "$c_dim$__default$c_reset")" \
+            || die "no answer for \"$__prompt\" (input closed); $(_ask_hint "$__var")"
+        if _ask_check "$__fn" "${ASK_LINE:-$__default}"; then
+            printf -v "$__var" '%s' "$ASK_VALUE"
+            return 0
+        fi
+        warn "$ASK_REASON"
+    done
 }
+
+ask() { _ask_read "$1" "$2" "$3"; }                # ask <var> <prompt> <default>
+ask_valid() { _ask_read "$1" "$2" "$3" "$4"; }     # ask_valid <var> <prompt> <default> <fn>
+
+# Stored as y or n. 1/0 and true/false are accepted because older conf files
+# and env presets spell booleans that way.
+_ask_yn_valid() {
+    case ${1,,} in
+        y|yes|1|true)  ASK_NORMALIZED=y ;;
+        n|no|0|false)  ASK_NORMALIZED=n ;;
+        *) ASK_REASON="please answer y or n"; return 1 ;;
+    esac
+}
+ask_yn() { _ask_read "$1" "$2 (y/n)" "$3" _ask_yn_valid; }   # ask_yn <var> <prompt> <y|n>
 
 # ask_secret <varname> <prompt>
 ask_secret() {
@@ -61,25 +126,6 @@ ask_secret() {
     read -r -s -p "$(printf '%s: ' "$__prompt")" __reply || true
     echo
     printf -v "$__var" '%s' "$__reply"
-}
-
-# ask_yn <varname> <prompt> <y|n>
-ask_yn() {
-    local __var=$1 __prompt=$2 __default=$3 __reply
-    if [[ -n ${!__var:-} ]]; then __default=${!__var}; fi
-    if [[ $ASSUME_YES -eq 1 ]]; then
-        printf -v "$__var" '%s' "$__default"
-        return 0
-    fi
-    while true; do
-        read -r -p "$(printf '%s (y/n) [%s]: ' "$__prompt" "$c_dim$__default$c_reset")" __reply || true
-        __reply=${__reply:-$__default}
-        case ${__reply,,} in
-            y|yes) printf -v "$__var" 'y'; return 0 ;;
-            n|no)  printf -v "$__var" 'n'; return 0 ;;
-            *) warn "please answer y or n" ;;
-        esac
-    done
 }
 
 confirm() { # confirm <prompt> <default y|n> -> exit status

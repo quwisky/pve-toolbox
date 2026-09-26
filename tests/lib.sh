@@ -232,3 +232,74 @@ compare_is 1.70.0 v1.69.1 downgrade
 # An install predating the state file reports unknown; anything beats it.
 compare_is unknown v1.69.1 upgrade
 pass "update decision"
+
+# --- prompts ------------------------------------------------------------------
+
+# prompt_run <input> <function> -> PROMPT_OUT (stdout and stderr), PROMPT_RC.
+# The function runs in a pipeline subshell, so a die inside it ends only that.
+prompt_run() {
+    local input=$1 fn=$2
+    PROMPT_RC=0
+    PROMPT_OUT=$(printf '%s' "$input" | "$fn" 2>&1) || PROMPT_RC=$?
+}
+expect_out() { [[ $PROMPT_OUT == *"$1"* ]] || fail "$2: missing [$1] in [$PROMPT_OUT]"; }
+refuse_out() { [[ $PROMPT_OUT != *"$1"* ]] || fail "$2: unexpected [$1] in [$PROMPT_OUT]"; }
+expect_rc() { # expect_rc <zero|nonzero> <what>
+    if [[ $1 == zero ]]; then
+        [[ $PROMPT_RC -eq 0 ]] || fail "$2: exit $PROMPT_RC [$PROMPT_OUT]"
+    else
+        [[ $PROMPT_RC -ne 0 ]] || fail "$2: succeeded [$PROMPT_OUT]"
+    fi
+}
+
+t_ask()        { local answer=""; ask answer "pick one" "dflt"; printf 'got=[%s]\n' "$answer"; }
+t_ask_key()    { ask SOME_KEY "pick one" "dflt"; printf 'got=[%s]\n' "$SOME_KEY"; }
+t_ask_preset() { local SOME_KEY=preset; ask SOME_KEY "pick one" "dflt"; printf 'got=[%s]\n' "$SOME_KEY"; }
+
+prompt_run $'typed\n' t_ask
+expect_rc zero "ask piped answer"; expect_out 'got=[typed]' "ask piped answer"
+prompt_run $'\n' t_ask
+expect_out 'got=[dflt]' "ask blank answer"
+prompt_run 'unterminated' t_ask
+expect_out 'got=[unterminated]' "ask last line without a newline"
+prompt_run $'\n' t_ask_preset
+expect_out 'got=[preset]' "ask preset default"
+prompt_run '' t_ask
+expect_rc nonzero "ask on closed input"
+expect_out 'no answer for "pick one"' "ask on closed input"
+refuse_out 'got=' "ask on closed input"
+refuse_out 'set answer' "ask hint for a local variable"
+prompt_run '' t_ask_key
+expect_out 'use -y and set SOME_KEY' "ask hint for a presettable key"
+pass "ask reads piped answers and fails closed on EOF"
+
+_t_even() {
+    [[ $1 =~ ^[0-9]+$ ]] && (( $1 % 2 == 0 )) || { ASK_REASON="must be even"; return 1; }
+    ASK_NORMALIZED="even-$1"
+}
+t_valid()     { local n=""; ask_valid n "even number" "" _t_even; printf 'got=[%s]\n' "$n"; }
+t_valid_yes() { ASSUME_YES=1; local EVEN_N=3; ask_valid EVEN_N "even number" "" _t_even; printf 'got=[%s]\n' "$EVEN_N"; }
+
+prompt_run $'3\n4\n' t_valid
+expect_out 'must be even' "ask_valid rejection"; expect_out 'got=[even-4]' "ask_valid normalized re-prompt"
+prompt_run '' t_valid_yes
+expect_rc nonzero "ask_valid invalid preset under -y"
+expect_out 'invalid value for EVEN_N: must be even' "ask_valid invalid preset under -y"
+refuse_out 'got=' "ask_valid invalid preset under -y"
+pass "ask_valid re-prompts interactively and dies under -y"
+
+t_yn()        { local reply=""; ask_yn reply "go on" "n"; printf 'got=[%s]\n' "$reply"; }
+t_yn_preset() { ASSUME_YES=1; local FLAG=1; ask_yn FLAG "go on" "n"; printf 'got=[%s]\n' "$FLAG"; }
+t_confirm()   { if confirm "sure?" n; then echo 'answer=yes'; else echo 'answer=no'; fi; }
+
+prompt_run $'maybe\nYES\n' t_yn
+expect_out 'please answer y or n' "ask_yn rejection"; expect_out 'got=[y]' "ask_yn re-prompt"
+prompt_run '' t_yn_preset
+expect_out 'got=[y]' "ask_yn legacy 1 preset"
+prompt_run $'y\n' t_confirm
+expect_out 'answer=yes' "confirm reads its caller's __r"
+prompt_run $'\n' t_confirm
+expect_out 'answer=no' "confirm default"
+prompt_run '' t_confirm
+expect_rc nonzero "confirm on closed input"; refuse_out 'answer=' "confirm on closed input"
+pass "ask_yn and confirm validate and fail closed"
