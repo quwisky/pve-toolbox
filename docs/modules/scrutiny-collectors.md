@@ -29,10 +29,15 @@ collector set untouched.
 name, an IPv4 address or a bracketed IPv6 literal such as
 `http://[fd00::10]:8080`, optionally followed by a port and a path. A trailing
 slash is stripped. Anything else — including a URL with a user name or
-password in it, or a path containing `"` or `\` — is re-asked with a reminder
-of the expected form. `SCRUTINY_HOST_ID` cannot be left blank. Each
-collector's schedule is validated the same way as any other module's timer,
-with `systemd-analyze calendar`.
+password in it, a path containing `"` or `\`, or any control character
+anywhere in the value — is re-asked with a reminder of the expected form.
+`SCRUTINY_HOST_ID` cannot be left blank, and — like `SCRUTINY_API_TOKEN` and
+the endpoint — must not contain a `"`, a `\` or a control character, because
+all three are written into `collector.yaml` as YAML double-quoted strings; a
+bad value is re-asked at the prompt and refused a second time, without ever
+being written, if it somehow reaches the file-writing step. Each collector's
+schedule is validated the same way as any other module's timer, with
+`systemd-analyze calendar`.
 
 Install asks every question, including whether to run each collector once
 at the end, before it downloads the release. If the answers run out, it stops
