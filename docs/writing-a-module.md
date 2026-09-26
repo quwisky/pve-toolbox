@@ -187,6 +187,11 @@ Everything in `lib/common.sh` is already sourced:
 Ask every question before the first write. See
 [Prompts](reference/common.md#prompts).
 
+A module keeps writing its own output with `info`/`ok`/`warn`/`step`/`dim`
+(stdout, `c_*`) and reporting its own errors with `die` (stderr, `e_*`);
+`toolbox_color_setup` already decided both before the module ran, so nothing
+about writing a module changes here. See [Output](reference/common.md#output).
+
 See the [`lib/common.sh` reference](reference/common.md).
 
 ## Migrating package configuration

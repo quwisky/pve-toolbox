@@ -93,13 +93,42 @@ pve-toolbox status [mod]       detailed status
 pve-toolbox doctor             read-only host and module health audit
 pve-toolbox uninstall <mod>...
 pve-toolbox self-update        git pull this checkout (git installs only)
+pve-toolbox help [command]     list commands, or one command's usage and flags
 pve-toolbox --version          print the installed version
 ```
 
 Flags: `-y` non-interactive (modules read their env vars instead of
 prompting), `-f` force, `--json` versioned output, `--quiet` exit-status-only
-output, `-V` version, `-h` help. JSON and quiet output are available for
-`status`, `check`, and `doctor`.
+output, `--color=auto|always|never` colour output, `-V` version, `-h` help.
+JSON and quiet output are available for `status`, `check`, and `doctor`.
+
+## Help
+
+`pve-toolbox help` lists every command with a one-line summary. `pve-toolbox
+help <command>` and `pve-toolbox <command> --help` are the same thing: that
+command's usage, its flags, whether it requires root, and examples where any
+are documented.
+
+An unknown command, an unsupported flag for the command given, an unknown
+module, or an unknown tag to `list` is a usage error: exit status `64`, the
+message on stderr as `error: <what was wrong>`, a `did you mean: ...?` line
+when a close match exists, and a final line naming where to read the usage
+(`run 'pve-toolbox help <command>' for usage`, or the general help when the
+mistyped word is not itself a known command).
+
+## Colour
+
+Colour is decided separately for stdout and stderr, so redirecting one leaves
+the other exactly as it would otherwise be. `auto` (the default) colours a
+stream only when it is a terminal. Setting
+[`NO_COLOR`](https://no-color.org) to any non-empty value, or `TERM=dumb`,
+turns `auto` off; `--color=always` and `--color=never` override both,
+regardless of whether the stream is a terminal. `--json` or `--quiet`
+anywhere on the line always force colour off, even over an explicit
+`--color=always`, since their output has to stay parseable. `--color` is
+read before anything else on the command line, so even a usage error raised
+while parsing the rest of the line (an unknown flag, a bad `--color` value)
+is coloured the same way the command itself would have been.
 
 The [`doctor` command](doctor.md) checks the host and every installed module
 without making changes. Its exit status distinguishes a healthy report from a

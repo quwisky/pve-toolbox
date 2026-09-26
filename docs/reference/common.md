@@ -27,9 +27,25 @@ package tests.
 
 ## Output
 
+`toolbox_color_setup`
+: Sets `c_reset` `c_bold` `c_dim` `c_red` `c_green` `c_yellow` `c_blue` (for
+  stdout) and `e_reset` `e_bold` `e_red` `e_yellow` (for stderr), deciding
+  each stream independently. `TOOLBOX_COLOR` (`auto` default, `always`, or
+  `never`) is what it reads: `auto` colours a stream only when it is a
+  terminal; [`NO_COLOR`](https://no-color.org) (any non-empty value) or
+  `TERM=dumb` turn `auto` off; `always`/`never` override both regardless of
+  whether the stream is a terminal. The launcher decides `TOOLBOX_COLOR` from
+  `--color` once, before running anything, and exports it, so a standalone
+  runner that re-sources this file and calls `toolbox_color_setup` again
+  (there is no other reason to call it — it already runs once when the file
+  is sourced) reaches the same decision. `--json` and `--quiet` force
+  `TOOLBOX_COLOR=never` in the launcher regardless of `--color`, since that
+  output has to stay parseable.
+
 `info` `ok` `warn` `die` `step` `dim`
-: Coloured when stdout is a tty, plain otherwise. `die` writes to stderr and
-  exits 1.
+: `info`, `ok`, `warn`, `step`, and `dim` write to stdout with `c_*`. `die`
+  writes to stderr with `e_*` and exits 1, so redirecting only stdout does not
+  change whether `die`'s output is coloured.
 
 ## Prompts
 

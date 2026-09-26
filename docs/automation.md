@@ -13,7 +13,19 @@ pve-toolbox check --quiet
 
 The options are deliberately limited to read-only commands. `--json` and
 `--quiet` cannot be combined because quiet mode promises that no report is
-written.
+written. Both also force colour off (`--color=never`) regardless of `--color`
+or `NO_COLOR`, since this output has to stay parseable.
+
+## Colour
+
+stdout and stderr each decide colour independently: `auto` (the default)
+colours a stream only when it is a terminal, so a script that captures stdout
+but leaves stderr attached to a terminal can still see escape codes on
+stderr. Set `--color=never`, or export [`NO_COLOR`](https://no-color.org),
+to keep captured stderr free of escape codes regardless of the terminal.
+`TERM=dumb` also turns colour off. `--color=always` overrides `NO_COLOR` and
+`TERM=dumb`, but `--json` or `--quiet` anywhere on the line always win over
+even an explicit `--color=always`, since their output has to stay parseable.
 
 ## Exit codes
 
@@ -22,12 +34,32 @@ written.
 | `0` | Success, including an empty or skipped-only report |
 | `1` | Operational failure |
 | `2` | Warning, including an available module update |
-| `64` | Invalid command, flag, argument, or module name |
+| `64` | Invalid command, flag, argument, module name, or tag |
 | `69` | Every meaningful result is unsupported on this host |
 
 Failure takes precedence over warning, warning over success, and a successful
 result over an unsupported one. This lets a broad doctor run report optional
 unsupported subsystems without making a healthy host fail.
+
+### Usage errors (exit 64)
+
+A rejected command line never runs anything. It always writes to stderr as
+`error: <what was wrong>`, first line, and stops there when nothing close
+matches; when a close candidate exists, a `did you mean: a, b?` line follows
+(at most three, closest match first); and the last line always names where to
+read the usage: `run 'pve-toolbox help <command>' for usage` when the command
+itself is known, or `run 'pve-toolbox help' for usage` otherwise:
+
+```
+error: unknown command: stauts
+did you mean: status?
+run 'pve-toolbox help' for usage
+```
+
+This covers an unknown command, a flag the given command does not accept, an
+unknown module or module tag, and an unknown top-level flag. An unknown tag to
+`list` (for example `pve-toolbox list nope`) is a usage error too; earlier
+releases printed nothing for a tag no module carries.
 
 Quiet mode prints nothing. Capture its status explicitly so Bash strict mode
 does not treat an expected warning as an unhandled failure:
