@@ -804,7 +804,7 @@ link_completions() {
 # Candidates for the completion scripts. Separate from `list` because that
 # prints a status per module, and a TAB press should not shell out to zpool.
 cmd_complete() { # cmd_complete <commands|modules|installed|tags|flags <cmd>|flag-help <cmd>>
-    local m f
+    local m f cmd
     case ${1:-} in
         commands)
             printf '%s\n' "${CLI_COMMANDS[@]}" ;;
@@ -820,14 +820,24 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags|flags <cmd>|fla
         tags)
             module_tags ;;
         flags)
+            cmd=${2:-}
             cli_global_flag_names
-            # shellcheck disable=SC2086 # CLI_FLAGS values are space-separated lists.
-            [[ -z ${CLI_FLAGS[${2:-}]:-} ]] || printf '%s\n' ${CLI_FLAGS[${2:-}]} ;;
-        flag-help)
-            cli_global_flag_help
-            if [[ -n ${CLI_FLAGS[${2:-}]:-} ]]; then
+            # An empty subscript is a bad-array-subscript error under set -u,
+            # not merely an unset one, so an absent or empty command has to be
+            # ruled out before indexing at all; this is the completion a TAB
+            # press makes before any command has been typed. An unknown
+            # command is likewise not in CLI_FLAGS, so it falls through to
+            # the globals alone, same as no command.
+            if [[ -n $cmd && -n ${CLI_FLAGS[$cmd]+x} ]]; then
                 # shellcheck disable=SC2086 # CLI_FLAGS values are space-separated lists.
-                for f in ${CLI_FLAGS[${2:-}]}; do
+                printf '%s\n' ${CLI_FLAGS[$cmd]}
+            fi ;;
+        flag-help)
+            cmd=${2:-}
+            cli_global_flag_help
+            if [[ -n $cmd && -n ${CLI_FLAGS[$cmd]+x} ]]; then
+                # shellcheck disable=SC2086 # CLI_FLAGS values are space-separated lists.
+                for f in ${CLI_FLAGS[$cmd]}; do
                     printf '%s:%s\n' "$f" "${CLI_FLAG_DESC[$f]}"
                 done
             fi ;;

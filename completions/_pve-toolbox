@@ -25,6 +25,15 @@ _pve-toolbox() {
         if [[ -z $cmd ]]; then cmd=$words[i]; else (( nargs++ )); fi
     done
 
+    # --color's value is not read from the command table: it is the same
+    # three words for every command, checked before the generic flag branch
+    # since --color=* also matches -*.
+    if [[ $words[CURRENT] == --color=* ]]; then
+        local -a colors
+        colors=(--color=auto --color=always --color=never)
+        compadd -a colors
+        return
+    fi
     if [[ $words[CURRENT] == -* ]]; then
         local -a flagspecs
         flagspecs=( ${(f)"$(_pve-toolbox_candidates flag-help $cmd)"} )

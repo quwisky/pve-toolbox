@@ -176,3 +176,31 @@ for c in "${!drift_flags[@]}"; do
     done
 done
 pass "completion targets track the command table"
+
+# `_complete flags`/`flag-help` with no command, an empty command, or an
+# unknown command is the most common completion of all - `pve-toolbox -<TAB>`
+# before any command has been typed - and must not fail under `set -u`: only
+# the globals, no stderr, exit 0.
+for target in flags flag-help; do
+    errfile=$(tmp)/stderr
+    rc=0; out=$(launch _complete "$target" 2>"$errfile") || rc=$?
+    err=$(<"$errfile")
+    [[ $rc -eq 0 ]] || fail "'_complete $target' with no command exited $rc: $err"
+    [[ -z $err ]] || fail "'_complete $target' with no command wrote to stderr: $err"
+    [[ $out == *"-y"* ]] || fail "'_complete $target' with no command dropped the globals: $out"
+
+    errfile=$(tmp)/stderr
+    rc=0; out=$(launch _complete "$target" "" 2>"$errfile") || rc=$?
+    err=$(<"$errfile")
+    [[ $rc -eq 0 ]] || fail "'_complete $target \"\"' exited $rc: $err"
+    [[ -z $err ]] || fail "'_complete $target \"\"' wrote to stderr: $err"
+    [[ $out == *"-y"* ]] || fail "'_complete $target \"\"' dropped the globals: $out"
+
+    errfile=$(tmp)/stderr
+    rc=0; out=$(launch _complete "$target" bogus-command 2>"$errfile") || rc=$?
+    err=$(<"$errfile")
+    [[ $rc -eq 0 ]] || fail "'_complete $target bogus-command' exited $rc: $err"
+    [[ -z $err ]] || fail "'_complete $target bogus-command' wrote to stderr: $err"
+    [[ $out == *"-y"* ]] || fail "'_complete $target bogus-command' dropped the globals: $out"
+done
+pass "_complete flags and flag-help survive an absent, empty, or unknown command"

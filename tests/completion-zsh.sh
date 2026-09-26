@@ -122,4 +122,12 @@ print "ok  zsh offers a command'"'"'s own flags, not another command'"'"'s"
 got=$(offers 3 ./pve-toolbox help "")
 has $got status || fail "help offered no command names: $got"
 print "ok  zsh completes command names after help"
+
+# --color'"'"'s value is the same three words for every command, offered
+# before any command has even been typed.
+got=$(offers 2 ./pve-toolbox "--color=")
+for value in --color=auto --color=always --color=never; do
+    has $got $value || fail "--color= missing $value: $got"
+done
+print "ok  zsh offers --color'"'"'s values"
 '
