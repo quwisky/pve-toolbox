@@ -33,24 +33,56 @@ package tests.
 
 ## Prompts
 
+Every prompt follows the same rules:
+
+- A value already in `<var>` (an environment preset, or a key loaded with
+  `conf_load`) becomes the default. This is how `-y` installs are driven.
+- With `ASSUME_YES=1` nothing is read. The default is validated, and an
+  invalid one ends the module with `invalid value for <VAR>: <reason>` before
+  anything is written.
+- Interactively, a rejected answer prints its reason and the prompt repeats.
+- A read that fails, because stdin is closed or piped answers ran out, ends
+  the module with `no answer for "<prompt>"`. It never falls back to the
+  default.
+
 `ask <var> <prompt> <default>`
-: Reads into `<var>`. If `<var>` is already set its value becomes the default,
-  which is how env vars override prompts.
+: Free text.
+
+`ask_valid <var> <prompt> <default> <fn>`
+: Free text checked by a validator: `fn <value>` returns 0 to accept,
+  optionally setting `ASK_NORMALIZED` to the form to store, or sets
+  `ASK_REASON` and returns 1.
+
+`ask_int <var> <prompt> <default> [min] [max]`
+: A whole number without leading zeros, inside the bounds.
+
+`ask_choice <var> <prompt> <default> <choice>...`
+: One of the choices, matched case-insensitively and stored as spelled in the
+  call. The prompt lists them.
+
+`ask_schedule <var> <prompt> <default>`
+: A systemd `OnCalendar` expression that `systemd-analyze calendar` accepts
+  and that elapses in the future. `valid_schedule` is the same check as a
+  validator.
 
 `ask_yn <var> <prompt> <y|n>`
-: Loops until it gets a yes or no.
+: Stores `y` or `n`. Presets of `1`, `0`, `true` and `false` are accepted.
 
-`ask_secret <var> <prompt>`
-: No echo. Skipped entirely if `<var>` is already set.
+`ask_secret <var> <prompt> [fn]`
+: Never echoed and never shown. When `<var>` already holds a value, Enter
+  keeps it and `none` clears it. A validator that rejects an empty value makes
+  the secret required. `valid_webhook_url` (from `lib/discord.sh`) is the
+  validator for Discord webhooks. A validator's reason must never include the
+  value.
 
 `confirm <prompt> [y|n]`
-: Exit status, for use in `if`.
+: Exit status, for use in `if`. Closed input is an error, not the default.
 
-!!! note "`-y` mode"
+!!! warning "Ask before you write"
 
-    With `ASSUME_YES=1` every prompt returns its default without reading. A
-    module that requires a value must check for it and `die` rather than
-    looping forever on an empty default.
+    Prompt failures end the module through `die`. Ask every question before
+    the first `conf_set`, `state_set` or file write, so a failed or
+    interrupted prompt leaves nothing half-configured.
 
 ## Preflight
 

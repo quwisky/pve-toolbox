@@ -30,7 +30,8 @@
 #     module_uninstall    remove what install created
 #
 # Everything in lib/common.sh is already sourced: info/ok/warn/die/step,
-# ask/ask_yn/ask_secret/confirm, require_root/require_pve, detect_arch,
+# ask/ask_valid/ask_int/ask_choice/ask_schedule/ask_yn/ask_secret/confirm,
+# require_root/require_pve, detect_arch,
 # pkg_ensure, gh_release/install_release_binary/rollback_binary,
 # state_get/state_set, conf_get/conf_set, systemd_oneshot/systemd_remove,
 # run_unit, backup_file, discord_notify, install_toolbox_lib.
@@ -53,11 +54,14 @@ MODULE_HOST_ONLY=0
 module_install() {
     require_root
 
-    local answer=""
+    # Ask everything before writing anything: a prompt that cannot be
+    # answered ends the module, and nothing should be half-configured.
+    local answer="" keep=7
     ask answer "some setting" "default-value"
+    ask_int keep "days to keep" "$keep" 1 365
 
     # ... do the work ...
-    dim "  you picked: $answer"
+    dim "  you picked: $answer, keeping $keep days"
 
     conf_set  "$MODULE_NAME" SOME_TOKEN "$answer"        # 0600, secrets
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"  # 0644, facts

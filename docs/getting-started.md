@@ -217,6 +217,11 @@ ZFS_SCRUB_POOLS='rpool tank' \
   pve-toolbox -y install zfs-scrub
 ```
 
+Under `-y`, every preset is validated before anything is written, and an
+invalid one stops the install with the variable's name. Without `-y`, answers
+may be piped in, but running out of them is an error. The toolbox never fills
+in defaults for unanswered prompts.
+
 The per-module pages list the variables each one accepts.
 
 ## Development

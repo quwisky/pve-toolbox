@@ -174,13 +174,18 @@ same shell.
 
 Everything in `lib/common.sh` is already sourced:
 
-`info` `ok` `warn` `die` `step` `dim` · `ask` `ask_yn` `ask_secret` `confirm` ·
+`info` `ok` `warn` `die` `step` `dim` ·
+`ask` `ask_valid` `ask_int` `ask_choice` `ask_schedule` `ask_yn` `ask_secret`
+`confirm` ·
 `require_root` `require_pve` `in_lxc` · `detect_arch` `pkg_ensure` `have_zfs`
 `have_mdadm` · `gh_release` `install_release_binary` `rollback_binary`
 `version_bare` `is_newer` · `state_*` `conf_*` · `systemd_oneshot` `systemd_remove`
 `wait_for_idle` `run_unit` · `backup_file` `install_toolbox_lib` ·
 `doctor_result` ·
 [`discord_notify`](reference/discord.md)
+
+Ask every question before the first write. See
+[Prompts](reference/common.md#prompts).
 
 See the [`lib/common.sh` reference](reference/common.md).
 
