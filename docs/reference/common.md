@@ -49,8 +49,6 @@ Every prompt follows the same rules:
   `run it in a terminal, or use -y and set <VAR>`; after Ctrl-D at a terminal
   it adds only `use -y and set <VAR>`. Either hint names `<VAR>` only when it
   is upper case.
-- Ask every question before the first write. Answers that run out then stop
-  the module before it has changed anything.
 
 `ask <var> <prompt> <default>`
 : Free text.
