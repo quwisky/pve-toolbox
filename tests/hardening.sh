@@ -985,6 +985,62 @@ pass "scrutiny -y preset with a YAML-breaking host id dies and writes nothing"
 ) || exit 1
 pass "scrutiny -y preset with a YAML-breaking token dies, writes nothing and hides the token"
 
+# The gate after the prompts catches a value a prompt validator let through:
+# with the validators stubbed to accept anything, it still stops the install
+# before the health check and before any write, naming only the variable.
+(
+    dir="$WORK/sc-post-prompt-gate"
+    export TOOLBOX_BIN_DIR="$dir/bin" TOOLBOX_LIB_DIR="$dir/lib"
+    export TOOLBOX_CONF_DIR="$dir/conf" TOOLBOX_STATE_DIR="$dir/state"
+    export TOOLBOX_SYSTEMD_DIR="$dir/systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    ASSUME_YES=1
+    SCRUTINY_API_ENDPOINT=http://10.0.0.10:8080
+    SCRUTINY_HOST_ID=pve1
+    SCRUTINY_API_TOKEN=$'gate"s3cr3t\xc2\x85'
+    unset SCRUTINY_VERSION SCRUTINY_SCHEDULE_METRICS SCRUTINY_SCHEDULE_ZFS \
+          SCRUTINY_SCHEDULE_MDADM SCRUTINY_SCHEDULE_PERFORMANCE
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    CONFIG_DIR="$dir/config"
+    require_root() { :; }
+    require_pve() { :; }
+    pkg_ensure() { :; }
+    detect_arch() { printf 'amd64'; }
+    curl() { : > "$WORK/sc-post-prompt-gate.curl"; return 0; }
+    gh_release() { GH_TAG=v2.0.0; }
+    gh_fetch_checksums() { CHECKSUM_FILE=""; }
+    _sc_stage_binary() { printf 'metrics\n' > "$3"; }
+    systemd_oneshot() { :; }
+    state_set() { :; }
+    have_zfs() { return 1; }
+    have_mdadm() { return 1; }
+    _sc_valid_endpoint() { :; }
+    _sc_valid_token() { :; }
+    _sc_valid_host_id() { :; }
+
+    rc=0
+    out=$(module_install 2>&1) || rc=$?
+    [[ $rc -ne 0 ]] \
+        || fail "scrutiny installed past the post-prompt gate with a YAML-breaking token"
+    [[ $out == *'refusing to write the collector configuration: SCRUTINY_API_TOKEN '* ]] \
+        || fail "the post-prompt gate did not name the collector configuration and SCRUTINY_API_TOKEN"
+    [[ $out != *s3cr3t* ]] \
+        || fail "the post-prompt gate echoed the token value"
+    [[ ! -e $WORK/sc-post-prompt-gate.curl ]] \
+        || fail "the post-prompt gate ran after the health check"
+    left=$(find "$dir" -type f)
+    [[ -z $left ]] \
+        || fail "scrutiny wrote files past the post-prompt gate: $left"
+    [[ ! -e $CONFIG_DIR ]] \
+        || fail "scrutiny created $CONFIG_DIR past the post-prompt gate"
+) || exit 1
+pass "scrutiny's post-prompt gate refuses a value the prompts let through"
+
 # Defense in depth: even a direct call bypassing the prompts must refuse to
 # write a YAML file that a bad value would break, and must name the key, not
 # the value, in its failure.
