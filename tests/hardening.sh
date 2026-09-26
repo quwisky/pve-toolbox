@@ -331,7 +331,10 @@ SH
         ZR_LOG_DIR=$dir/log
         require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
         have_zfs() { return 0; }; zfs() { return 0; }
-        systemd-analyze() { [[ $1 == calendar ]] && printf "  Next elapse: Thu 2026-10-01 00:00:00 UTC\n"; }
+        systemd-analyze() { # any schedule but "bogus" is valid
+            [[ $1 == calendar && ${*: -1} != bogus ]] || return 1
+            printf "  Next elapse: Thu 2026-10-01 00:00:00 UTC\n"
+        }
         "$fn"
     ' _ "$dir" "$@" 2>&1) || ZR_RC=$?
     [[ $ZR_RC -ne 124 ]] || fail "zfs-replication $3 hung: $ZR_OUT"
@@ -363,6 +366,18 @@ zr_run "$WORK/zr-none" "$zr_hook\n\n\n\n\n" module_install ZFS_REPL_JOBS='a b'
     || fail "zfs-replication asked more questions after every job was dropped: $ZR_OUT"
 zr_nothing_written "$WORK/zr-none" "zfs-replication with no usable jobs"
 pass "zfs-replication with no usable jobs stops before the notify questions and writes nothing"
+
+# Under -y an invalid preset in a later job stops the install before job a,
+# which is valid, or anything else is written.
+zr_run "$WORK/zr-y-mid" '' module_install ASSUME_YES=1 \
+    ZFS_REPL_WEBHOOK="$zr_hook" ZFS_REPL_JOBS='a b' \
+    ZFS_REPL_A_SRC=tank/a ZFS_REPL_A_DST=backup/a ZFS_REPL_A_SCHEDULE=daily \
+    ZFS_REPL_B_SRC=tank/b ZFS_REPL_B_DST=backup/b ZFS_REPL_B_SCHEDULE=bogus
+[[ $ZR_RC -ne 0 ]] || fail "zfs-replication -y installed with an invalid schedule for job b: $ZR_OUT"
+[[ $ZR_OUT == *'schedule for b'*'not a systemd OnCalendar expression: bogus'* ]] \
+    || fail "zfs-replication -y did not name job b's schedule: $ZR_OUT"
+zr_nothing_written "$WORK/zr-y-mid" "zfs-replication -y with an invalid schedule for job b"
+pass "zfs-replication -y with an invalid later job writes nothing"
 
 # The complete answer set writes each job's keys and timer.
 answers="$zr_hook\n"
@@ -400,14 +415,31 @@ grep -qx 'OnCalendar=hourly' "$WORK/zr-ok/systemd/pve-toolbox-zfs-sync@b.timer" 
     || fail "zfs-replication did not install the runner and service"
 pass "zfs-replication install writes every job's keys and timer"
 
-# update still asks for and writes a job whose timer went missing. update does
-# not load the module defaults, so the schedule default is preset here.
-rm "$WORK/zr-ok/systemd/pve-toolbox-zfs-sync@b.timer"
-zr_run "$WORK/zr-ok" '\n\n\n\nhourly\n' module_update ZFS_REPL_SCHEDULE='*-*-* 02:30:00'
-[[ $ZR_RC -eq 0 ]] || fail "zfs-replication update could not repair a missing timer: $ZR_OUT"
-grep -qx 'OnCalendar=hourly' "$WORK/zr-ok/systemd/pve-toolbox-zfs-sync@b.timer" \
-    || fail "zfs-replication update did not rewrite the missing timer: $ZR_OUT"
-pass "zfs-replication update rewrites a missing job timer"
+# update asks for and writes each configured job whose timer is missing. Job a
+# has no stored OPTS, so its prompt falls back to the module default.
+(
+    export TOOLBOX_CONF_DIR="$WORK/zr-upd/conf"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    conf_set zfs-replication JOBS 'a b'
+    conf_set zfs-replication JOB_A_SRC tank/a
+    conf_set zfs-replication JOB_A_DST backup/a
+    conf_set zfs-replication JOB_A_OPTS ''
+    conf_set zfs-replication JOB_B_SRC tank/b
+    conf_set zfs-replication JOB_B_DST backup/b
+    conf_set zfs-replication JOB_B_OPTS --no-sync-snap
+) >/dev/null || exit 1
+answers='\n\n\n\n\n'            # job a: every default
+answers+='\n\n\n\nhourly\n'       # job b: its own schedule
+zr_run "$WORK/zr-upd" "$answers" module_update
+[[ $ZR_RC -eq 0 ]] || fail "zfs-replication update could not repair missing timers: $ZR_OUT"
+grep -qx 'OnCalendar=\*-\*-\* 02:30:00' "$WORK/zr-upd/systemd/pve-toolbox-zfs-sync@a.timer" \
+    || fail "zfs-replication update did not write job a's timer with the default schedule: $ZR_OUT"
+grep -qx 'OnCalendar=hourly' "$WORK/zr-upd/systemd/pve-toolbox-zfs-sync@b.timer" \
+    || fail "zfs-replication update did not write job b's timer: $ZR_OUT"
+grep -qx "JOB_A_OPTS='--recursive --compress=zstd-fast'" "$WORK/zr-upd/conf/zfs-replication.conf" \
+    || fail "zfs-replication update did not fill job a's empty OPTS with the default"
+pass "zfs-replication update rewrites missing job timers with the module defaults"
 
 # --- zfs-scrub --------------------------------------------------------------
 

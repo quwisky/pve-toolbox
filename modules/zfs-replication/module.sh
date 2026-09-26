@@ -378,6 +378,8 @@ module_update() {
     require_root
     local check_only=0
     [[ ${1:-} == --check ]] && check_only=1
+    # The repair prompts below fall back to these defaults.
+    _zr_defaults
 
     _zr_configured
     _zr_jobs_unique "${ZR_JOBS[@]}" \
