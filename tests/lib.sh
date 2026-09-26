@@ -340,3 +340,26 @@ expect_out 'invalid value for MODE: choose one of qga/ssh' "ask_choice invalid p
 prompt_run '' t_choice
 expect_out 'no answer for "transport (qga/ssh)"' "ask_choice on closed input"
 pass "ask_choice matches case-insensitively and stores canonical choices"
+
+t_sched() {
+    systemd-analyze() {
+        [[ $1 == calendar && $2 == --iterations=1 ]] || return 2
+        case $3 in
+            daily) printf '  Next elapse: Thu 2026-10-01 00:00:00 UTC\n' ;;
+            dead)  printf '  Next elapse: never\n' ;;
+            *)     return 1 ;;
+        esac
+    }
+    local s=""; ask_schedule s "schedule" "dead"; printf 'got=[%s]\n' "$s"
+}
+# shellcheck disable=SC2123 # deliberately hiding systemd-analyze for this test only
+t_sched_missing() { PATH=/nonexistent; local s=""; ask_schedule s "schedule" "daily"; printf 'got=[%s]\n' "$s"; }
+
+prompt_run $'nonsense\n\ndaily\n' t_sched
+expect_out 'not a systemd OnCalendar expression: nonsense' "ask_schedule syntax"
+expect_out 'schedule never runs: dead' "ask_schedule dead default"
+expect_out 'got=[daily]' "ask_schedule re-prompt"
+prompt_run $'daily\n' t_sched_missing
+expect_rc nonzero "ask_schedule without systemd-analyze"
+expect_out 'systemd-analyze is needed to check schedules' "ask_schedule without systemd-analyze"
+pass "ask_schedule validates with systemd-analyze and never guesses"

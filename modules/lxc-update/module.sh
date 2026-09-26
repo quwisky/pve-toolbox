@@ -25,15 +25,6 @@ _lx_exec() {
         "$TOOLBOX_STATE_DIR" "$(_lx_runner)"
 }
 
-_lx_valid_schedule() {
-    local output
-    [[ -n ${1:-} ]] || return 1
-    command -v systemd-analyze >/dev/null 2>&1 || return 1
-    output=$(LC_ALL=C systemd-analyze calendar --iterations=1 "$1" 2>/dev/null) \
-        || return 1
-    [[ $output == *'Next elapse:'* && $output != *'Next elapse: never'* ]]
-}
-
 _lx_schedule_preset() { # _lx_schedule_preset <daily|weekly>
     case $1 in
         daily) printf '*-*-* 04:00:00' ;;
@@ -53,7 +44,7 @@ _lx_schedule_kind() { # _lx_schedule_kind <OnCalendar>
 _lx_write_units() { # _lx_write_units <OnCalendar>
     local schedule=$1 service timer work
     service=$(_lx_service); timer=$(_lx_timer)
-    _lx_valid_schedule "$schedule" \
+    valid_schedule "$schedule" \
         || { warn "invalid systemd OnCalendar: $schedule"; return 1; }
     [[ -d $TOOLBOX_SYSTEMD_DIR && ! -L $TOOLBOX_SYSTEMD_DIR ]] \
         || { warn "unsafe systemd unit directory: $TOOLBOX_SYSTEMD_DIR"; return 1; }
@@ -240,7 +231,7 @@ _lx_assets_exist() {
 _lx_config_health() {
     local schedule
     schedule=$(conf_get "$MODULE_NAME" LX_SCHEDULE)
-    _lx_valid_schedule "$schedule" \
+    valid_schedule "$schedule" \
         || { LX_HEALTH_REASON="configured schedule is invalid"; return 1; }
     [[ $(conf_get "$MODULE_NAME" LX_SCHEDULE_NOTIFY) =~ ^[01]$ ]] \
         || { LX_HEALTH_REASON="automatic notification setting is invalid"; return 1; }
@@ -355,24 +346,12 @@ module_install() {
     ask_yn schedule_enabled "Enable automatic LXC package updates" "$schedule_enabled"
     if [[ $schedule_enabled == y ]]; then
         schedule_preset=${requested_preset:-$(_lx_schedule_kind "$LX_SCHEDULE")}
-        while true; do
-            ask schedule_preset "Schedule preset (daily, weekly, custom)" "$schedule_preset"
-            case ${schedule_preset,,} in
-                daily|weekly)
-                    LX_SCHEDULE=$(_lx_schedule_preset "${schedule_preset,,}")
-                    break ;;
-                custom)
-                    ask LX_SCHEDULE "systemd OnCalendar" "$LX_SCHEDULE"
-                    _lx_valid_schedule "$LX_SCHEDULE" && break
-                    [[ $ASSUME_YES -eq 1 ]] && die "invalid systemd OnCalendar: $LX_SCHEDULE"
-                    warn "invalid systemd OnCalendar: $LX_SCHEDULE" ;;
-                *)
-                    [[ $ASSUME_YES -eq 1 ]] \
-                        && die "schedule preset must be daily, weekly, or custom"
-                    warn "choose daily, weekly, or custom" ;;
-            esac
-        done
-        _lx_valid_schedule "$LX_SCHEDULE" || die "invalid systemd OnCalendar: $LX_SCHEDULE"
+        ask_choice schedule_preset "Schedule preset" "$schedule_preset" daily weekly custom
+        case $schedule_preset in
+            daily|weekly) LX_SCHEDULE=$(_lx_schedule_preset "$schedule_preset") ;;
+            custom) ask_schedule LX_SCHEDULE "systemd OnCalendar" "$LX_SCHEDULE" ;;
+        esac
+        valid_schedule "$LX_SCHEDULE" || die "invalid systemd OnCalendar: $LX_SCHEDULE"
         schedule_notify=n
         case ${LX_SCHEDULE_NOTIFY,,} in 1|y|yes) schedule_notify=y ;; esac
         ask_yn schedule_notify "Send a Discord report after every automatic run" "$schedule_notify"

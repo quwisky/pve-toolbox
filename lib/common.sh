@@ -156,6 +156,26 @@ ask_choice() { # ask_choice <var> <prompt> <default> <choice>...
     _ask_read "$__var" "$__prompt ($(IFS=/; printf '%s' "$*"))" "$__default" _ask_choice_valid
 }
 
+# A calendar systemd accepts but that never fires (Feb 30th) is refused too:
+# the timer would install cleanly and then do nothing, forever.
+valid_schedule() { # valid_schedule <OnCalendar> -> 0, or 1 with ASK_REASON
+    local output
+    [[ -n ${1:-} ]] || { ASK_REASON="a schedule is required"; return 1; }
+    command -v systemd-analyze >/dev/null 2>&1 \
+        || { ASK_REASON="systemd-analyze is needed to check schedules"; return 1; }
+    output=$(LC_ALL=C systemd-analyze calendar --iterations=1 "$1" 2>/dev/null) \
+        || { ASK_REASON="not a systemd OnCalendar expression: $1"; return 1; }
+    [[ $output == *'Next elapse:'* && $output != *'Next elapse: never'* ]] \
+        || { ASK_REASON="schedule never runs: $1"; return 1; }
+}
+
+# Re-asking cannot fix a missing systemd-analyze, so that ends the install here.
+ask_schedule() { # ask_schedule <var> <prompt> <default>
+    command -v systemd-analyze >/dev/null 2>&1 \
+        || die "systemd-analyze is needed to check schedules"
+    _ask_read "$1" "$2" "$3" valid_schedule
+}
+
 # ask_secret <varname> <prompt>
 ask_secret() {
     local __var=$1 __prompt=$2 __reply
