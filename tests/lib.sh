@@ -448,7 +448,7 @@ pass "valid_required rejects a blank value"
 # C1 controls (U+0080-U+009F) are only visible to [[:cntrl:]] in a UTF-8
 # locale, and a byte that is not UTF-8 at all is refused too. The reason is
 # fixed text, so a rejected secret is never repeated.
-for v in '' plain 'ü' 'ünïcødé' 'a b'; do
+for v in '' plain 'ü' 'ünïcødé' 'a b' $'\xf4\x8f\xbf\xbf'; do
     ASK_REASON=""
     valid_printable "$v" || fail "valid_printable refused [$v]: $ASK_REASON"
 done
@@ -464,6 +464,17 @@ ASK_REASON=""; valid_printable $'a\tb' || true
     || fail "valid_printable control reason: [$ASK_REASON]"
 ASK_REASON=""; valid_printable $'a\xffb' || true
 [[ $ASK_REASON == 'use valid UTF-8 text' ]] || fail "valid_printable UTF-8 reason: [$ASK_REASON]"
+# Byte sequences glibc's UTF-8 to UTF-8 conversion lets through although they
+# are not UTF-8: code points above U+10FFFF, lead bytes F5 and up, the old 5-
+# and 6-byte forms, surrogates and overlong forms.
+for v in $'\xf4\x90\x80\x80' $'\xf7\xbf\xbf\xbf' $'\xf5\x80\x80\x80' $'\xf8\x88\x80\x80\x80' \
+         $'\xfc\x84\x80\x80\x80\x80' $'\xed\xa0\x80' $'\xc0\x80'; do
+    ASK_REASON=""
+    ! valid_printable "$v" \
+        || fail "valid_printable accepted [$(printf '%s' "$v" | od -An -tx1)]"
+    [[ $ASK_REASON == 'use valid UTF-8 text' ]] \
+        || fail "valid_printable reason for [$(printf '%s' "$v" | od -An -tx1)]: [$ASK_REASON]"
+done
 pass "valid_printable refuses C0, DEL, C1 and invalid UTF-8 without repeating the value"
 
 # The UTF-8 locale is the validator's own: the caller's LC_ALL, set or unset,
@@ -491,3 +502,23 @@ expect_out 'use printable characters only' "valid_printable at the prompt"
 refuse_out 'bad' "valid_printable at the prompt never repeats the value"
 expect_out 'got=[good]' "valid_printable re-prompt"
 pass "valid_printable leaves the caller's locale alone and re-prompts"
+
+# Without a UTF-8 locale, [[:cntrl:]] would silently miss C1, so the check
+# refuses instead of passing. glibc 2.41 still finds C.UTF-8 with LOCPATH
+# pointed at an empty directory, so the test names a locale that does not
+# exist through the validator's locale setting.
+t_no_locale() {
+    _PRINTABLE_LOCALE=zz_ZZ.UTF-8
+    local LC_ALL=C
+    if valid_printable $'a\xc2\x85b'; then echo 'c1=accepted'; else echo "c1=[$ASK_REASON]"; fi
+    if valid_printable plain; then echo 'plain=accepted'; else echo "plain=[$ASK_REASON]"; fi
+    if valid_printable ''; then echo 'blank=accepted'; fi
+    printf 'LC_ALL=[%s]\n' "$LC_ALL"
+}
+prompt_run '' t_no_locale
+expect_out 'c1=[cannot check characters: the C.UTF-8 locale is unavailable]' "valid_printable without a UTF-8 locale"
+expect_out 'plain=[cannot check characters: the C.UTF-8 locale is unavailable]' "valid_printable without a UTF-8 locale"
+expect_out 'blank=accepted' "valid_printable blank without a UTF-8 locale"
+expect_out 'LC_ALL=[C]' "valid_printable without a UTF-8 locale keeps the caller's LC_ALL"
+refuse_out 'setlocale' "valid_printable without a UTF-8 locale warns on the terminal"
+pass "valid_printable fails closed without a UTF-8 locale"

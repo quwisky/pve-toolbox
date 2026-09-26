@@ -64,7 +64,11 @@ Every prompt follows the same rules:
   tab), DEL and C1 (U+0080 to U+009F), with reason
   `use printable characters only (no tabs or other control characters)`. It
   checks in a UTF-8 locale local to the call, so the caller's `LC_ALL` is
-  unchanged. Its reasons never repeat the value, so it can check secrets.
+  unchanged. Code points above U+10FFFF, surrogates, overlong forms and the
+  old 5- and 6-byte forms count as invalid UTF-8. If the `C.UTF-8` locale is
+  missing, C1 characters cannot be detected, so it refuses every non-blank
+  value with reason `cannot check characters: the C.UTF-8 locale is unavailable`.
+  Its reasons never repeat the value, so it can check secrets.
 
 `ask_int <var> <prompt> <default> [min] [max]`
 : A whole number without leading zeros, inside the bounds.
