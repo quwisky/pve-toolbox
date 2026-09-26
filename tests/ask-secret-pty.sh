@@ -7,7 +7,12 @@
 # pty can: `read` without `-s` echoes there, `read -s` does not. This is the
 # regression check that matters for a secret prompt.
 #
-# Needs expect, on the same "skip unless required" contract as tests/tui.sh.
+# Needs expect. Same dependency, same "skip unless required" contract, and
+# the same expect-driven-terminal-test class as tests/tui.sh, so it honors
+# that script's own gate rather than a second one nothing sets: CI's
+# Debian 13 job, `make test-tui` and AGENTS.md's complete-validation list all
+# already set TUI_TEST_REQUIRED=1, and a variable nothing sets is a gate that
+# silently does nothing.
 #
 set -euo pipefail
 
@@ -15,7 +20,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 ROOT=$PWD
 
 if ! command -v expect >/dev/null 2>&1; then
-    if [[ ${ASK_SECRET_PTY_TEST_REQUIRED:-0} -eq 1 ]]; then
+    if [[ ${TUI_TEST_REQUIRED:-0} -eq 1 ]]; then
         printf 'FAIL ask_secret pty test required but expect is not installed\n' >&2
         exit 1
     fi
