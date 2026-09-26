@@ -349,12 +349,12 @@ module_install() {
     _sh_defaults
     if conf_exists "$MODULE_NAME"; then conf_load "$MODULE_NAME"; fi
     pkg_ensure jq:jq
-    ask SH_SNAPSHOT_DAYS "snapshot warning age (days)" "$SH_SNAPSHOT_DAYS"
-    ask SH_CONTENT_DAYS "ISO/template warning age (days)" "$SH_CONTENT_DAYS"
-    ask SH_CAPACITY_WARN "capacity warning threshold" "$SH_CAPACITY_WARN"
-    ask SH_CAPACITY_FAIL "capacity failure threshold" "$SH_CAPACITY_FAIL"
-    ask SH_THIN_WARN "thin-pool warning threshold" "$SH_THIN_WARN"
-    ask SH_THIN_FAIL "thin-pool failure threshold" "$SH_THIN_FAIL"
+    ask_int SH_SNAPSHOT_DAYS "snapshot warning age (days)" "$SH_SNAPSHOT_DAYS" 1
+    ask_int SH_CONTENT_DAYS "ISO/template warning age (days)" "$SH_CONTENT_DAYS" 1
+    ask_int SH_CAPACITY_WARN "capacity warning threshold (percent)" "$SH_CAPACITY_WARN" 0 99
+    ask_int SH_CAPACITY_FAIL "capacity failure threshold (percent)" "$SH_CAPACITY_FAIL" "$((SH_CAPACITY_WARN + 1))" 100
+    ask_int SH_THIN_WARN "thin-pool warning threshold (percent)" "$SH_THIN_WARN" 0 99
+    ask_int SH_THIN_FAIL "thin-pool failure threshold (percent)" "$SH_THIN_FAIL" "$((SH_THIN_WARN + 1))" 100
     _sh_validate || die "$SH_ERROR"
     local key
     for key in "${SH_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done

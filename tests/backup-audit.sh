@@ -195,3 +195,19 @@ _ba_validate_settings && fail "reversed storage thresholds were accepted"
 BA_FRESHNESS_HOURS=48 BA_STORAGE_WARN=85 BA_STORAGE_FAIL=95 BA_MIN_KEEP_LAST=0
 _ba_validate_settings && fail "zero retention minimum was accepted"
 pass "threshold configuration is validated"
+
+# Thresholds are checked where they are typed: a bad answer is re-asked
+# instead of discarding every answer at the end.
+(
+    unset "${BA_CONF_KEYS[@]}"
+    require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+    export TOOLBOX_CONF_DIR="$WORK/ba-install-conf" TOOLBOX_STATE_DIR="$WORK/ba-install-state"
+    # freshness 0 (rejected) then 24; storage warn 85; storage fail 80
+    # (rejected, must exceed warn) then 90; keep-last default.
+    out=$(printf '%s\n' 0 24 85 80 90 '' | module_install 2>&1) || fail "install with corrected answers failed: $out"
+    [[ $out == *'enter a whole number of at least 1'* ]] || fail "freshness age 0 was not re-asked: $out"
+    [[ $out == *'enter a whole number from 86 to 100'* ]] || fail "failure threshold <= warning was not re-asked: $out"
+    [[ $(conf_get backup-audit BA_FRESHNESS_HOURS) == 24 ]] || fail "corrected freshness hours not stored"
+    [[ $(conf_get backup-audit BA_STORAGE_FAIL) == 90 ]] || fail "corrected storage failure threshold not stored"
+) || exit 1
+pass "backup audit validates thresholds at the prompt"

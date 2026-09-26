@@ -168,3 +168,27 @@ _sh_validate && fail "reversed capacity thresholds were accepted"
 SH_CAPACITY_WARN=85 SH_CAPACITY_FAIL=95 SH_THIN_WARN=95 SH_THIN_FAIL=80
 _sh_validate && fail "reversed thin-pool thresholds were accepted"
 pass "storage hygiene thresholds fail closed"
+
+# Thresholds are checked where they are typed: a bad answer is re-asked
+# instead of discarding every answer at the end.
+(
+    unset "${SH_CONF_KEYS[@]}"
+    require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+    export TOOLBOX_CONF_DIR="$WORK/sh-install-conf" TOOLBOX_STATE_DIR="$WORK/sh-install-state"
+    # snapshot 0 (rejected) then 14; content default; capacity warn 90;
+    # capacity fail 90 (rejected, must exceed warn) then 95; thin defaults.
+    out=$(printf '%s\n' 0 14 '' 90 90 95 '' '' | module_install 2>&1) || fail "install with corrected answers failed: $out"
+    [[ $out == *'enter a whole number of at least 1'* ]] || fail "snapshot age 0 was not re-asked: $out"
+    [[ $out == *'enter a whole number from 91 to 100'* ]] || fail "failure threshold <= warning was not re-asked: $out"
+    [[ $(conf_get storage-hygiene SH_SNAPSHOT_DAYS) == 14 ]] || fail "corrected snapshot age not stored"
+    [[ $(conf_get storage-hygiene SH_CAPACITY_WARN) == 90 && $(conf_get storage-hygiene SH_CAPACITY_FAIL) == 95 ]] \
+        || fail "capacity thresholds not stored"
+    # A fresh conf dir: conf_load would otherwise overwrite the env preset.
+    # Its own subshell: the expected die must not end this test block.
+    if ( TOOLBOX_CONF_DIR="$WORK/sh-yes-conf" ASSUME_YES=1 SH_THIN_WARN=150 \
+        module_install ) >/dev/null 2>&1; then
+        fail "an out-of-range preset was accepted under -y"
+    fi
+    [[ ! -e $WORK/sh-yes-conf/storage-hygiene.conf ]] || fail "a rejected -y preset still wrote configuration"
+) || exit 1
+pass "storage hygiene validates thresholds at the prompt"
