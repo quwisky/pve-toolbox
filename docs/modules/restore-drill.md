@@ -41,6 +41,12 @@ and `RD_ALLOW_UNATTENDED` accept `1`/`0`, `y`/`n`, `yes`/`no` or
 `true`/`false`; any other value stops a `-y` install with an error naming the
 variable.
 
+The helper holds the saved `RD_VMID_START` to the same 100-999999999 range. A
+configuration from an older release with a start below 100 makes every helper
+run, including `--cleanup`, stop with `invalid VMID start`, and `pve-toolbox
+status restore-drill` leaves out the configuration details. Run
+`pve-toolbox install restore-drill` as root to choose a start of 100 or more.
+
 ## Plan first
 
 Supply the exact Proxmox backup volume or archive path:

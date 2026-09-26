@@ -58,6 +58,16 @@ output=$(run_helper --backup "$backup")
     || fail "dry run changed restore state"
 pass "default invocation is a collision-aware dry run"
 
+# The helper holds the saved VMID start to the range the install prompt
+# accepts, so a range below 100 from an older configuration is refused.
+printf '%s\n' "RD_STORAGE='test-store'" "RD_VMID_START='50'" \
+    "RD_BOOT_PROBE='1'" "RD_BOOT_TIMEOUT='1'" "RD_ALLOW_UNATTENDED='1'" > "$WORK/conf/low-start.conf"
+if output=$(RD_CONF="$WORK/conf/low-start.conf" run_helper --backup "$backup" 2>&1); then
+    fail "helper accepted a configured VMID start below 100: $output"
+fi
+[[ $output == *'invalid VMID start'* ]] || fail "helper did not name the VMID start: $output"
+pass "helper refuses a configured VMID start below 100"
+
 if run_helper --backup "$backup" --vmid 900000 --execute --unattended >/dev/null 2>&1; then
     fail "explicit VMID collision was accepted"
 fi
@@ -204,3 +214,24 @@ pass "cleanup fails closed when ownership proof does not match"
     ) || exit 1
 ) || exit 1
 pass "restore drill validates storage and probe settings at the prompt"
+
+# Status reads the saved configuration through _rd_validate, which holds the
+# same VMID start range as the install prompt.
+(
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/restore-drill/module.sh
+    source "$ROOT/modules/restore-drill/module.sh"
+    RD_STORAGE=local-lvm RD_BOOT_PROBE=1 RD_BOOT_TIMEOUT=60 RD_ALLOW_UNATTENDED=0
+    for start in 99 1 0100 1000000000 18446744073709551716; do
+        RD_VMID_START=$start
+        if _rd_validate; then fail "saved VMID start $start was accepted"; fi
+        [[ $RD_ERROR == 'VMID start must be between 100 and 999999999' ]] \
+            || fail "VMID start $start error was not specific: $RD_ERROR"
+    done
+    for start in 100 900000 999999999; do
+        RD_VMID_START=$start
+        _rd_validate || fail "saved VMID start $start was refused: $RD_ERROR"
+    done
+) || exit 1
+pass "saved VMID start is checked against the install range"

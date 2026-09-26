@@ -28,8 +28,10 @@ _rd_validate() {
     RD_ERROR=""
     [[ $RD_STORAGE =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
         || { RD_ERROR="target storage name is invalid"; return 1; }
-    [[ $RD_VMID_START =~ ^[1-9][0-9]*$ && $RD_VMID_START -le 999999999 ]] \
-        || { RD_ERROR="VMID start must be between 1 and 999999999"; return 1; }
+    # 18 digits at most keeps the comparisons inside bash's 64-bit arithmetic.
+    [[ $RD_VMID_START =~ ^[1-9][0-9]{0,17}$ && $RD_VMID_START -ge 100 \
+        && $RD_VMID_START -le 999999999 ]] \
+        || { RD_ERROR="VMID start must be between 100 and 999999999"; return 1; }
     [[ $RD_BOOT_PROBE =~ ^[01]$ && $RD_BOOT_TIMEOUT =~ ^[1-9][0-9]*$ \
         && $RD_ALLOW_UNATTENDED =~ ^[01]$ ]] \
         || { RD_ERROR="probe and unattended settings are invalid"; return 1; }
