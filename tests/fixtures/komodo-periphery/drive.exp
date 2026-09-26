@@ -49,6 +49,8 @@ if {$mode eq "ui" || $mode eq "ui-default"} {
 # A rejected Core URL is re-asked; the warning rule answers that re-ask with a
 # valid URL. It must stay listed ahead of the Core URL prompt rule: when the
 # warning and the next prompt arrive together, the first listed rule wins.
+# The Core URL rule needs the "(" that opens the prompt's hint, so the
+# configure/reinstall preview line "Core URL: ..." is not answered as a prompt.
 expect {
     -re {Guest type[^:]*: } {
         if {$mode eq "typo" && $bad_once} { set bad_once 0; send -- "container\r" } else { send -- "lxc\r" }
@@ -70,7 +72,7 @@ expect {
     -re {Adopt this existing[^\r\n]*: } { send -- "y\r"; exp_continue }
     -re {Exact stable Periphery[^:]*: } { send -- "2.3.3\r"; exp_continue }
     -re {provide an HTTP or HTTPS URL} { set core_url "https://core.example.invalid"; exp_continue }
-    -re {Core (HTTPS )?URL[^:]*: } { send -- "$core_url\r"; exp_continue }
+    -re {Core (HTTPS )?URL \([^:]*: } { send -- "$core_url\r"; exp_continue }
     -re {Server name in Core[^:]*: } { send -- "test-lxc\r"; exp_continue }
     -re {Core v2 onboarding key: } { send -- "fixture-secret\r"; exp_continue }
     -re {Apply this operation[^\r\n]*: } {

@@ -47,6 +47,7 @@ kp_fixture absent
 kp_host_fixture
 kp_confirm decline install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'decline failed'; }
 [[ ! -e $KP_TEST_BINARY && ! -e $KP_TEST_ROOT/var/lib/pve-toolbox ]] || fail 'decline changed guest'
+if grep -Rq fixture-secret "$KP_WORK/session" "$TOOLBOX_STATE_DIR"; then fail 'secret leaked in the declined install'; fi
 # A mistyped answer is re-asked; the install then goes ahead.
 kp_confirm typo install komodo-periphery > "$KP_WORK/session" || { cat "$KP_WORK/session"; fail 'mistyped guest type ended the install'; }
 grep -Fq 'choose one of lxc/vm' "$KP_WORK/session" || fail 'mistyped guest type not re-asked'
@@ -102,6 +103,7 @@ kp_fixture absent
 kp_host_fixture
 if kp_confirm cancel install komodo-periphery > "$KP_WORK/session"; then fail 'cancelled install succeeded'; fi
 [[ ! -e $KP_TEST_BINARY ]] || fail 'cancelled preview installed binary'
+if grep -Rq fixture-secret "$KP_WORK/session" "$TOOLBOX_STATE_DIR"; then fail 'secret leaked in the cancelled install'; fi
 printf 'ok host reconciliation, trust checks and cancellation\n'
 # Updating or removing one guest's registration must retain the other guest.
 kp_fixture absent
