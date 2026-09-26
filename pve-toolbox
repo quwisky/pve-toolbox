@@ -619,6 +619,29 @@ usage() { awk 'NR < 3 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; 
 
 # ------------------------------------------------------------------- main --
 
+# Colour has to be decided before anything below can fail, so every usage
+# error raised while parsing arguments (an unknown flag, a bad --color
+# value, an unsupported flag combination) reflects the same decision as the
+# command that would otherwise have run. Scan the flags a real invocation
+# would see (up to the first --): the last valid --color=WHEN wins, but
+# --json or --quiet always force "never" regardless of where they appear,
+# same as the authoritative check further down.
+_toolbox_color_arg=""
+_toolbox_forced_never=0
+for _toolbox_arg in "$@"; do
+    case $_toolbox_arg in
+        --) break ;;
+        --color=auto|--color=always|--color=never)
+            _toolbox_color_arg=${_toolbox_arg#--color=} ;;
+        --json|--quiet) _toolbox_forced_never=1 ;;
+    esac
+done
+[[ -z $_toolbox_color_arg ]] || TOOLBOX_COLOR=$_toolbox_color_arg
+[[ $_toolbox_forced_never -eq 0 ]] || TOOLBOX_COLOR=never
+unset _toolbox_color_arg _toolbox_forced_never _toolbox_arg
+export TOOLBOX_COLOR
+toolbox_color_setup
+
 ARGS=()
 LXC_FLAGS=()
 while [[ $# -gt 0 ]]; do
@@ -627,8 +650,7 @@ while [[ $# -gt 0 ]]; do
         -f|--force) FORCE=1 ;;
         --json)     OUTPUT_JSON=1 ;;
         --quiet)    OUTPUT_QUIET=1 ;;
-        --color=*)  TOOLBOX_COLOR=${1#--color=}
-                    case $TOOLBOX_COLOR in
+        --color=*)  case ${1#--color=} in
                         auto|always|never) ;;
                         *) usage_error "--color must be auto, always or never" ;;
                     esac ;;
@@ -653,10 +675,8 @@ if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
         status|check|doctor) ;;
         *) usage_error "--json and --quiet are supported by status, check, and doctor" ;;
     esac
-    TOOLBOX_COLOR=never
 fi
-export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED TOOLBOX_COLOR
-toolbox_color_setup
+export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED
 
 case $command_name in
     menu)        menu ;;

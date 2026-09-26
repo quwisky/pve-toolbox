@@ -46,3 +46,19 @@ out=$(pty "cd '$ROOT' && ./pve-toolbox definitely-not-a-command >/dev/null" || t
 out=$(launch --color=sometimes list 2>&1 && fail "--color=sometimes accepted" || true)
 [[ $out == *"--color"* ]] || fail "bad --color value not reported: $out"
 pass "colour follows each stream, NO_COLOR, --color and TERM=dumb"
+
+# Colour has to be decided before anything else can go wrong: a usage error
+# raised while parsing arguments (an invalid flag combination, an unknown
+# flag, or an LXC flag on the wrong command) must honour the same --color,
+# --json and --quiet as the command that would otherwise have run.
+out=$(pty "cd '$ROOT' && ./pve-toolbox --color=never --json --quiet" || true)
+[[ $out != *"$ESC"* ]] || fail "--color=never ignored by the --json+--quiet conflict error"
+out=$(launch --color=always --json --quiet 2>&1 || true)
+[[ $out != *"$ESC"* ]] || fail "--json/--quiet did not force never over --color=always"
+out=$(launch --color=always --bogus-flag 2>&1 || true)
+[[ $out == *"${ESC}31"* ]] || fail "--color=always did not colour the unknown-flag error"
+out=$(pty "cd '$ROOT' && ./pve-toolbox --color=never --bogus-flag" || true)
+[[ $out != *"$ESC"* ]] || fail "--color=never did not silence the unknown-flag error"
+out=$(launch --color=always --dry-run status 2>&1 || true)
+[[ $out == *"${ESC}31"* ]] || fail "--color=always did not colour the LXC-flag error"
+pass "colour is decided before any argument-parsing usage error"
