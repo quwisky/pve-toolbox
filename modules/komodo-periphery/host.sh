@@ -1,5 +1,9 @@
 # shellcheck shell=bash
 # Host orchestration. Source time must remain side-effect free.
+kp_target_key() { # <lxc|qemu> <numeric-id>; never use an unvalidated ID in a path.
+    [[ $# -eq 2 && ( $1 == lxc || $1 == qemu ) && $2 =~ ^[1-9][0-9]{2,8}$ ]] || return 1
+    printf '%s-%s' "$1" "$2"
+}
 kp_host_require() {
     require_root
     local cmd
@@ -166,9 +170,15 @@ kp_host_save() {
 }
 kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     local action=$1 id="" release="" core="" name="" key="" saved_identity inspected layout version adopt=false file digest binary=""
-    local key_action=keep choice="" configure_retained=false retained_config=false
+    local key_action=keep choice="" guest_kind="" configure_retained=false retained_config=false
     [[ ${ASSUME_YES:-0} == 0 && ${FORCE:-0} == 0 && -t 0 && -t 1 ]] || { warn 'Periphery changes require a terminal and explicit confirmation; --yes/--force are unsupported'; return 1; }
     kp_host_require || return 1
+    ask guest_kind 'Guest type (lxc/vm)' lxc
+    case $guest_kind in
+        vm) kp_vm_change "$action"; return $? ;;
+        lxc) ;;
+        *) warn 'choose lxc or vm'; return 1 ;;
+    esac
     pve_lxc_inventory "$KP_NODE" || { warn "$PVE_LXC_ERROR"; return 1; }
     info 'Existing local containers:'
     jq -r '.[] | [.vmid, (.name // "unnamed"), .status] | @tsv' <<<"$PVE_LXC_JSON" | while IFS= read -r row; do kp_display "$row"; printf '\n'; done

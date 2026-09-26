@@ -1,12 +1,13 @@
-# Komodo Periphery in LXC
+# Komodo Periphery in LXC or VM
 
 Install, update or reconfigure **Komodo Periphery v2 as a systemd service** inside an existing
-local LXC. Run the toolbox as **root on the PVE 9 host**. The initial supported
+local LXC or QEMU VM. Run the toolbox as **root on the PVE 9 host**. The supported
 guest is **Debian 13 amd64**, including unprivileged containers.
 
-The module installs the agent only. It does not create containers, install
-Docker, install guest packages, change nesting or privileges, or change firewall
-rules. Docker workloads require a separately configured Docker installation.
+The module installs the agent only. It does not create guests, install
+Docker or guest packages, change nesting, privileges, or firewall rules, or
+change VM power, network, or migration settings. Docker workloads require a
+separately configured Docker installation.
 Core must already exist; choose a Periphery release compatible with your Core.
 
 ## Prerequisites
@@ -15,7 +16,23 @@ The guest must be running, unlocked, and use systemd. It needs Bash, jq,
 coreutils, util-linux (`flock`), sed, findutils and dpkg-query. A missing
 prerequisite is reported before installation. If necessary, an administrator
 can install missing packages inside the guest; the module does not do this.
-The host needs its usual Proxmox tools, curl and jq.
+The host needs its usual Proxmox tools, curl and jq. SSH transport also needs
+`openssh-client` on the host. For VMs, select one transport
+explicitly. **QGA** requires the VM's QEMU Guest Agent to be enabled, responsive,
+and permitted to execute commands. **SSH** requires an already configured root
+key login, a pinned host key, and a PVE `smbios1` UUID matching the guest's DMI
+UUID. The module does not install or enable QGA or SSH.
+
+For SSH, prepare a dedicated root-owned private key and known-hosts file **on
+the PVE host**. Add the guest's verified host key to that file through your
+normal trusted provisioning process; the toolbox does not run `ssh-keyscan` or
+trust a key on first use. Enter the address or DNS name, port, and absolute
+paths during the VM flow. Use an address that remains tied to the selected VM.
+Only the dedicated file supplies trusted host keys; system-wide known-hosts
+files are excluded. The SSH session uses root key authentication, strict host-key
+checking, and disables agent and connection forwarding. Every SSH transfer command checks
+the DMI UUID in that same connection; each staged chunk also checks the guest
+machine ID. A changed key or mismatched guest identity stops staging.
 
 For a new installation, have the Core HTTP or HTTPS URL, a server name and a Core v2
 onboarding key ready. Create the onboarding key in Core. The prompt hides the
@@ -26,8 +43,9 @@ a port and path, but must not include credentials, a query or a fragment.
 See [Komodo's connection guide](https://komo.do/docs/setup/connect-servers).
 
 The new service runs as **root inside the guest**. Core can execute agent actions
-with that account's privileges. The preview identifies the container and service
-account before asking permission to apply changes.
+with that account's privileges. The preview identifies the guest and service
+account before asking permission to apply changes. In a VM, that account is VM
+root, not PVE host root.
 
 ## Install and update
 
@@ -42,12 +60,13 @@ pve-toolbox doctor
 pve-toolbox uninstall komodo-periphery
 ```
 
-Install, update and uninstall select **one container per operation**. Repeat the
-flow for additional containers. Install offers to update an existing agent's
+Install, update and uninstall select **one LXC or VM per operation**. First choose
+the guest type, then its exact numeric ID; VMs also require an explicit QGA or
+SSH choice. Repeat the flow for additional guests. Install offers to update an existing agent's
 executable or edit its connection configuration.
 The plain menu's install/reconfigure action supports the same flow; its update-all
 operation skips guest agents. The full-screen Update checklist leaves this
-module unchecked until selected. Container-specific confirmation is still required.
+module unchecked until selected. Guest-specific confirmation is still required.
 
 Choose an exact stable v2 version, for example `2.3.3`, after checking Core
 compatibility. The binary is fetched from the selected official GitHub release,
@@ -89,12 +108,12 @@ not silently rewritten into the standard layout.
 
 Changes to an owned executable or service after adoption are reported as drift.
 Do not force an overwrite. Inspect the installation and retained ownership
-record first. A container identity change also blocks reuse of old host records.
+record first. A guest identity change also blocks reuse of old host records.
 
 ## Updating connection configuration
 
 Run `pve-toolbox install komodo-periphery` **as root on the PVE host**, select the
-existing container, then choose **configure** at the existing-agent prompt.
+existing container or VM, then choose **configure** at the existing-agent prompt.
 The plain and full-screen install/reconfigure actions offer the same choice.
 This edits configuration without downloading or upgrading the executable.
 
@@ -145,14 +164,24 @@ The host stores desired versions and target identity through protected config
 helpers in `/etc/pve-toolbox/komodo-periphery-CTID.conf`. The managed ID list is
 `/etc/pve-toolbox/komodo-periphery.conf`. Non-secret outcomes are recorded in
 `/var/lib/pve-toolbox/komodo-periphery-CTID.state`. Credentials are not stored in
-host state. Temporary transfer files are protected and removed after the operation.
+host state. VM records use `/etc/pve-toolbox/komodo-periphery-qemu-VMID.conf`,
+`/etc/pve-toolbox/komodo-periphery-qemu.conf`, and
+`/var/lib/pve-toolbox/komodo-periphery-qemu-VMID.state`; these are separate from
+LXC records even when the numeric IDs match. Updates to the shared VM list are
+serialized, so operations on different VMs preserve each other's entries.
+VM transfer uses a protected nonce-bound directory under guest `/run`.
+Files are sent in verified chunks,
+then removed after a completed operation. An interrupted operation retains the
+transaction ID for explicit recovery.
 
 ## Failure and recovery
 
 The host and guest use locks, and agent changes wait for an operator to retry
 when toolbox LXC package maintenance is active. The module checks locality and
 identity again before transfers and mutation. It never starts, unlocks, reboots,
-or migrates a container automatically.
+or migrates a guest automatically. A VM transport failure never silently
+switches to the other transport. Changing transport requires a new identity
+preview and explicit confirmation.
 
 A failed update restores the previous executable and toolbox-changed files and
 checks the previous service state. Recovery failure is reported separately.
@@ -176,11 +205,13 @@ Backups include the original adopted installation and the previous transaction's
 files. Do not delete transaction records or lock files to bypass a failure.
 
 Host failure or guest disconnection can prevent immediate rollback or cleanup.
-Rerun the explicit install/update flow for that same container. It offers to
+Rerun the explicit install/update flow for that same guest. It offers to
 recover a pending guest transaction or reconcile a completed guest transaction
 whose host bookkeeping failed before attempting another change. If identity or
 locality no longer matches, inspect it manually first. Incomplete cleanup retains
 the protected staging location's transaction identifier in host configuration.
+An uninstalled VM remains listed as pending until staging cleanup succeeds;
+rerun the flow for that VM to reconcile it.
 
 Rollback covers agent binary, service and toolbox-owned configuration changes.
 It cannot undo commands already executed by Core or changes made to workloads.
@@ -215,4 +246,9 @@ Automated tests exercise the real shell implementation in isolated guest roots
 with controlled Proxmox and systemd boundaries. Release acceptance also requires
 a disposable PVE 9 LXC and a Core v2 instance to check actual systemd startup,
 agent enrollment, updates and reboot persistence. Mocked guest tests do not prove
-live Core connectivity.
+live Core connectivity. QGA and SSH transport tests use controlled PVE and
+guest doubles. A separate OpenSSH client/server handshake fixture checks host-key
+pinning without changing SSH accounts or system configuration; it requires root
+and `openssh-server` in the Debian validation runner. A disposable PVE 9 VM is
+still required to verify PVE's actual agent API, SSH pairing, systemd startup
+and Core enrollment.

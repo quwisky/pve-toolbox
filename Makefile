@@ -26,6 +26,16 @@ test: syntax
 	@./tests/native-zfs-scrub-migration.sh
 	@./tests/pve.sh
 	@./tests/komodo-periphery-target.sh
+	@./tests/komodo-periphery-vm-records.sh
+	@./tests/komodo-periphery-vm-target.sh
+	@./tests/komodo-periphery-vm-qga.sh
+	@./tests/komodo-periphery-vm-receiver.sh
+	@./tests/komodo-periphery-vm-qga-transport.sh
+	@./tests/komodo-periphery-vm-ssh.sh
+	@./tests/komodo-periphery-vm-ssh-host-key.sh
+	@./tests/komodo-periphery-vm-module.sh
+	@./tests/komodo-periphery-vm-inspect.sh
+	@./tests/komodo-periphery-vm-flow.sh
 	@./tests/komodo-periphery-guest.sh
 	@./tests/komodo-periphery-recovery.sh
 	@./tests/komodo-periphery-config.sh

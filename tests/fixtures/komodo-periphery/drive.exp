@@ -44,6 +44,7 @@ if {$mode eq "ui" || $mode eq "ui-default"} {
     }
 }
 expect {
+    -re {Guest type[^:]*: } { send -- "lxc\r"; exp_continue }
     -re {Existing agent action[^:]*: } {
         if {$mode eq "configure"} { send -- "configure\r" } else { send -- "update\r" }
         exp_continue

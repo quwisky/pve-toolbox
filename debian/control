@@ -10,7 +10,7 @@ Homepage: https://github.com/quwisky/pve-toolbox
 Package: pve-toolbox
 Architecture: all
 Depends: curl, jq, ${misc:Depends}
-Recommends: whiptail, zfsutils-linux
+Recommends: whiptail, zfsutils-linux, openssh-client
 Suggests: smartmontools, sanoid
 Description: modular administration toolbox for Proxmox VE hosts
  pve-toolbox provides an interactive launcher and self-contained modules for
