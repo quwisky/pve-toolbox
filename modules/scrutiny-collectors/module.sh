@@ -227,7 +227,6 @@ module_install() {
     [[ $pick == y ]] && want+=(performance)
 
     [[ ${#want[@]} -eq 0 ]] && { warn "nothing selected"; return 1; }
-    _sc_require_runtime_deps "${want[@]}"
 
     local s var
     for s in "${want[@]}"; do
@@ -241,6 +240,7 @@ module_install() {
     # that never recorded itself as installed.
     local run=y
     ask_yn run "run each collector once now?" "y"
+    _sc_require_runtime_deps "${want[@]}"
 
     step "Download"
     gh_release "$REPO" "$SCRUTINY_VERSION"

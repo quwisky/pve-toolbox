@@ -379,7 +379,6 @@ module_install() {
 
     if [[ $CB_GIT_ENABLED == y ]]; then
         step "Git history"
-        pkg_ensure git:git rsync:rsync
         ask_valid CB_GIT_DIR    "working clone directory" "$CB_GIT_DIR" _cb_valid_git_dir
         ask_valid CB_GIT_BRANCH "branch"                  "$CB_GIT_BRANCH" valid_required
 
@@ -425,6 +424,9 @@ module_install() {
     ask_yn CB_RUN_NOW "take the first snapshot right now" "$CB_RUN_NOW"
 
     step "Install"
+    # Packages too wait for the last answer: closed input must leave the host
+    # as it was.
+    if [[ $CB_GIT_ENABLED == y ]]; then pkg_ensure git:git rsync:rsync; fi
     install_toolbox_lib discord.sh
     install -m 0755 "$(_cb_src)" "$TOOLBOX_BIN_DIR/$CB_BIN"
     ok "installed $TOOLBOX_BIN_DIR/$CB_BIN"
