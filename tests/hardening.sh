@@ -77,6 +77,66 @@ pass "config-backup runtime rejects dangerous data paths"
 ) || exit 1
 pass "config-backup uninstall retains both data paths"
 
+(
+    export TOOLBOX_BIN_DIR="$WORK/cb-i-bin" TOOLBOX_LIB_DIR="$WORK/cb-i-lib"
+    export TOOLBOX_CONF_DIR="$WORK/cb-i-conf" TOOLBOX_STATE_DIR="$WORK/cb-i-state"
+    export TOOLBOX_SYSTEMD_DIR="$WORK/cb-i-systemd" TOOLBOX_ROOT="$ROOT"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/config-backup/module.sh
+    source "$ROOT/modules/config-backup/module.sh"
+
+    CB_WEBHOOK='https://discord.com/api/webhooks/1/token'
+    require_root() { :; }
+    require_pve() { :; }
+    pkg_ensure() { :; }
+    systemd_oneshot() { :; }
+    run_unit() { :; }
+    discord_notify() { :; }
+    systemd-analyze() {
+        [[ $1 == calendar && $2 == --iterations=1 ]] || return 2
+        case $3 in
+            daily) printf '  Next elapse: Thu 2026-10-01 00:00:00 UTC\n' ;;
+            *)     return 1 ;;
+        esac
+    }
+
+    answers=$'\n'                 # webhook: Enter, keep the preset
+    answers+=$'n\nn\n'            # backends: rejected (neither enabled)
+    answers+=$'y\nn\n'            # backends: local yes, git no
+    answers+=$'/\n'               # archive dir: rejected, unsafe
+    answers+="$WORK/cb-archives"$'\n'
+    answers+=$'x\n'               # retention count: rejected
+    answers+=$'5\n'
+    answers+=$'\n'                # retention days: Enter (default)
+    answers+=$'whenever\n'        # schedule: rejected
+    answers+=$'daily\n'
+    answers+=$'n\n'               # reporting
+    answers+=$'n\n'               # secrets
+    answers+=$'n\n'               # test notification
+    answers+=$'n\n'               # run now
+
+    out=$(printf '%s' "$answers" | module_install 2>&1) \
+        || fail "config-backup install with valid answers failed: $out"
+
+    for reason in \
+        'at least one backend has to be enabled' \
+        'refusing unsafe directory: /' \
+        'enter a whole number of at least 0' \
+        'not a systemd OnCalendar expression: whenever'
+    do
+        count=$(grep -Fc "$reason" <<<"$out")
+        [[ $count -eq 1 ]] \
+            || fail "expected exactly one rejection for [$reason], got $count: $out"
+    done
+
+    grep -q '^CB_RETENTION_COUNT=.5.$' "$TOOLBOX_CONF_DIR/config-backup.conf" \
+        || fail "CB_RETENTION_COUNT=5 was not stored"
+) || exit 1
+pass "config-backup install validates each prompt and stores the accepted answer"
+
 # --- zfs-replication --------------------------------------------------------
 
 (
@@ -438,7 +498,7 @@ SH
         have_zfs() { return 0; }; _zs_native_owner() { return 1; }
         _zs_pools() { printf "tank\n"; }
         zpool() { printf "ok\n"; }
-        systemd-analyze() { [[ $1 == calendar ]]; }
+        systemd-analyze() { [[ $1 == calendar ]] && printf "  Next elapse: Thu 2026-10-01 00:00:00 UTC\n"; }
         module_install
     ' _ "$dir" "$module" 2>&1) || rc=$?
     [[ $rc -ne 124 ]] || fail "$module hung on closed input"
