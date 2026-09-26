@@ -77,6 +77,15 @@ cli_suggest() { # cli_suggest <word> <candidate>... -> up to 3, one per line
     [[ -n $word ]] || return 0
     for c in "$@"; do
         [[ ${c,,} != "${word,,}"* ]] || prefix+=("$c")
+        # The length difference is a lower bound on the edit distance, so a
+        # candidate more than two characters longer or shorter than the word
+        # can never score; skip the expensive comparison for it. This keeps a
+        # pathological word (a very long bogus flag or argument) fast against
+        # every candidate list.
+        if ((${#word} > ${#c} + 2 || ${#c} > ${#word} + 2)); then
+            n=$((n + 1))
+            continue
+        fi
         d=$(_cli_distance "$word" "$c")
         if ((d <= 2)); then scored+=("$d $n $c"); fi
         n=$((n + 1))
@@ -870,14 +879,20 @@ if [[ $WANT_HELP -eq 1 ]]; then
 fi
 cli_in "$command_name" "${CLI_COMMANDS[@]}" "${CLI_HIDDEN[@]}" \
     || cli_unknown_command "$command_name"
+# A help topic only for commands documented in help; a hidden command (used
+# by the completion scripts) has none, so its usage errors point at the
+# general help instead of a "pve-toolbox help _complete" that would not
+# resolve to anything.
+command_topic=$command_name
+cli_in "$command_name" "${CLI_COMMANDS[@]}" || command_topic=""
 for _toolbox_flag in "${SEEN_FLAGS[@]}"; do
     # shellcheck disable=SC2086 # CLI_FLAGS values are space-separated lists.
     cli_in "$_toolbox_flag" ${CLI_FLAGS[$command_name]:-} \
-        || cli_usage_error "$_toolbox_flag is not supported by '$command_name'" "$command_name"
+        || cli_usage_error "$_toolbox_flag is not supported by '$command_name'" "$command_topic"
 done
 unset _toolbox_flag
 [[ $OUTPUT_JSON -eq 0 || $OUTPUT_QUIET -eq 0 ]] \
-    || cli_usage_error "--json and --quiet cannot be used together" "$command_name"
+    || cli_usage_error "--json and --quiet cannot be used together" "$command_topic"
 export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED
 
 case $command_name in

@@ -132,3 +132,25 @@ launch status --dry-run --help >/dev/null || fail "help refused because of an un
 [[ $(launch _complete tags) == *storage* ]] || fail "_complete rejected as an unknown command"
 launch list storage >/dev/null || fail "a known tag was rejected"
 pass "usage errors carry suggestions and a help line"
+
+# A hidden command (used by the completion scripts, never typed by an
+# operator) has no help topic: its usage errors must not point at a
+# "pve-toolbox help _complete" that would not resolve.
+out=$(launch _complete tags --json 2>&1 || true)
+[[ $out == *"run 'pve-toolbox help' for usage"* ]] \
+    || fail "hidden command's usage error lacks the general help line: $out"
+[[ $out != *"help _complete"* ]] || fail "hidden command's usage error named itself as a topic: $out"
+pass "hidden commands carry no help topic"
+
+# A pathological word must not make suggestion matching slow: the length
+# difference alone rules most candidates out before the edit-distance
+# comparison runs.
+bogus=$(printf 'x%.0s' $(seq 1 3000))
+for args in "$bogus" "install $bogus" "status --$bogus" "list $bogus"; do
+    start=$SECONDS
+    rc=0; launch $args >/dev/null 2>&1 || rc=$?
+    elapsed=$((SECONDS - start))
+    [[ $rc -eq 64 ]] || fail "'$args' exited $rc, want 64"
+    [[ $elapsed -le 3 ]] || fail "'$args' took ${elapsed}s, suggestion matching is too slow"
+done
+pass "a 3000-character bogus word stays fast"
