@@ -3,6 +3,8 @@ set timeout 30
 set mode [lindex $argv 0]
 set core_url "https://core.example.invalid"
 if {[info exists env(KP_CORE_URL)]} { set core_url $env(KP_CORE_URL) }
+# "typo" mode answers the guest type wrongly once, then correctly.
+set bad_once 1
 if {[info exists env(KP_CAPTURE)]} { log_file -noappend $env(KP_CAPTURE) }
 spawn -noecho {*}[lrange $argv 1 end]
 if {$mode eq "plain"} {
@@ -43,8 +45,15 @@ if {$mode eq "ui" || $mode eq "ui-default"} {
         exit [lindex [wait] 3]
     }
 }
+# Tcl reads a "#" line inside the braces below as patterns, so notes go here.
+# A rejected Core URL is re-asked; the warning rule answers that re-ask with a
+# valid URL. It must stay listed ahead of the Core URL prompt rule: when the
+# warning and the next prompt arrive together, the first listed rule wins.
 expect {
-    -re {Guest type[^:]*: } { send -- "lxc\r"; exp_continue }
+    -re {Guest type[^:]*: } {
+        if {$mode eq "typo" && $bad_once} { set bad_once 0; send -- "container\r" } else { send -- "lxc\r" }
+        exp_continue
+    }
     -re {Existing agent action[^:]*: } {
         if {$mode eq "configure"} { send -- "configure\r" } else { send -- "update\r" }
         exp_continue
@@ -60,6 +69,7 @@ expect {
     -re {Container ID[^:]*: } { send -- "101\r"; exp_continue }
     -re {Adopt this existing[^\r\n]*: } { send -- "y\r"; exp_continue }
     -re {Exact stable Periphery[^:]*: } { send -- "2.3.3\r"; exp_continue }
+    -re {provide an HTTP or HTTPS URL} { set core_url "https://core.example.invalid"; exp_continue }
     -re {Core (HTTPS )?URL[^:]*: } { send -- "$core_url\r"; exp_continue }
     -re {Server name in Core[^:]*: } { send -- "test-lxc\r"; exp_continue }
     -re {Core v2 onboarding key: } { send -- "fixture-secret\r"; exp_continue }

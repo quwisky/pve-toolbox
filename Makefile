@@ -28,6 +28,7 @@ test: syntax
 	@./tests/pve.sh
 	@./tests/komodo-periphery-target.sh
 	@./tests/komodo-periphery-vm-records.sh
+	@./tests/komodo-periphery-input.sh
 	@./tests/komodo-periphery-vm-target.sh
 	@./tests/komodo-periphery-vm-qga.sh
 	@./tests/komodo-periphery-vm-receiver.sh

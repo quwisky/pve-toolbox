@@ -210,7 +210,7 @@ kp_vm_load_connection() { # <vmid>; saved, validated paths remain operator confi
 }
 
 kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selection
-    local action=$1 id='' transport='' address='' port='' key_file='' hosts='' saved_transport='' saved_identity=''
+    local action=$1 id='' transport='' address='' port='' key_file='' hosts='' saved_transport='' saved_port='' saved_identity=''
     local inspected='' layout='' version='' release='' digest='' binary='' core='' name='' key='' key_action=keep
     local choice='' adopt=false retained=false configure_retained=false pending='' record='' file='' fingerprint=''
     [[ $action == install || $action == update || $action == uninstall ]] || return 1
@@ -218,22 +218,21 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
     pve_qemu_inventory "$KP_NODE" || { warn "$PVE_QEMU_ERROR"; return 1; }
     info 'Existing local VMs:'
     jq -r '.[] | [.vmid, (.name // "unnamed"), .status] | @tsv' <<<"$PVE_QEMU_JSON" | while IFS= read -r row; do kp_display "$row"; printf '\n'; done
-    ask id 'VM ID' ''
-    kp_target_key qemu "$id" >/dev/null && jq -e --argjson id "$id" 'any(.[];.vmid==$id)' <<<"$PVE_QEMU_JSON" >/dev/null || { warn 'select one listed local VM'; return 1; }
+    ask_valid id 'VM ID' '' kp_valid_vmid
     record="komodo-periphery-qemu-$id"
     for file in "$(conf_file "$record")" "$(conf_file komodo-periphery-qemu)" "$TOOLBOX_STATE_DIR/$record.state"; do
         kp_host_safe "$file" && [[ ! -e $file || -f $file ]] || { warn 'unsafe VM record path'; return 1; }
     done
     saved_transport=$(conf_get "$record" KP_TRANSPORT)
-    ask transport 'VM transport (qga/ssh)' "${saved_transport:-qga}"
-    [[ $transport == qga || $transport == ssh ]] || { warn 'choose qga or ssh'; return 1; }
+    ask_choice transport 'VM transport' "${saved_transport:-qga}" qga ssh
+    case $transport in qga|ssh) ;; *) return 1 ;; esac
     KP_VM_TRANSPORT=$transport KP_VM_HOST_FINGERPRINT='' KP_VM_ADDRESS='' KP_VM_PORT='' KP_VM_KEY='' KP_VM_HOSTS=''
     if [[ $transport == ssh ]]; then
-        ask address 'Pinned SSH address or DNS name' "$(conf_get "$record" KP_ADDRESS)"
-        ask port 'SSH port' "$(conf_get "$record" KP_PORT)"
-        port=${port:-22}
-        ask key_file 'Absolute root-owned SSH private-key path' "$(conf_get "$record" KP_KEY_FILE)"
-        ask hosts 'Absolute root-owned dedicated known-hosts path' "$(conf_get "$record" KP_KNOWN_HOSTS)"
+        ask_valid address 'Pinned SSH address or DNS name' "$(conf_get "$record" KP_ADDRESS)" kp_valid_ssh_address
+        saved_port=$(conf_get "$record" KP_PORT)
+        ask_int port 'SSH port' "${saved_port:-22}" 1 65535
+        ask_valid key_file 'Absolute root-owned SSH private-key path' "$(conf_get "$record" KP_KEY_FILE)" kp_valid_ssh_file
+        ask_valid hosts 'Absolute root-owned dedicated known-hosts path' "$(conf_get "$record" KP_KNOWN_HOSTS)" kp_valid_ssh_file
         KP_VM_ADDRESS=$address KP_VM_PORT=$port KP_VM_KEY=$key_file KP_VM_HOSTS=$hosts
         if [[ $saved_transport == ssh ]]; then KP_VM_HOST_FINGERPRINT=$(conf_get "$record" KP_HOST_FINGERPRINT); fi
         kp_ssh_prepare "$id" "$address" "$port" "$key_file" "$hosts" || { warn 'SSH identity files or pinned host key invalid'; return 1; }
@@ -289,7 +288,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         info "Unit: $(kp_display "$(jq -r .unit <<<"$inspected")")"
         info "Configuration: $(kp_display "$(jq -r '.config_paths | join(", ")' <<<"$inspected")")"
         if [[ $action == install ]]; then
-            ask choice 'Existing agent action (update/configure)' update
+            ask_choice choice 'Existing agent action' update update configure
             case $choice in update|configure) action=$choice ;; *) return 1 ;; esac
         fi
         if [[ $action == configure ]]; then
@@ -305,7 +304,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         version=''
         if [[ $(jq -r .retained <<<"$inspected") == true && $(jq '.config_paths|length' <<<"$inspected") == 1 ]]; then
             retained=true
-            ask choice 'Retained configuration action (configure/reuse)' configure
+            ask_choice choice 'Retained configuration action' configure configure reuse
             case $choice in configure) configure_retained=true ;; reuse) ;; *) return 1 ;; esac
         fi
     fi
@@ -316,9 +315,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
     trap '[[ -z ${KP_VM_WORK:-} ]] || rm -rf -- "$KP_VM_WORK"' EXIT
     if [[ $action == install || $action == update ]]; then
         release=$(conf_get "$record" KP_VERSION)
-        ask release 'Exact stable Periphery v2 version compatible with your Core (e.g. 2.3.3)' "${release:-$version}"
-        release=${release#v}
-        [[ $release =~ ^2\.[0-9]+\.[0-9]+$ ]] || { warn 'choose an exact stable v2 release'; return 1; }
+        ask_valid release 'Exact stable Periphery v2 version compatible with your Core (e.g. 2.3.3)' "${release:-$version}" kp_valid_release
         [[ -z $version || $release == "$version" ]] || is_newer "$release" "$version" || { warn 'downgrades are unsupported'; return 1; }
         gh_release moghtech/komodo "v$release"
         [[ $GH_TAG == "v$release" ]] && gh_exact_asset periphery-x86_64 || { warn 'release has no verified amd64 asset'; return 1; }
@@ -330,24 +327,17 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
     else release=$version; digest=$(printf '%064d' 0); fi
     : > "$KP_VM_WORK/key"; chmod 0600 "$KP_VM_WORK/key"
     if [[ $action == configure || $configure_retained == true ]]; then
-        ask core 'Core URL (HTTP or HTTPS; blank keeps current)' ''
-        [[ -z $core || ( $core =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ) ]] || return 1
-        ask name 'Server name in Core (blank keeps current)' ''
-        ask key_action 'Onboarding key action (keep/replace/remove)' keep
-        case $key_action in
-            keep|remove) ;;
-            replace)
-                ask_secret key 'Core v2 onboarding key'
-                [[ -n $key ]] || return 1
-                printf '%s' "$key" > "$KP_VM_WORK/key"; unset key ;;
-            *) return 1 ;;
-        esac
+        ask_valid core 'Core URL (HTTP or HTTPS; blank keeps current)' '' kp_valid_core_url_or_blank
+        ask_valid name 'Server name in Core (blank keeps current)' '' kp_valid_printable
+        ask_choice key_action 'Onboarding key action' keep keep replace remove
+        if [[ $key_action == replace ]]; then
+            ask_secret key 'Core v2 onboarding key' kp_valid_required_printable
+            printf '%s' "$key" > "$KP_VM_WORK/key"; unset key
+        fi
     elif [[ $layout == absent && $retained == false ]]; then
-        ask core 'Core URL (HTTP or HTTPS)' ''
-        [[ $core =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]\?\#]*)?$ && $core != *@* ]] || return 1
-        ask name 'Server name in Core' "vm-$id"
-        ask_secret key 'Core v2 onboarding key'
-        [[ -n $key && -n $name ]] || return 1
+        ask_valid core 'Core URL (HTTP or HTTPS)' '' kp_valid_core_url
+        ask_valid name 'Server name in Core' "vm-$id" kp_valid_required_printable
+        ask_secret key 'Core v2 onboarding key' kp_valid_required_printable
         printf '%s' "$key" > "$KP_VM_WORK/key"; unset key
     fi
     info "Node $KP_NODE / VM $id ($transport): $action Periphery ${version:-absent} -> $release"
