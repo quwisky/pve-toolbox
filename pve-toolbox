@@ -188,7 +188,7 @@ declare -A CLI_FLAGS=(
 )
 declare -A CLI_ROOT=([install]=1 [update]=1 [uninstall]=1 [lxc-update]=1 [link]=1)
 declare -A CLI_DESC=(
-    [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades; package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local schedule and 'pve-toolbox status lxc-update' to inspect it."
+    [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires root and interactive confirmation. Use --dry-run for a cached preview, --allow-removals to enable package removals and cleanup, and --notify for a Discord report. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades. Package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local systemd schedule. Scheduled runs update every eligible local container with the non-removing policy, never catch up after downtime, and can report every batch to Discord when explicitly enabled. Use 'pve-toolbox status lxc-update' to inspect timer health and recent results."
     [doctor]="Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
 )
 declare -A CLI_EXAMPLES=(
