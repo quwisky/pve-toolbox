@@ -119,6 +119,43 @@ _ask_yn_valid() {
 }
 ask_yn() { _ask_read "$1" "$2 (y/n)" "$3" _ask_yn_valid; }   # ask_yn <var> <prompt> <y|n>
 
+# Bounds for the validator: bash has no closures, and one prompt runs at a time.
+_ASK_INT_MIN="" _ASK_INT_MAX=""
+_ask_int_valid() {
+    local range=""
+    if [[ -n $_ASK_INT_MIN && -n $_ASK_INT_MAX ]]; then range=" from $_ASK_INT_MIN to $_ASK_INT_MAX"
+    elif [[ -n $_ASK_INT_MIN ]]; then range=" of at least $_ASK_INT_MIN"
+    elif [[ -n $_ASK_INT_MAX ]]; then range=" of at most $_ASK_INT_MAX"
+    fi
+    ASK_REASON="enter a whole number$range"
+    # 18 digits keeps the comparisons below inside bash's 64-bit arithmetic.
+    [[ $1 =~ ^(0|[1-9][0-9]{0,17})$ ]] || return 1
+    [[ -z $_ASK_INT_MIN || $1 -ge $_ASK_INT_MIN ]] || return 1
+    [[ -z $_ASK_INT_MAX || $1 -le $_ASK_INT_MAX ]] || return 1
+    ASK_REASON=""
+}
+ask_int() { # ask_int <var> <prompt> <default> [min] [max]
+    _ASK_INT_MIN=${4:-} _ASK_INT_MAX=${5:-}
+    _ask_read "$1" "$2" "$3" _ask_int_valid
+}
+
+_ASK_CHOICES=()
+_ask_choice_valid() {
+    local c
+    for c in "${_ASK_CHOICES[@]}"; do
+        if [[ ${1,,} == "${c,,}" ]]; then ASK_NORMALIZED=$c; return 0; fi
+    done
+    ASK_REASON="choose one of $(IFS=/; printf '%s' "${_ASK_CHOICES[*]}")"
+    return 1
+}
+ask_choice() { # ask_choice <var> <prompt> <default> <choice>...
+    local __var=$1 __prompt=$2 __default=$3
+    shift 3
+    [[ $# -gt 0 ]] || die "ask_choice needs at least one choice"
+    _ASK_CHOICES=("$@")
+    _ask_read "$__var" "$__prompt ($(IFS=/; printf '%s' "$*"))" "$__default" _ask_choice_valid
+}
+
 # ask_secret <varname> <prompt>
 ask_secret() {
     local __var=$1 __prompt=$2 __reply

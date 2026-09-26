@@ -303,3 +303,40 @@ expect_out 'answer=no' "confirm default"
 prompt_run '' t_confirm
 expect_rc nonzero "confirm on closed input"; refuse_out 'answer=' "confirm on closed input"
 pass "ask_yn and confirm validate and fail closed"
+
+t_int()     { local n=""; ask_int n "count" "5" 1 100; printf 'got=[%s]\n' "$n"; }
+t_int_min() { local n=""; ask_int n "count" "" 1; printf 'got=[%s]\n' "$n"; }
+t_int_yes() { ASSUME_YES=1; local SOME_NUM=0; ask_int SOME_NUM "count" "5" 1 100; printf 'got=[%s]\n' "$SOME_NUM"; }
+
+prompt_run $'abc\n007\n101\n42\n' t_int
+expect_out 'enter a whole number from 1 to 100' "ask_int rejection"
+expect_out 'got=[42]' "ask_int re-prompt"
+[[ $(grep -c 'enter a whole number' <<<"$PROMPT_OUT") -eq 3 ]] \
+    || fail "ask_int did not reject abc, 007 and 101 each: $PROMPT_OUT"
+prompt_run $'\n' t_int
+expect_out 'got=[5]' "ask_int default"
+prompt_run $'0\n7\n' t_int_min
+expect_out 'enter a whole number of at least 1' "ask_int lower bound only"
+expect_out 'got=[7]' "ask_int lower bound re-prompt"
+prompt_run '' t_int_yes
+expect_rc nonzero "ask_int invalid preset under -y"
+expect_out 'invalid value for SOME_NUM' "ask_int invalid preset under -y"
+pass "ask_int enforces format and bounds"
+
+t_choice()     { local c=""; ask_choice c "transport" "qga" qga ssh; printf 'got=[%s]\n' "$c"; }
+t_choice_yes() { ASSUME_YES=1; local MODE=SSH; ask_choice MODE "transport" "qga" qga ssh; printf 'got=[%s]\n' "$MODE"; }
+t_choice_bad() { ASSUME_YES=1; local MODE=telnet; ask_choice MODE "transport" "qga" qga ssh; printf 'got=[%s]\n' "$MODE"; }
+
+prompt_run $'telnet\nSSH\n' t_choice
+expect_out 'choose one of qga/ssh' "ask_choice rejection"
+expect_out 'got=[ssh]' "ask_choice canonical spelling"
+prompt_run $'\n' t_choice
+expect_out 'got=[qga]' "ask_choice default"
+prompt_run '' t_choice_yes
+expect_out 'got=[ssh]' "ask_choice mixed-case preset"
+prompt_run '' t_choice_bad
+expect_rc nonzero "ask_choice invalid preset"
+expect_out 'invalid value for MODE: choose one of qga/ssh' "ask_choice invalid preset"
+prompt_run '' t_choice
+expect_out 'no answer for "transport (qga/ssh)"' "ask_choice on closed input"
+pass "ask_choice matches case-insensitively and stores canonical choices"
