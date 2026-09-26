@@ -207,19 +207,7 @@ module_install() {
     pkg_ensure curl:curl jq:jq
 
     step "Discord webhook"
-    if [[ -z $ZFS_SCRUB_WEBHOOK && $ASSUME_YES -eq 1 ]]; then
-        die "set ZFS_SCRUB_WEBHOOK for a non-interactive install"
-    fi
-    while [[ -z $ZFS_SCRUB_WEBHOOK ]]; do
-        ask ZFS_SCRUB_WEBHOOK "Discord webhook URL" ""
-    done
-    if [[ ! $ZFS_SCRUB_WEBHOOK =~ ^https://[A-Za-z0-9._~/-]+$ ]]; then
-        die "that does not look like a URL (Server Settings -> Integrations -> Webhooks)"
-    fi
-    case $ZFS_SCRUB_WEBHOOK in
-        https://discord.com/api/webhooks/*|https://discordapp.com/api/webhooks/*|https://ptb.discord.com/api/webhooks/*) ;;
-        *) warn "not a discord.com/api/webhooks URL - continuing, it just has to accept the same JSON" ;;
-    esac
+    ask_secret ZFS_SCRUB_WEBHOOK "Discord webhook URL" valid_webhook_url
 
     step "Pools"
     local all=() p
@@ -270,17 +258,26 @@ module_install() {
         "$ZFS_SCRUB_NOTIFY_START"
 
     _zs_distro_timers "${want[@]}"
+    local dis=n u
     if [[ ${#ZS_CONFLICT[@]} -gt 0 ]]; then
         step "Timers already scrubbing these pools"
         warn "from zfsutils-linux: ${ZS_CONFLICT[*]}"
-        local dis=y u
+        dis=y
         ask_yn dis "disable them so each pool is scrubbed once, by us" "y"
-        if [[ $dis == y ]]; then
-            for u in "${ZS_CONFLICT[@]}"; do
-                systemctl disable --now "$u" >/dev/null 2>&1 || true
-                ok "disabled $u"
-            done
-        fi
+    fi
+
+    # Every question comes before the first change: answers that run out must
+    # stop the install here, not leave timers running for a half-written one.
+    step "After the install"
+    local t=y now=n
+    ask_yn t "send a test notification to Discord now" "y"
+    ask_yn now "start a scrub on the selected pools right now" "n"
+
+    if [[ $dis == y ]]; then
+        for u in "${ZS_CONFLICT[@]}"; do
+            systemctl disable --now "$u" >/dev/null 2>&1 || true
+            ok "disabled $u"
+        done
     fi
 
     step "Install"
@@ -299,8 +296,6 @@ module_install() {
     done
 
     step "Verification"
-    local t=y
-    ask_yn t "send a test notification to Discord now" "y"
     if [[ $t == y ]]; then
         if SCRUB_CONF="$(conf_file "$MODULE_NAME")" PVE_TOOLBOX_LIB="$TOOLBOX_LIB_DIR" \
            "$TOOLBOX_BIN_DIR/$ZS_BIN" --test "${want[0]}"; then
@@ -310,8 +305,6 @@ module_install() {
         fi
     fi
 
-    local now=n
-    ask_yn now "start a scrub on the selected pools right now" "n"
     if [[ $now == y ]]; then
         for p in "${want[@]}"; do
             systemctl start --no-block "$ZS_UNIT@$p.service"

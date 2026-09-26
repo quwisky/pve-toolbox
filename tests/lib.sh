@@ -232,3 +232,204 @@ compare_is 1.70.0 v1.69.1 downgrade
 # An install predating the state file reports unknown; anything beats it.
 compare_is unknown v1.69.1 upgrade
 pass "update decision"
+
+# --- prompts ------------------------------------------------------------------
+
+# prompt_run <input> <function> -> PROMPT_OUT (stdout and stderr), PROMPT_RC.
+# The function runs in a pipeline subshell, so a die inside it ends only that.
+prompt_run() {
+    local input=$1 fn=$2
+    PROMPT_RC=0
+    PROMPT_OUT=$(printf '%s' "$input" | "$fn" 2>&1) || PROMPT_RC=$?
+}
+expect_out() { [[ $PROMPT_OUT == *"$1"* ]] || fail "$2: missing [$1] in [$PROMPT_OUT]"; }
+refuse_out() { [[ $PROMPT_OUT != *"$1"* ]] || fail "$2: unexpected [$1] in [$PROMPT_OUT]"; }
+expect_rc() { # expect_rc <zero|nonzero> <what>
+    if [[ $1 == zero ]]; then
+        [[ $PROMPT_RC -eq 0 ]] || fail "$2: exit $PROMPT_RC [$PROMPT_OUT]"
+    else
+        [[ $PROMPT_RC -ne 0 ]] || fail "$2: succeeded [$PROMPT_OUT]"
+    fi
+}
+
+t_ask()        { local answer=""; ask answer "pick one" "dflt"; printf 'got=[%s]\n' "$answer"; }
+t_ask_key()    { ask SOME_KEY "pick one" "dflt"; printf 'got=[%s]\n' "$SOME_KEY"; }
+t_ask_preset() { local SOME_KEY=preset; ask SOME_KEY "pick one" "dflt"; printf 'got=[%s]\n' "$SOME_KEY"; }
+
+prompt_run $'typed\n' t_ask
+expect_rc zero "ask piped answer"; expect_out 'got=[typed]' "ask piped answer"
+prompt_run $'\n' t_ask
+expect_out 'got=[dflt]' "ask blank answer"
+prompt_run 'unterminated' t_ask
+expect_out 'got=[unterminated]' "ask last line without a newline"
+prompt_run $'\n' t_ask_preset
+expect_out 'got=[preset]' "ask preset default"
+prompt_run '' t_ask
+expect_rc nonzero "ask on closed input"
+expect_out 'no answer for "pick one"' "ask on closed input"
+refuse_out 'got=' "ask on closed input"
+refuse_out 'set answer' "ask hint for a local variable"
+prompt_run '' t_ask_key
+expect_out 'use -y and set SOME_KEY' "ask hint for a presettable key"
+pass "ask reads piped answers and fails closed on EOF"
+
+_t_even() {
+    [[ $1 =~ ^[0-9]+$ ]] && (( $1 % 2 == 0 )) || { ASK_REASON="must be even"; return 1; }
+    ASK_NORMALIZED="even-$1"
+}
+t_valid()     { local n=""; ask_valid n "even number" "" _t_even; printf 'got=[%s]\n' "$n"; }
+t_valid_yes() { ASSUME_YES=1; local EVEN_N=3; ask_valid EVEN_N "even number" "" _t_even; printf 'got=[%s]\n' "$EVEN_N"; }
+
+prompt_run $'3\n4\n' t_valid
+expect_out 'must be even' "ask_valid rejection"; expect_out 'got=[even-4]' "ask_valid normalized re-prompt"
+prompt_run '' t_valid_yes
+expect_rc nonzero "ask_valid invalid preset under -y"
+expect_out 'invalid value for EVEN_N: must be even' "ask_valid invalid preset under -y"
+refuse_out 'got=' "ask_valid invalid preset under -y"
+pass "ask_valid re-prompts interactively and dies under -y"
+
+t_yn()        { local reply=""; ask_yn reply "go on" "n"; printf 'got=[%s]\n' "$reply"; }
+t_yn_preset() { ASSUME_YES=1; local FLAG=1; ask_yn FLAG "go on" "n"; printf 'got=[%s]\n' "$FLAG"; }
+t_confirm()   { if confirm "sure?" n; then echo 'answer=yes'; else echo 'answer=no'; fi; }
+
+prompt_run $'maybe\nYES\n' t_yn
+expect_out 'please answer y or n' "ask_yn rejection"; expect_out 'got=[y]' "ask_yn re-prompt"
+prompt_run '' t_yn_preset
+expect_out 'got=[y]' "ask_yn legacy 1 preset"
+prompt_run $'y\n' t_confirm
+expect_out 'answer=yes' "confirm reads its caller's __r"
+prompt_run $'\n' t_confirm
+expect_out 'answer=no' "confirm default"
+prompt_run '' t_confirm
+expect_rc nonzero "confirm on closed input"; refuse_out 'answer=' "confirm on closed input"
+pass "ask_yn and confirm validate and fail closed"
+
+t_int()     { local n=""; ask_int n "count" "5" 1 100; printf 'got=[%s]\n' "$n"; }
+t_int_min() { local n=""; ask_int n "count" "" 1; printf 'got=[%s]\n' "$n"; }
+t_int_yes() { ASSUME_YES=1; local SOME_NUM=0; ask_int SOME_NUM "count" "5" 1 100; printf 'got=[%s]\n' "$SOME_NUM"; }
+
+prompt_run $'abc\n007\n101\n42\n' t_int
+expect_out 'enter a whole number from 1 to 100' "ask_int rejection"
+expect_out 'got=[42]' "ask_int re-prompt"
+[[ $(grep -c 'enter a whole number' <<<"$PROMPT_OUT") -eq 3 ]] \
+    || fail "ask_int did not reject abc, 007 and 101 each: $PROMPT_OUT"
+prompt_run $'\n' t_int
+expect_out 'got=[5]' "ask_int default"
+prompt_run $'0\n7\n' t_int_min
+expect_out 'enter a whole number of at least 1' "ask_int lower bound only"
+expect_out 'got=[7]' "ask_int lower bound re-prompt"
+prompt_run '' t_int_yes
+expect_rc nonzero "ask_int invalid preset under -y"
+expect_out 'invalid value for SOME_NUM' "ask_int invalid preset under -y"
+pass "ask_int enforces format and bounds"
+
+t_choice()     { local c=""; ask_choice c "transport" "qga" qga ssh; printf 'got=[%s]\n' "$c"; }
+t_choice_yes() { ASSUME_YES=1; local MODE=SSH; ask_choice MODE "transport" "qga" qga ssh; printf 'got=[%s]\n' "$MODE"; }
+t_choice_bad() { ASSUME_YES=1; local MODE=telnet; ask_choice MODE "transport" "qga" qga ssh; printf 'got=[%s]\n' "$MODE"; }
+
+prompt_run $'telnet\nSSH\n' t_choice
+expect_out 'choose one of qga/ssh' "ask_choice rejection"
+expect_out 'got=[ssh]' "ask_choice canonical spelling"
+prompt_run $'\n' t_choice
+expect_out 'got=[qga]' "ask_choice default"
+prompt_run '' t_choice_yes
+expect_out 'got=[ssh]' "ask_choice mixed-case preset"
+prompt_run '' t_choice_bad
+expect_rc nonzero "ask_choice invalid preset"
+expect_out 'invalid value for MODE: choose one of qga/ssh' "ask_choice invalid preset"
+prompt_run '' t_choice
+expect_out 'no answer for "transport (qga/ssh)"' "ask_choice on closed input"
+pass "ask_choice matches case-insensitively and stores canonical choices"
+
+t_sched() {
+    systemd-analyze() {
+        [[ $1 == calendar && $2 == --iterations=1 ]] || return 2
+        case $3 in
+            daily) printf '  Next elapse: Thu 2026-10-01 00:00:00 UTC\n' ;;
+            dead)  printf '  Next elapse: never\n' ;;
+            *)     return 1 ;;
+        esac
+    }
+    local s=""; ask_schedule s "schedule" "dead"; printf 'got=[%s]\n' "$s"
+}
+# shellcheck disable=SC2123 # deliberately hiding systemd-analyze for this test only
+t_sched_missing() { PATH=/nonexistent; local s=""; ask_schedule s "schedule" "daily"; printf 'got=[%s]\n' "$s"; }
+
+prompt_run $'nonsense\n\ndaily\n' t_sched
+expect_out 'not a systemd OnCalendar expression: nonsense' "ask_schedule syntax"
+expect_out 'schedule never runs: dead' "ask_schedule dead default"
+expect_out 'got=[daily]' "ask_schedule re-prompt"
+prompt_run $'daily\n' t_sched_missing
+expect_rc nonzero "ask_schedule without systemd-analyze"
+expect_out 'systemd-analyze is needed to check schedules' "ask_schedule without systemd-analyze"
+pass "ask_schedule validates with systemd-analyze and never guesses"
+
+HOOK_OK='https://discord.com/api/webhooks/1/tok-en_1'
+t_secret()      { local TOKEN=""; ask_secret TOKEN "token"; [[ $TOKEN == s3cret-value ]] && echo 'stored=typed'; }
+t_secret_keep() { local TOKEN=old-secret; ask_secret TOKEN "token"; [[ $TOKEN == old-secret ]] && echo 'stored=kept'; }
+t_secret_none() { local TOKEN=old-secret; ask_secret TOKEN "token"; [[ -z $TOKEN ]] && echo 'stored=cleared'; }
+t_hook()        { local HOOK=""; ask_secret HOOK "Discord webhook URL" valid_webhook_url; [[ $HOOK == "$HOOK_OK" ]] && echo 'stored=hook'; }
+t_hook_yes()    { ASSUME_YES=1; local HOOK=""; ask_secret HOOK "Discord webhook URL" valid_webhook_url; echo 'stored=?'; }
+t_hook_other()  { local HOOK=""; ask_secret HOOK "hook" valid_webhook_url; [[ $HOOK == https://hooks.example.invalid/x ]] && echo 'stored=other'; }
+t_hook_yes_kept() { ASSUME_YES=1; local HOOK="$HOOK_OK"; ask_secret HOOK "Discord webhook URL" valid_webhook_url; [[ $HOOK == "$HOOK_OK" ]] && echo 'stored=yes-kept'; }
+t_hook_keep()     { local HOOK="$HOOK_OK"; ask_secret HOOK "Discord webhook URL" valid_webhook_url; [[ $HOOK == "$HOOK_OK" ]] && echo 'stored=enter-kept'; }
+
+prompt_run $'s3cret-value\n' t_secret
+expect_out 'stored=typed' "ask_secret stores the typed value"
+refuse_out 's3cret-value' "ask_secret output"
+prompt_run $'\n' t_secret_keep
+expect_out 'stored=kept' "ask_secret Enter keeps"
+prompt_run $'none\n' t_secret_none
+expect_out 'stored=cleared' "ask_secret none clears"
+prompt_run $'\nhttp://leak.example.invalid/tok\n'"$HOOK_OK"$'\n' t_hook
+expect_out 'a webhook URL is required' "required secret re-prompts on blank"
+expect_out 'does not look like a URL' "malformed webhook rejected"
+refuse_out 'leak.example.invalid' "rejected secret value is never echoed"
+expect_out 'stored=hook' "webhook accepted after re-prompt"
+prompt_run '' t_hook_yes
+expect_rc nonzero "missing required secret under -y"
+expect_out 'invalid value for HOOK: a webhook URL is required' "missing required secret under -y"
+prompt_run '' t_secret
+expect_rc nonzero "ask_secret on closed input"; expect_out 'no answer for "token"' "ask_secret on closed input"
+prompt_run $'https://hooks.example.invalid/x\n' t_hook_other
+expect_out 'not a discord.com/api/webhooks URL' "non-Discord webhook warns"
+expect_out 'stored=other' "non-Discord webhook still accepted"
+# Passing empty stdin: any attempt to read here would hit closed input and
+# die, so a zero exit is itself proof that -y never reads.
+prompt_run '' t_hook_yes_kept
+expect_rc zero "-y keeps an already-valid preset without reading"
+expect_out 'stored=yes-kept' "-y keeps an already-valid preset without reading"
+prompt_run $'\n' t_hook_keep
+expect_out 'stored=enter-kept' "Enter keeps an already-valid preset for a required secret"
+pass "ask_secret keeps, clears, validates and never echoes"
+
+# The prompt globals outlive the call, so a secret must not linger in any of
+# them once ask_secret has stored it. _t_upper normalizes, which is what puts
+# a copy of the value in ASK_NORMALIZED.
+_t_upper() { ASK_NORMALIZED=${1^^}; }
+t_secret_globals() {
+    local TOKEN=""; ask_secret TOKEN "token" _t_upper
+    printf 'stored=[%s] globals=[%s|%s|%s]\n' "$TOKEN" "$ASK_LINE" "$ASK_VALUE" "$ASK_NORMALIZED"
+}
+t_secret_globals_yes() {
+    ASSUME_YES=1; local TOKEN=s3cret-value; ask_secret TOKEN "token" _t_upper
+    printf 'stored=[%s] globals=[%s|%s|%s]\n' "$TOKEN" "$ASK_LINE" "$ASK_VALUE" "$ASK_NORMALIZED"
+}
+prompt_run $'s3cret-value\n' t_secret_globals
+expect_out 'stored=[S3CRET-VALUE] globals=[||]' "ask_secret clears the prompt globals"
+prompt_run '' t_secret_globals_yes
+expect_out 'stored=[S3CRET-VALUE] globals=[||]' "ask_secret under -y clears the prompt globals"
+pass "ask_secret leaves no copy of the secret in the prompt globals"
+
+# Only a variable an operator could preset is named; a local one would send
+# them looking for a setting that does not exist, so the prompt is named.
+t_valid_yes_local() { ASSUME_YES=1; local n=3; ask_valid n "even number" "" _t_even; printf 'got=[%s]\n' "$n"; }
+t_secret_yes_local() { ASSUME_YES=1; local hook=""; ask_secret hook "Discord webhook URL" valid_webhook_url; printf 'stored=[%s]\n' "$hook"; }
+prompt_run '' t_valid_yes_local
+expect_rc nonzero "ask_valid invalid local default under -y"
+expect_out 'invalid value for "even number": must be even' "ask_valid invalid local default under -y"
+refuse_out 'invalid value for n:' "ask_valid invalid local default under -y"
+prompt_run '' t_secret_yes_local
+expect_rc nonzero "ask_secret missing local value under -y"
+expect_out 'invalid value for "Discord webhook URL": a webhook URL is required' "ask_secret missing local value under -y"
+pass "-y errors name the prompt when the variable cannot be preset"

@@ -95,3 +95,20 @@ discord_fence() {
     [[ ${#t} -gt $room ]] && t=${t: -room}
     printf '```\n%s\n```' "$t"
 }
+
+# valid_webhook_url <url> - a prompt validator (see ask_valid in common.sh).
+# Only modules call it, and they have common.sh loaded, so warn is defined.
+# Anything accepting Discord's JSON works, so another https host is allowed
+# with a warning. Reasons never repeat the URL: it carries the token.
+# shellcheck disable=SC2034 # ASK_REASON is the validator contract in common.sh.
+valid_webhook_url() {
+    [[ -n ${1:-} ]] || { ASK_REASON="a webhook URL is required"; return 1; }
+    [[ $1 =~ ^https://[A-Za-z0-9._~/-]+$ ]] || {
+        ASK_REASON="that does not look like a URL (Server Settings -> Integrations -> Webhooks)"
+        return 1
+    }
+    case $1 in
+        https://discord.com/api/webhooks/*|https://discordapp.com/api/webhooks/*|https://ptb.discord.com/api/webhooks/*) ;;
+        *) warn "not a discord.com/api/webhooks URL - continuing, it just has to accept the same JSON" ;;
+    esac
+}

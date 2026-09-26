@@ -41,44 +41,186 @@ step() { printf '\n%s%s%s\n' "$c_bold" "$*" "$c_reset"; }
 dim()  { printf '%s%s%s\n' "$c_dim" "$*" "$c_reset"; }
 
 # ----------------------------------------------------------------- input --
+#
+# Every prompt goes through _ask_read, so its rules hold everywhere:
+#   - a value already in <var> (preset in the environment, or loaded from
+#     conf) is the default, which is how -y installs are driven;
+#   - under ASSUME_YES the default is validated and nothing is read;
+#   - a read that fails is an error, never a silent default. Piped answers
+#     work; running out of them must not quietly configure a host.
+#
+# A validator is called as `fn <value>` in this shell. It returns 0 to accept,
+# optionally setting ASK_NORMALIZED to the form to store, or sets ASK_REASON
+# and returns 1. The reason is shown to the operator, so a validator used for
+# a secret must never put the value in it.
+ASK_REASON=""
+ASK_NORMALIZED=""
+ASK_VALUE=""
+ASK_LINE=""
 
-# ask <varname> <prompt> <default>
-ask() {
-    local __var=$1 __prompt=$2 __default=$3 __reply
-    if [[ -n ${!__var:-} ]]; then __default=${!__var}; fi
-    if [[ $ASSUME_YES -eq 1 ]]; then
-        printf -v "$__var" '%s' "$__default"
-        return 0
+# Name the variable only when an operator could have preset it; otherwise
+# name the prompt they saw.
+_ask_presettable() { [[ $1 =~ ^[A-Z][A-Z0-9_]*$ ]]; }
+
+_ask_invalid() { # _ask_invalid <var> <prompt> - dies with ASK_REASON
+    if _ask_presettable "$1"; then
+        die "invalid value for $1: $ASK_REASON"
     fi
-    read -r -p "$(printf '%s [%s]: ' "$__prompt" "$c_dim$__default$c_reset")" __reply || true
-    printf -v "$__var" '%s' "${__reply:-$__default}"
+    die "invalid value for \"$2\": $ASK_REASON"
 }
 
-# ask_secret <varname> <prompt>
-ask_secret() {
-    local __var=$1 __prompt=$2 __reply
-    if [[ $ASSUME_YES -eq 1 || -n ${!__var:-} ]]; then return 0; fi
-    read -r -s -p "$(printf '%s: ' "$__prompt")" __reply || true
-    echo
-    printf -v "$__var" '%s' "$__reply"
+# Closed input on a terminal is the operator's own Ctrl-D, so "run it in a
+# terminal" would be wrong there.
+_ask_eof() { # _ask_eof <var> <prompt>
+    local hint
+    if [[ -t 0 ]]; then
+        hint=""
+        if _ask_presettable "$1"; then hint="; use -y and set $1"; fi
+    elif _ask_presettable "$1"; then
+        hint="; run it in a terminal, or use -y and set $1"
+    else
+        hint="; run it in a terminal"
+    fi
+    die "no answer for \"$2\" (input closed)$hint"
 }
 
-# ask_yn <varname> <prompt> <y|n>
-ask_yn() {
-    local __var=$1 __prompt=$2 __default=$3 __reply
+_ask_check() { # _ask_check <validator|""> <value> -> ASK_VALUE, or 1 with ASK_REASON
+    ASK_REASON="" ASK_NORMALIZED="" ASK_VALUE=$2
+    [[ -n $1 ]] || return 0
+    if ! "$1" "$2"; then
+        ASK_REASON=${ASK_REASON:-value not accepted}
+        return 1
+    fi
+    [[ -z $ASK_NORMALIZED ]] || ASK_VALUE=$ASK_NORMALIZED
+}
+
+# A last line without a newline still counts as an answer.
+_ask_line() { # _ask_line <prompt> [secret] -> ASK_LINE
+    local -a __flags=(-r)
+    [[ ${2:-} != secret ]] || __flags+=(-s)
+    ASK_LINE=""
+    read "${__flags[@]}" -p "$1" ASK_LINE || [[ -n $ASK_LINE ]]
+}
+
+_ask_read() { # _ask_read <var> <prompt> <default> [validator]
+    local __var=$1 __prompt=$2 __default=$3 __fn=${4:-}
     if [[ -n ${!__var:-} ]]; then __default=${!__var}; fi
     if [[ $ASSUME_YES -eq 1 ]]; then
-        printf -v "$__var" '%s' "$__default"
+        _ask_check "$__fn" "$__default" || _ask_invalid "$__var" "$__prompt"
+        printf -v "$__var" '%s' "$ASK_VALUE"
         return 0
     fi
     while true; do
-        read -r -p "$(printf '%s (y/n) [%s]: ' "$__prompt" "$c_dim$__default$c_reset")" __reply || true
-        __reply=${__reply:-$__default}
-        case ${__reply,,} in
-            y|yes) printf -v "$__var" 'y'; return 0 ;;
-            n|no)  printf -v "$__var" 'n'; return 0 ;;
-            *) warn "please answer y or n" ;;
-        esac
+        _ask_line "$(printf '%s [%s]: ' "$__prompt" "$c_dim$__default$c_reset")" \
+            || _ask_eof "$__var" "$__prompt"
+        if _ask_check "$__fn" "${ASK_LINE:-$__default}"; then
+            printf -v "$__var" '%s' "$ASK_VALUE"
+            return 0
+        fi
+        warn "$ASK_REASON"
+    done
+}
+
+ask() { _ask_read "$1" "$2" "$3"; }                # ask <var> <prompt> <default>
+ask_valid() { _ask_read "$1" "$2" "$3" "$4"; }     # ask_valid <var> <prompt> <default> <fn>
+
+# Stored as y or n. 1/0 and true/false are accepted because older conf files
+# and env presets spell booleans that way.
+_ask_yn_valid() {
+    case ${1,,} in
+        y|yes|1|true)  ASK_NORMALIZED=y ;;
+        n|no|0|false)  ASK_NORMALIZED=n ;;
+        *) ASK_REASON="please answer y or n"; return 1 ;;
+    esac
+}
+ask_yn() { _ask_read "$1" "$2 (y/n)" "$3" _ask_yn_valid; }   # ask_yn <var> <prompt> <y|n>
+
+# Bounds for the validator: bash has no closures, and one prompt runs at a time.
+_ASK_INT_MIN="" _ASK_INT_MAX=""
+_ask_int_valid() {
+    local range=""
+    if [[ -n $_ASK_INT_MIN && -n $_ASK_INT_MAX ]]; then range=" from $_ASK_INT_MIN to $_ASK_INT_MAX"
+    elif [[ -n $_ASK_INT_MIN ]]; then range=" of at least $_ASK_INT_MIN"
+    elif [[ -n $_ASK_INT_MAX ]]; then range=" of at most $_ASK_INT_MAX"
+    fi
+    ASK_REASON="enter a whole number$range"
+    # 18 digits keeps the comparisons below inside bash's 64-bit arithmetic.
+    [[ $1 =~ ^(0|[1-9][0-9]{0,17})$ ]] || return 1
+    [[ -z $_ASK_INT_MIN || $1 -ge $_ASK_INT_MIN ]] || return 1
+    [[ -z $_ASK_INT_MAX || $1 -le $_ASK_INT_MAX ]] || return 1
+    ASK_REASON=""
+}
+ask_int() { # ask_int <var> <prompt> <default> [min] [max]
+    _ASK_INT_MIN=${4:-} _ASK_INT_MAX=${5:-}
+    _ask_read "$1" "$2" "$3" _ask_int_valid
+}
+
+_ASK_CHOICES=()
+_ask_choice_valid() {
+    local c
+    for c in "${_ASK_CHOICES[@]}"; do
+        if [[ ${1,,} == "${c,,}" ]]; then ASK_NORMALIZED=$c; return 0; fi
+    done
+    ASK_REASON="choose one of $(IFS=/; printf '%s' "${_ASK_CHOICES[*]}")"
+    return 1
+}
+ask_choice() { # ask_choice <var> <prompt> <default> <choice>...
+    local __var=$1 __prompt=$2 __default=$3
+    shift 3
+    [[ $# -gt 0 ]] || die "ask_choice needs at least one choice"
+    _ASK_CHOICES=("$@")
+    _ask_read "$__var" "$__prompt ($(IFS=/; printf '%s' "$*"))" "$__default" _ask_choice_valid
+}
+
+# A calendar systemd accepts but that never fires (Feb 30th) is refused too:
+# the timer would install cleanly and then do nothing, forever.
+valid_schedule() { # valid_schedule <OnCalendar> -> 0, or 1 with ASK_REASON
+    local output
+    [[ -n ${1:-} ]] || { ASK_REASON="a schedule is required"; return 1; }
+    command -v systemd-analyze >/dev/null 2>&1 \
+        || { ASK_REASON="systemd-analyze is needed to check schedules"; return 1; }
+    output=$(LC_ALL=C systemd-analyze calendar --iterations=1 "$1" 2>/dev/null) \
+        || { ASK_REASON="not a systemd OnCalendar expression: $1"; return 1; }
+    [[ $output == *'Next elapse:'* && $output != *'Next elapse: never'* ]] \
+        || { ASK_REASON="schedule never runs: $1"; return 1; }
+}
+
+# Re-asking cannot fix a missing systemd-analyze, so that ends the install here.
+ask_schedule() { # ask_schedule <var> <prompt> <default>
+    command -v systemd-analyze >/dev/null 2>&1 \
+        || die "systemd-analyze is needed to check schedules"
+    _ask_read "$1" "$2" "$3" valid_schedule
+}
+
+# Never echoed and never shown as a default. With a value already present,
+# Enter keeps it and "none" clears it. A validator that refuses an empty value
+# makes the secret required. Under -y only a value already present counts.
+ask_secret() { # ask_secret <var> <prompt> [validator]
+    local __var=$1 __prompt=$2 __fn=${3:-} __current __hint="" __reply
+    __current=${!__var:-}
+    if [[ $ASSUME_YES -eq 1 ]]; then
+        _ask_check "$__fn" "$__current" || _ask_invalid "$__var" "$__prompt"
+        printf -v "$__var" '%s' "$ASK_VALUE"
+        ASK_LINE="" ASK_VALUE="" ASK_NORMALIZED=""
+        return 0
+    fi
+    [[ -z $__current ]] || __hint=' [set; Enter keeps, "none" clears]'
+    while true; do
+        if ! _ask_line "$__prompt$__hint: " secret; then
+            [[ ! -t 0 ]] || printf '\n' >&2
+            _ask_eof "$__var" "$__prompt"
+        fi
+        [[ ! -t 0 ]] || printf '\n' >&2   # read -s swallows the newline
+        __reply=$ASK_LINE
+        if [[ -z $__reply ]]; then __reply=$__current
+        elif [[ $__reply == none ]]; then __reply=""
+        fi
+        if _ask_check "$__fn" "$__reply"; then
+            printf -v "$__var" '%s' "$ASK_VALUE"
+            ASK_LINE="" ASK_VALUE="" ASK_NORMALIZED=""
+            return 0
+        fi
+        warn "$ASK_REASON"
     done
 }
 

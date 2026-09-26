@@ -437,9 +437,9 @@ ui_run() { # ui_run <fn> <modules> [extra-arg]
 
     # Collect the whole list before running anything. `done <<<` redirects
     # stdin for the entire loop body, so a module's ask/ask_secret/confirm
-    # would read the remains of this list rather than the terminal - and since
-    # ask swallows a failed read and keeps its default, every prompt in an
-    # install would flash past unanswered.
+    # would read the remains of this list rather than the terminal: its first
+    # prompt would take a module name as its answer, and once the list ran
+    # out every prompt would fail as closed input and end the install.
     while IFS= read -r m; do
         [[ -n $m ]] && mods+=("$m")
     done <<<"$picked"
