@@ -290,9 +290,9 @@ module_install() {
     _cw_defaults
     if conf_exists "$MODULE_NAME"; then conf_load "$MODULE_NAME"; fi
     pkg_ensure jq:jq openssl:openssl
-    ask CW_WARN_DAYS "certificate warning threshold (days)" "$CW_WARN_DAYS"
-    ask CW_FAIL_DAYS "certificate failure threshold (days)" "$CW_FAIL_DAYS"
-    ask CW_ACME_STALE_DAYS "ACME task stale threshold (days)" "$CW_ACME_STALE_DAYS"
+    ask_int CW_WARN_DAYS "certificate warning threshold (days)" "$CW_WARN_DAYS" 2
+    ask_int CW_FAIL_DAYS "certificate failure threshold (days)" "$CW_FAIL_DAYS" 1 "$((CW_WARN_DAYS - 1))"
+    ask_int CW_ACME_STALE_DAYS "ACME task stale threshold (days)" "$CW_ACME_STALE_DAYS" 1
     _cw_validate || die "$CW_ERROR"
     local key
     for key in "${CW_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done

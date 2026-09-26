@@ -142,3 +142,38 @@ sed 's/^VMID=.*/VMID=900000/; s/^RUN_ID=.*/RUN_ID=foreign-run/; s/^PHASE=.*/PHAS
 if run_helper --cleanup --unattended >/dev/null 2>&1; then fail "foreign guest marker was accepted"; fi
 [[ -f $MOCK_STATE/900000.exists ]] || fail "foreign guest was deleted"
 pass "cleanup fails closed when ownership proof does not match"
+
+# Settings are checked where they are typed: a bad answer is re-asked
+# instead of discarding every answer at the end. This script drives the
+# root-only helper directly and does not source lib/common.sh or the
+# module elsewhere, so this block sources both itself.
+(
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/restore-drill/module.sh
+    source "$ROOT/modules/restore-drill/module.sh"
+    unset "${RD_CONF_KEYS[@]}"
+    require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+    export TOOLBOX_CONF_DIR="$WORK/rd-install-conf" TOOLBOX_STATE_DIR="$WORK/rd-install-state" \
+        TOOLBOX_BIN_DIR="$WORK/rd-install-bin" TOOLBOX_ROOT="$ROOT"
+    # storage "bad name!" (rejected) then local-zfs; VMID default; boot
+    # probe "maybe" (rejected) then n; timeout default; unattended default.
+    out=$(printf '%s\n' 'bad name!' local-zfs '' maybe n '' '' | module_install 2>&1) \
+        || fail "install with corrected answers failed: $out"
+    [[ $out == *'storage IDs start with a letter or digit and hold only [A-Za-z0-9._-]'* ]] \
+        || fail "invalid storage name was not re-asked: $out"
+    [[ $out == *'please answer y or n'* ]] || fail "invalid boot probe answer was not re-asked: $out"
+    [[ $(conf_get restore-drill RD_STORAGE) == local-zfs ]] || fail "corrected storage not stored"
+    [[ $(conf_get restore-drill RD_BOOT_PROBE) == 0 ]] || fail "boot probe was not stored as 0: $(conf_get restore-drill RD_BOOT_PROBE)"
+    [[ $(conf_get restore-drill RD_ALLOW_UNATTENDED) == 0 ]] \
+        || fail "unattended flag was not stored as 0: $(conf_get restore-drill RD_ALLOW_UNATTENDED)"
+    # A fresh conf dir: conf_load would otherwise overwrite the env preset.
+    # Its own subshell: the expected die must not end this test block.
+    if ( TOOLBOX_CONF_DIR="$WORK/rd-yes-conf" TOOLBOX_STATE_DIR="$WORK/rd-yes-state" \
+        TOOLBOX_BIN_DIR="$WORK/rd-yes-bin" ASSUME_YES=1 RD_VMID_START=50 \
+        module_install ) >/dev/null 2>&1; then
+        fail "an out-of-range preset was accepted under -y"
+    fi
+    [[ ! -e $WORK/rd-yes-conf/restore-drill.conf ]] || fail "a rejected -y preset still wrote configuration"
+) || exit 1
+pass "restore drill validates storage and probe settings at the prompt"

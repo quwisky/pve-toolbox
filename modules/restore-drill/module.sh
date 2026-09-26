@@ -41,6 +41,11 @@ _rd_load() {
     _rd_validate
 }
 
+_rd_valid_storage() {
+    [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+        || { ASK_REASON="storage IDs start with a letter or digit and hold only [A-Za-z0-9._-]"; return 1; }
+}
+
 _rd_install_helper() {
     mkdir -p "$TOOLBOX_BIN_DIR"
     install -m 0755 "$(_rd_src)" "$TOOLBOX_BIN_DIR/$RD_BIN"
@@ -50,11 +55,14 @@ module_install() {
     require_root; require_pve; _rd_defaults
     if conf_exists "$MODULE_NAME"; then conf_load "$MODULE_NAME"; fi
     pkg_ensure flock:util-linux
-    ask RD_STORAGE "isolated restore target storage" "$RD_STORAGE"
-    ask RD_VMID_START "temporary VMID range start" "$RD_VMID_START"
-    ask RD_BOOT_PROBE "boot probe (1 enabled, 0 disabled)" "$RD_BOOT_PROBE"
-    ask RD_BOOT_TIMEOUT "boot probe timeout (seconds)" "$RD_BOOT_TIMEOUT"
-    ask RD_ALLOW_UNATTENDED "allow explicit --unattended runs (1/0)" "$RD_ALLOW_UNATTENDED"
+    local probe unattended
+    ask_valid RD_STORAGE "isolated restore target storage" "$RD_STORAGE" _rd_valid_storage
+    ask_int RD_VMID_START "temporary VMID range start" "$RD_VMID_START" 100 999999999
+    probe=$RD_BOOT_PROBE; ask_yn probe "boot probe" "$probe"
+    ask_int RD_BOOT_TIMEOUT "boot probe timeout (seconds)" "$RD_BOOT_TIMEOUT" 1
+    unattended=$RD_ALLOW_UNATTENDED; ask_yn unattended "allow explicit --unattended runs" "$unattended"
+    RD_BOOT_PROBE=0; [[ $probe == n ]] || RD_BOOT_PROBE=1
+    RD_ALLOW_UNATTENDED=0; [[ $unattended == n ]] || RD_ALLOW_UNATTENDED=1
     _rd_validate || die "$RD_ERROR"
     local key; for key in "${RD_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
     _rd_install_helper

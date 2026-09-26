@@ -248,9 +248,14 @@ module_install() {
     require_root; require_pve; _ur_defaults
     if conf_exists "$MODULE_NAME"; then conf_load "$MODULE_NAME"; fi
     pkg_ensure jq:jq
-    ask UR_POLICY "upgrade policy" "$UR_POLICY"
-    ask UR_BACKUP_HOURS "maximum backup age (hours)" "$UR_BACKUP_HOURS"
-    ask UR_MIN_FREE_MB "minimum free space (MiB)" "$UR_MIN_FREE_MB"
+    local -a policies=() p
+    for p in "$(_ur_module_dir)"/policies/*.conf; do
+        [[ -f $p && ! -L $p ]] && policies+=("$(basename -- "$p" .conf)")
+    done
+    [[ ${#policies[@]} -gt 0 ]] || die "no upgrade policies are shipped with this module"
+    ask_choice UR_POLICY "upgrade policy" "$UR_POLICY" "${policies[@]}"
+    ask_int UR_BACKUP_HOURS "maximum backup age (hours)" "$UR_BACKUP_HOURS" 1
+    ask_int UR_MIN_FREE_MB "minimum free space (MiB)" "$UR_MIN_FREE_MB" 1
     _ur_load || die "$UR_ERROR"
     local key; for key in "${UR_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"

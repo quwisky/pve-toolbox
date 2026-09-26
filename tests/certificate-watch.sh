@@ -142,3 +142,24 @@ _cw_validate && fail "reversed expiry thresholds were accepted"
 CW_FAIL_DAYS=7 CW_WARN_DAYS=30 CW_ACME_STALE_DAYS=0
 _cw_validate && fail "zero ACME stale threshold was accepted"
 pass "certificate thresholds fail closed"
+
+# Thresholds are checked where they are typed: a bad answer is re-asked
+# instead of discarding every answer at the end.
+(
+    unset "${CW_CONF_KEYS[@]}"
+    require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+    export TOOLBOX_CONF_DIR="$WORK/cw-install-conf" TOOLBOX_STATE_DIR="$WORK/cw-install-state"
+    # warn 30; fail 30 (rejected, must be below warn) then 7; ACME default.
+    out=$(printf '%s\n' 30 30 7 '' | module_install 2>&1) || fail "install with corrected answers failed: $out"
+    [[ $out == *'enter a whole number from 1 to 29'* ]] || fail "failure threshold >= warning was not re-asked: $out"
+    [[ $(conf_get certificate-watch CW_FAIL_DAYS) == 7 ]] || fail "corrected failure threshold not stored"
+    [[ $(conf_get certificate-watch CW_WARN_DAYS) == 30 ]] || fail "warning threshold not stored"
+    # A fresh conf dir: conf_load would otherwise overwrite the env preset.
+    # Its own subshell: the expected die must not end this test block.
+    if ( TOOLBOX_CONF_DIR="$WORK/cw-yes-conf" TOOLBOX_STATE_DIR="$WORK/cw-yes-state" \
+        ASSUME_YES=1 CW_ACME_STALE_DAYS=0 module_install ) >/dev/null 2>&1; then
+        fail "an out-of-range preset was accepted under -y"
+    fi
+    [[ ! -e $WORK/cw-yes-conf/certificate-watch.conf ]] || fail "a rejected -y preset still wrote configuration"
+) || exit 1
+pass "certificate watch validates thresholds at the prompt"
