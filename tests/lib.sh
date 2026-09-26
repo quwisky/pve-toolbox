@@ -371,6 +371,8 @@ t_secret_none() { local TOKEN=old-secret; ask_secret TOKEN "token"; [[ -z $TOKEN
 t_hook()        { local HOOK=""; ask_secret HOOK "Discord webhook URL" valid_webhook_url; [[ $HOOK == "$HOOK_OK" ]] && echo 'stored=hook'; }
 t_hook_yes()    { ASSUME_YES=1; local HOOK=""; ask_secret HOOK "Discord webhook URL" valid_webhook_url; echo 'stored=?'; }
 t_hook_other()  { local HOOK=""; ask_secret HOOK "hook" valid_webhook_url; [[ $HOOK == https://hooks.example.invalid/x ]] && echo 'stored=other'; }
+t_hook_yes_kept() { ASSUME_YES=1; local HOOK="$HOOK_OK"; ask_secret HOOK "Discord webhook URL" valid_webhook_url; [[ $HOOK == "$HOOK_OK" ]] && echo 'stored=yes-kept'; }
+t_hook_keep()     { local HOOK="$HOOK_OK"; ask_secret HOOK "Discord webhook URL" valid_webhook_url; [[ $HOOK == "$HOOK_OK" ]] && echo 'stored=enter-kept'; }
 
 prompt_run $'s3cret-value\n' t_secret
 expect_out 'stored=typed' "ask_secret stores the typed value"
@@ -392,4 +394,11 @@ expect_rc nonzero "ask_secret on closed input"; expect_out 'no answer for "token
 prompt_run $'https://hooks.example.invalid/x\n' t_hook_other
 expect_out 'not a discord.com/api/webhooks URL' "non-Discord webhook warns"
 expect_out 'stored=other' "non-Discord webhook still accepted"
+# Passing empty stdin: any attempt to read here would hit closed input and
+# die, so a zero exit is itself proof that -y never reads.
+prompt_run '' t_hook_yes_kept
+expect_rc zero "-y keeps an already-valid preset without reading"
+expect_out 'stored=yes-kept' "-y keeps an already-valid preset without reading"
+prompt_run $'\n' t_hook_keep
+expect_out 'stored=enter-kept' "Enter keeps an already-valid preset for a required secret"
 pass "ask_secret keeps, clears, validates and never echoes"

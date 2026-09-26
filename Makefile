@@ -20,6 +20,7 @@ syntax:
 
 test: syntax
 	@./tests/lib.sh
+	@./tests/ask-secret-pty.sh
 	@./tests/komodo-periphery-release.sh
 	@./tests/migrations.sh
 	@./tests/native-notification-migration.sh

@@ -186,6 +186,7 @@ ask_secret() { # ask_secret <var> <prompt> [validator]
         _ask_check "$__fn" "$__current" \
             || die "invalid value for $__var: $ASK_REASON"
         printf -v "$__var" '%s' "$ASK_VALUE"
+        ASK_LINE="" ASK_VALUE=""
         return 0
     fi
     [[ -z $__current ]] || __hint=' [set; Enter keeps, "none" clears]'
@@ -201,6 +202,7 @@ ask_secret() { # ask_secret <var> <prompt> [validator]
         fi
         if _ask_check "$__fn" "$__reply"; then
             printf -v "$__var" '%s' "$ASK_VALUE"
+            ASK_LINE="" ASK_VALUE=""
             return 0
         fi
         warn "$ASK_REASON"
