@@ -81,6 +81,7 @@ guest_exists() {
 
 allocate_vmid() {
     local candidate=$RD_VMID_START limit=$((RD_VMID_START + 9999))
+    ((limit <= 999999999)) || limit=999999999
     while [[ $candidate -le $limit ]]; do
         if ! guest_exists "$candidate"; then printf '%s' "$candidate"; return 0; fi
         candidate=$((candidate + 1))
@@ -268,7 +269,10 @@ esac
 node=${RD_NODE:-$(hostname -s)}
 [[ $node =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid node name"
 if [[ -n $vmid ]]; then
-    [[ $vmid =~ ^[1-9][0-9]*$ && $vmid -le 999999999 ]] || die "invalid VMID"
+    # The same range as RD_VMID_START; 18 digits at most keeps the comparisons
+    # inside bash's 64-bit arithmetic.
+    [[ $vmid =~ ^[1-9][0-9]{0,17}$ && $vmid -ge 100 && $vmid -le 999999999 ]] \
+        || die "invalid VMID (100-999999999)"
     guest_exists "$vmid" && die "VMID $vmid already exists; refusing collision"
 else
     vmid=$(allocate_vmid) || die "no free temporary VMID in the configured range"

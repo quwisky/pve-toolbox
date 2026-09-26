@@ -28,7 +28,10 @@ RD_BOOT_TIMEOUT=60
 RD_ALLOW_UNATTENDED=0
 ```
 
-The VMID range is scanned without overwriting existing guests. Set the target
+The helper takes the first free VMID among the 10000 starting at
+`RD_VMID_START`, never above 999999999, and never overwrites an existing guest.
+If none of them is free, it stops with
+`no free temporary VMID in the configured range`. Set the target
 to storage intended for temporary drill data. Boot probing can be disabled,
 but configuration and isolation checks always run.
 
@@ -41,9 +44,11 @@ and `RD_ALLOW_UNATTENDED` accept `1`/`0`, `y`/`n`, `yes`/`no` or
 `true`/`false`; any other value stops a `-y` install with an error naming the
 variable.
 
-The helper holds the saved `RD_VMID_START` to the same 100-999999999 range. A
-configuration from an older release with a start below 100 makes every helper
-run, including `--cleanup`, stop with `invalid VMID start`. `pve-toolbox doctor`
+The helper holds the saved `RD_VMID_START`, and a VMID given with `--vmid`, to
+the same 100-999999999 range, written without leading zeros. A `--vmid` outside
+it stops with `invalid VMID (100-999999999)`. A configuration from an older
+release with a start below 100 makes every helper run, including `--cleanup`,
+stop with `invalid VMID start`. `pve-toolbox doctor`
 reports an invalid saved configuration as a failed `configuration` check, and
 `pve-toolbox status restore-drill` shows `invalid configuration` with the reason
 instead of `ready` and leaves out the configuration details. Run
