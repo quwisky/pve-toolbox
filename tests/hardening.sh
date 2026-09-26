@@ -246,6 +246,8 @@ pass "zfs-replication locks and fixups fail closed"
         esac
     }
     _zr_defaults
+    declare -A ZR_ANS_SRC=() ZR_ANS_DST=() ZR_ANS_OPTS=() ZR_ANS_CHOWN=() \
+               ZR_ANS_CHMOD=() ZR_ANS_PATH=() ZR_ANS_SCHED=()
 
     answers=$'tank/a\n'    # source dataset
     answers+=$'backup/a\n' # target dataset
@@ -284,6 +286,8 @@ pass "zfs-replication job prompt validates the schedule"
         esac
     }
     _zr_defaults
+    declare -A ZR_ANS_SRC=() ZR_ANS_DST=() ZR_ANS_OPTS=() ZR_ANS_CHOWN=() \
+               ZR_ANS_CHMOD=() ZR_ANS_PATH=() ZR_ANS_SCHED=()
 
     ASSUME_YES=1
     export ZFS_REPL_NIGHTLY_SRC=tank/a ZFS_REPL_NIGHTLY_DST=backup/a \
@@ -300,6 +304,110 @@ pass "zfs-replication job prompt validates the schedule"
         || fail "an invalid -y replication schedule wrote a timer file anyway"
 ) || exit 1
 pass "an invalid -y replication schedule names the job and writes nothing for it"
+
+# Runs a zfs-replication function end to end against <dir>, with every
+# ZFS_REPL_* preset from the calling environment removed. Sets ZR_RC and ZR_OUT.
+zr_run() { # zr_run <dir> <answers> <function> [VAR=value]...
+    local dir=$1 answers=$2
+    shift 2
+    mkdir -p "$dir"/{bin,lib,conf,state,systemd,log,fake}
+    cat > "$dir/fake/systemctl" <<'SH'
+#!/bin/sh
+case $1 in is-enabled|is-active) exit 1 ;; esac
+exit 0
+SH
+    chmod +x "$dir/fake/systemctl"
+    ZR_RC=0
+    ZR_OUT=$(printf '%b' "$answers" | PATH="$dir/fake:$PATH" timeout 20 bash -c '
+        set -euo pipefail
+        for v in $(compgen -v ZFS_REPL_ || true); do unset "$v"; done
+        export TOOLBOX_BIN_DIR=$1/bin TOOLBOX_LIB_DIR=$1/lib TOOLBOX_CONF_DIR=$1/conf
+        export TOOLBOX_STATE_DIR=$1/state TOOLBOX_SYSTEMD_DIR=$1/systemd TOOLBOX_ROOT=$PWD
+        dir=$1 fn=$2
+        shift 2
+        [[ $# -eq 0 ]] || export "$@"
+        source lib/common.sh
+        source modules/zfs-replication/module.sh
+        ZR_LOG_DIR=$dir/log
+        require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+        have_zfs() { return 0; }; zfs() { return 0; }
+        systemd-analyze() { [[ $1 == calendar ]] && printf "  Next elapse: Thu 2026-10-01 00:00:00 UTC\n"; }
+        "$fn"
+    ' _ "$dir" "$@" 2>&1) || ZR_RC=$?
+    [[ $ZR_RC -ne 124 ]] || fail "zfs-replication $3 hung: $ZR_OUT"
+}
+zr_nothing_written() { # zr_nothing_written <dir> <what>
+    local left
+    left=$(find "$1"/{bin,lib,conf,state,systemd,log} -type f)
+    [[ -z $left ]] || fail "$2 wrote files: $left"
+}
+zr_hook=https://discord.com/api/webhooks/1/token
+
+# Job a is answered in full, then the answers run out inside job b. Nothing may
+# be written: not job a's keys or timer, not the webhook, not the runner.
+zr_run "$WORK/zr-mid" "$zr_hook\ntank/a\nbackup/a\n\n\n\ntank/b\n" module_install \
+    ZFS_REPL_JOBS='a b'
+[[ $ZR_RC -ne 0 ]] || fail "zfs-replication installed on answers that ran out: $ZR_OUT"
+[[ $ZR_OUT == *'Job: b'* && $ZR_OUT == *'no answer for "  target dataset"'* ]] \
+    || fail "zfs-replication did not stop at job b's target: $ZR_OUT"
+zr_nothing_written "$WORK/zr-mid" "zfs-replication with answers ending inside a job"
+pass "zfs-replication writes nothing when the answers run out inside a later job"
+
+# Every job dropped: the install ends before the after-install questions (an
+# answer for them would be missing, so asking one would fail with no answer).
+zr_run "$WORK/zr-none" "$zr_hook\n\n\n\n\n" module_install ZFS_REPL_JOBS='a b'
+[[ $ZR_RC -ne 0 ]] || fail "zfs-replication installed with no usable jobs: $ZR_OUT"
+[[ $ZR_OUT == *'no usable jobs'* ]] \
+    || fail "zfs-replication did not report no usable jobs: $ZR_OUT"
+[[ $ZR_OUT != *'no answer for'* ]] \
+    || fail "zfs-replication asked more questions after every job was dropped: $ZR_OUT"
+zr_nothing_written "$WORK/zr-none" "zfs-replication with no usable jobs"
+pass "zfs-replication with no usable jobs stops before the notify questions and writes nothing"
+
+# The complete answer set writes each job's keys and timer.
+answers="$zr_hook\n"
+answers+='tank/a\nbackup/a\n\ny\n1000:1000\n775\n\n\n'  # job a: fixup, default schedule
+answers+='tank/b\nbackup/b\n--no-sync-snap\nn\nhourly\n'  # job b
+answers+='\nn\nn\n'                                      # notify start, test, run now
+zr_run "$WORK/zr-ok" "$answers" module_install ZFS_REPL_JOBS='a b'
+[[ $ZR_RC -eq 0 ]] || fail "zfs-replication install with full answers failed: $ZR_OUT"
+(
+    export TOOLBOX_CONF_DIR="$WORK/zr-ok/conf" TOOLBOX_STATE_DIR="$WORK/zr-ok/state"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    expect() { # expect <key> <value>
+        local got
+        got=$(conf_get zfs-replication "$1")
+        [[ $got == "$2" ]] || fail "zfs-replication stored $1='$got', expected '$2'"
+    }
+    expect DISCORD_WEBHOOK "$zr_hook"
+    expect JOBS 'a b'
+    expect NOTIFY_START 0
+    expect JOB_A_SRC tank/a;  expect JOB_A_DST backup/a
+    expect JOB_A_OPTS '--recursive --compress=zstd-fast'
+    expect JOB_A_CHOWN 1000:1000; expect JOB_A_CHMOD 775; expect JOB_A_PATH ''
+    expect JOB_B_SRC tank/b;  expect JOB_B_DST backup/b
+    expect JOB_B_OPTS --no-sync-snap
+    expect JOB_B_CHOWN '';    expect JOB_B_CHMOD '';    expect JOB_B_PATH ''
+    [[ $(state_get zfs-replication JOBS) == 'a b' ]] \
+        || fail "zfs-replication state does not list both jobs"
+) || exit 1
+grep -qx 'OnCalendar=\*-\*-\* 02:30:00' "$WORK/zr-ok/systemd/pve-toolbox-zfs-sync@a.timer" \
+    || fail "zfs-replication job a has no timer with the default schedule"
+grep -qx 'OnCalendar=hourly' "$WORK/zr-ok/systemd/pve-toolbox-zfs-sync@b.timer" \
+    || fail "zfs-replication job b has no timer with its own schedule"
+[[ -x $WORK/zr-ok/bin/pve-toolbox-zfs-sync && -f $WORK/zr-ok/systemd/pve-toolbox-zfs-sync@.service ]] \
+    || fail "zfs-replication did not install the runner and service"
+pass "zfs-replication install writes every job's keys and timer"
+
+# update still asks for and writes a job whose timer went missing. update does
+# not load the module defaults, so the schedule default is preset here.
+rm "$WORK/zr-ok/systemd/pve-toolbox-zfs-sync@b.timer"
+zr_run "$WORK/zr-ok" '\n\n\n\nhourly\n' module_update ZFS_REPL_SCHEDULE='*-*-* 02:30:00'
+[[ $ZR_RC -eq 0 ]] || fail "zfs-replication update could not repair a missing timer: $ZR_OUT"
+grep -qx 'OnCalendar=hourly' "$WORK/zr-ok/systemd/pve-toolbox-zfs-sync@b.timer" \
+    || fail "zfs-replication update did not rewrite the missing timer: $ZR_OUT"
+pass "zfs-replication update rewrites a missing job timer"
 
 # --- zfs-scrub --------------------------------------------------------------
 
@@ -667,7 +775,7 @@ install_eof config-backup "$hook\n\n\n\n\n\n\n\n\n" \
     CB_ARCHIVE_DIR="$WORK/partial-config-backup/data/archives"
 install_eof zfs-scrub "$hook\n\n\n\n\n" \
     'no answer for "send a test notification to Discord now'
-install_eof zfs-replication "$hook\n" \
+install_eof zfs-replication "$hook\ntank/a\nbackup/a\n\n\n\n" \
     'no answer for "also notify when a job starts' ZFS_REPL_JOBS=nightly
 pass "installs stop before writing when the answers run out"
 

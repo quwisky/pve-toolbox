@@ -178,10 +178,22 @@ _zr_remove_timer() {
     rm -f "$TOOLBOX_SYSTEMD_DIR/$ZR_UNIT@$1.timer"
 }
 
-# Ask for one job's settings and persist them. Returns 1 if the user backs out.
+# A job's answers are held in associative arrays keyed by job name until every
+# question has been asked. The caller owns them and declares them local, so
+# nothing is set at source time:
+#   local -A ZR_ANS_SRC=() ZR_ANS_DST=() ZR_ANS_OPTS=() ZR_ANS_CHOWN=() \
+#            ZR_ANS_CHMOD=() ZR_ANS_PATH=() ZR_ANS_SCHED=()
+_zr_answers_ready() {
+    [[ $(declare -p ZR_ANS_SRC 2>/dev/null) == 'declare -A'* ]] \
+        || die "internal: the caller did not declare the job answer arrays"
+}
+
+# Ask for one job's settings and record them; writes nothing. Returns 1 if the
+# job is skipped for lack of a source or a target.
 _zr_ask_job() { # _zr_ask_job <job>
     local job=$1 src="" dst="" opts="" own="" mode="" path="" sched=""
     local k
+    _zr_answers_ready
 
     k=$(_zr_key "$job" SRC);   src=$(conf_get "$MODULE_NAME" "$k")
     k=$(_zr_key "$job" DST);   dst=$(conf_get "$MODULE_NAME" "$k")
@@ -230,14 +242,28 @@ _zr_ask_job() { # _zr_ask_job <job>
     sched=${sched:-$ZFS_REPL_SCHEDULE}
     ask_schedule sched "  schedule for $job (systemd OnCalendar)" "$sched"
 
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" SRC)"   "$src"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" DST)"   "$dst"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" OPTS)"  "$opts"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" CHOWN)" "$own"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" CHMOD)" "$mode"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" PATH)"  "$path"
-    _zr_write_timer "$job" "$sched"
-    ok "job $job: $src -> $dst  ($sched)"
+    ZR_ANS_SRC[$job]=$src
+    ZR_ANS_DST[$job]=$dst
+    ZR_ANS_OPTS[$job]=$opts
+    ZR_ANS_CHOWN[$job]=$own
+    ZR_ANS_CHMOD[$job]=$mode
+    ZR_ANS_PATH[$job]=$path
+    ZR_ANS_SCHED[$job]=$sched
+}
+
+# Persist the answers _zr_ask_job recorded for <job>: its keys and its timer.
+_zr_save_job() { # _zr_save_job <job>
+    local job=$1
+    _zr_answers_ready
+    [[ -n ${ZR_ANS_SRC[$job]+x} ]] || die "internal: no recorded answers for job $job"
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" SRC)"   "${ZR_ANS_SRC[$job]}"
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" DST)"   "${ZR_ANS_DST[$job]}"
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" OPTS)"  "${ZR_ANS_OPTS[$job]}"
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" CHOWN)" "${ZR_ANS_CHOWN[$job]}"
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" CHMOD)" "${ZR_ANS_CHMOD[$job]}"
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" PATH)"  "${ZR_ANS_PATH[$job]}"
+    _zr_write_timer "$job" "${ZR_ANS_SCHED[$job]}"
+    ok "job $job: ${ZR_ANS_SRC[$job]} -> ${ZR_ANS_DST[$job]}  (${ZR_ANS_SCHED[$job]})"
 }
 
 # --------------------------------------------------------------- install --
@@ -278,8 +304,17 @@ module_install() {
     _zr_jobs_unique "${want[@]}" \
         || die "job names normalize to the same config key: $ZR_COLLISION"
 
-    # These come before the first write: answers that run out must stop the
-    # install here. The per-job questions below still write as they go.
+    # Every question comes before the first write: answers that run out, or
+    # an invalid one, must stop the install with nothing written.
+    local -A ZR_ANS_SRC=() ZR_ANS_DST=() ZR_ANS_OPTS=() ZR_ANS_CHOWN=() \
+             ZR_ANS_CHMOD=() ZR_ANS_PATH=() ZR_ANS_SCHED=()
+    local kept=()
+    for job in "${want[@]}"; do
+        step "Job: $job"
+        if _zr_ask_job "$job"; then kept+=("$job"); fi
+    done
+    [[ ${#kept[@]} -eq 0 ]] && { warn "no usable jobs"; return 1; }
+
     ask_yn ZFS_REPL_NOTIFY_START "also notify when a job starts" "$ZFS_REPL_NOTIFY_START"
     step "After the install"
     local t=y now=n
@@ -288,13 +323,9 @@ module_install() {
 
     conf_set "$MODULE_NAME" DISCORD_WEBHOOK "$ZFS_REPL_WEBHOOK"
     conf_set "$MODULE_NAME" LOG_DIR "$ZR_LOG_DIR"
-
-    local kept=()
-    for job in "${want[@]}"; do
-        step "Job: $job"
-        if _zr_ask_job "$job"; then kept+=("$job"); fi
+    for job in "${kept[@]}"; do
+        _zr_save_job "$job"
     done
-    [[ ${#kept[@]} -eq 0 ]] && { warn "no usable jobs"; return 1; }
 
     local notify_start=0
     [[ $ZFS_REPL_NOTIFY_START == y ]] && notify_start=1
@@ -408,9 +439,13 @@ module_update() {
     local repair=("${missing[@]}" "${invalid[@]}")
     if [[ ${#repair[@]} -gt 0 ]]; then
         step "Jobs needing a timer"
+        # Each job is saved as soon as it is answered, as update always has.
+        local -A ZR_ANS_SRC=() ZR_ANS_DST=() ZR_ANS_OPTS=() ZR_ANS_CHOWN=() \
+                 ZR_ANS_CHMOD=() ZR_ANS_PATH=() ZR_ANS_SCHED=()
         for j in "${repair[@]}"; do
             [[ -n $j ]] || continue
             _zr_ask_job "$j" || continue
+            _zr_save_job "$j"
         done
     fi
 
