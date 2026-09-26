@@ -3,23 +3,16 @@
 # shellcheck disable=SC2034 # Public inspection result read by the VM orchestration file.
 
 kp_ssh_prepare() { # <vmid> <address> <port> <key> <known-hosts>
-    local id=$1 address=$2 port=$3 key=$4 hosts=$5 lookup fingerprint matches
-    local -a entries=()
+    local id=$1 address=$2 port=$3 key=$4 hosts=$5 file
     kp_target_key qemu "$id" >/dev/null || return 1
     kp_ssh_address_ok "$address" || return 1 # host.sh; a missing helper fails closed
     [[ $port =~ ^[0-9]{1,5}$ ]] && ((10#$port >= 1 && 10#$port <= 65535)) || return 1
     port=$((10#$port))
-    for lookup in "$key" "$hosts"; do
-        kp_ssh_file_ok "$lookup" || return 1 # host.sh; a missing helper fails closed
+    for file in "$key" "$hosts"; do
+        kp_ssh_file_ok "$file" || return 1 # host.sh; a missing helper fails closed
     done
-    if [[ $port == 22 ]]; then lookup=$address; else lookup="[$address]:$port"; fi
-    matches=$(ssh-keygen -F "$lookup" -f "$hosts" 2>/dev/null) || return 1
-    mapfile -t entries < <(sed '/^#/d;/^$/d' <<<"$matches")
-    ((${#entries[@]} == 1)) || return 1
-    fingerprint=$(printf '%s\n' "${entries[0]}" | ssh-keygen -lf - 2>/dev/null) || return 1
-    [[ -n $fingerprint ]] || return 1
-    KP_SSH_HOST_FINGERPRINT=$(awk '{print $2}' <<<"$fingerprint")
-    [[ $KP_SSH_HOST_FINGERPRINT == SHA256:* ]] || return 1
+    kp_ssh_pin_ok "$address" "$port" "$hosts" || return 1 # host.sh; a missing helper fails closed
+    KP_SSH_HOST_FINGERPRINT=$KP_SSH_PIN_FINGERPRINT
     KP_SSH_ADDRESS=$address KP_SSH_PORT=$port KP_SSH_KEY=$key KP_SSH_HOSTS=$hosts
 }
 

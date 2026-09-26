@@ -45,6 +45,8 @@ uuid=11111111-2222-3333-4444-555555555555
 kp_ssh_inspect 201 vm.example.invalid 22 "$WORK/id" "$WORK/known_hosts" "$uuid" || fail 'pinned SSH guest rejected'
 kp_ssh_prepare 201 vm.example.invalid 022 "$WORK/id" "$WORK/known_hosts" || fail 'leading-zero port rejected'
 [[ $KP_SSH_PORT == 22 ]] || fail 'SSH port not normalized'
+[[ $KP_SSH_HOST_FINGERPRINT == "$(ssh-keygen -lf "$WORK/id.pub" | awk '{print $2}')" ]] \
+    || fail "pinned host fingerprint not recorded [$KP_SSH_HOST_FINGERPRINT]"
 [[ $(jq -r .machine_id <<<"$KP_SSH_INSPECTION_JSON") == 0123456789abcdef0123456789abcdef ]] || fail 'guest inspection lost'
 for option in BatchMode=yes StrictHostKeyChecking=yes ForwardAgent=no IdentitiesOnly=yes; do
     grep -Fq "$option" "$KP_SSH_CALLS" || fail "missing SSH option $option"
@@ -70,6 +72,10 @@ done
 # The file rule lives in host.sh; without it the SSH transport must refuse.
 if (unset -f kp_ssh_file_ok; kp_ssh_prepare 201 vm.example.invalid 22 "$WORK/id" "$WORK/known_hosts") 2>/dev/null; then
     fail 'SSH files accepted without the shared file check'
+fi
+# So does the pin rule; without it the SSH transport must refuse.
+if (unset -f kp_ssh_pin_ok; kp_ssh_prepare 201 vm.example.invalid 22 "$WORK/id" "$WORK/known_hosts") 2>/dev/null; then
+    fail 'SSH host key accepted without the shared pin check'
 fi
 printf '[vm.example.invalid]:2222 %s\n' "$(cut -d ' ' -f1-2 "$WORK/id.pub")" > "$WORK/known_hosts-2222"
 kp_ssh_inspect 201 vm.example.invalid 2222 "$WORK/id" "$WORK/known_hosts-2222" "$uuid" || fail 'pinned nonstandard SSH port rejected'

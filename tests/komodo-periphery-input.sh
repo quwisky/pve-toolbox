@@ -72,7 +72,12 @@ pass 'guest ID validators accept only listed local guests'
 kp_host_safe() { [[ $1 == "$WORK/"* && ! -L $1 ]]; }
 mkdir -p "$WORK/ssh/dir"
 printf 'key\n' > "$WORK/ssh/id_ed25519"
-printf 'hosts\n' > "$WORK/ssh/known_hosts"
+ssh-keygen -q -t ed25519 -N '' -f "$WORK/ssh/host-a"
+ssh-keygen -q -t ed25519 -N '' -f "$WORK/ssh/host-b"
+host_a=$(cut -d ' ' -f1-2 "$WORK/ssh/host-a.pub")
+host_b=$(cut -d ' ' -f1-2 "$WORK/ssh/host-b.pub")
+# Pins for the address and port the VM flows below answer or have saved.
+printf '%s\n' "192.0.2.20 $host_a" "[192.0.2.21]:2222 $host_b" > "$WORK/ssh/known_hosts"
 printf 'key\n' > "$OUTSIDE/id_ed25519"
 ln -s id_ed25519 "$WORK/ssh/link"
 # The prompt must be as strict as the file checks in kp_ssh_prepare.
@@ -88,6 +93,36 @@ for path in '' id_ed25519 ./ssh/id_ed25519 '~/.ssh/id_ed25519' "$WORK/ssh/missin
     if kp_ssh_file_ok "$path"; then fail "kp_ssh_file_ok accepted [$path]"; fi
 done
 pass 'SSH key and known-hosts file validator'
+
+# The known-hosts prompt also needs the one pinned key kp_ssh_prepare looks up
+# for the address and port already answered: [address]:port unless it is 22.
+printf '%s\n' "192.0.2.20 $host_a" > "$WORK/ssh/pin-22"
+printf '%s\n' "[192.0.2.20]:2222 $host_a" > "$WORK/ssh/pin-2222"
+printf '%s\n' "192.0.2.20 $host_a" "192.0.2.20 $host_b" > "$WORK/ssh/pin-two"
+printf '%s\n' "other.example.invalid $host_a" > "$WORK/ssh/pin-other"
+printf '%s\n' '# no keys here' > "$WORK/ssh/pin-empty"
+fingerprint_a=$(ssh-keygen -lf "$WORK/ssh/host-a.pub" | awk '{print $2}')
+KP_PIN_ADDRESS=192.0.2.20 KP_PIN_PORT=22
+accepts kp_valid_ssh_known_hosts "$WORK/ssh/pin-22"
+for path in "$WORK/ssh/pin-2222" "$WORK/ssh/pin-two" "$WORK/ssh/pin-other" "$WORK/ssh/pin-empty"; do
+    rejects kp_valid_ssh_known_hosts "$path" 'the known-hosts file must hold exactly one pinned key for 192.0.2.20'
+done
+for path in '' "$WORK/ssh/missing" "$WORK/ssh/link" "$OUTSIDE/id_ed25519"; do
+    rejects kp_valid_ssh_known_hosts "$path" "$file_reason"
+done
+KP_PIN_PORT=2222
+accepts kp_valid_ssh_known_hosts "$WORK/ssh/pin-2222"
+rejects kp_valid_ssh_known_hosts "$WORK/ssh/pin-22" 'the known-hosts file must hold exactly one pinned key for [192.0.2.20]:2222'
+KP_SSH_PIN_FINGERPRINT=''
+kp_ssh_pin_ok 192.0.2.20 2222 "$WORK/ssh/pin-2222" || fail 'kp_ssh_pin_ok rejected the [host]:port pin'
+[[ $KP_SSH_PIN_FINGERPRINT == "$fingerprint_a" ]] \
+    || fail "pinned fingerprint [$KP_SSH_PIN_FINGERPRINT], not [$fingerprint_a]"
+for port in 022 0 65536 ''; do
+    if kp_ssh_pin_ok 192.0.2.20 "$port" "$WORK/ssh/pin-22"; then fail "kp_ssh_pin_ok accepted port [$port]"; fi
+done
+if kp_ssh_pin_ok 'a b' 22 "$WORK/ssh/pin-22"; then fail 'kp_ssh_pin_ok accepted an unsafe address'; fi
+unset KP_PIN_ADDRESS KP_PIN_PORT
+pass 'known-hosts validator requires one pin for the answered address and port'
 
 # The prompt must be as strict as kp_ssh_prepare, which checks it again later.
 address_reason='enter a host name or IPv4 address (letters, digits, dots and hyphens)'
@@ -165,7 +200,7 @@ vm_clean() {
 KP_FIXTURE_INSPECTION=$(inspection absent)
 vm_run install "$(printf '%s\n' 202 201 sshx SSH '' host_name 'a b' 192.0.2.20 70000 '' \
     id_ed25519 "$WORK/ssh/link" "$WORK/ssh/id_ed25519" known "$WORK/ssh/missing" "$OUTSIDE/id_ed25519" \
-    "$WORK/ssh/dir" "$WORK/ssh/known_hosts" 2.3 v2.3.3 ftp://core.example.invalid https://core.example.invalid \
+    "$WORK/ssh/dir" "$WORK/ssh/pin-other" "$WORK/ssh/known_hosts" 2.3 v2.3.3 ftp://core.example.invalid https://core.example.invalid \
     $'vm\x01one' '' '' $'tab-secret\tx' fixture-secret n)"
 [[ $VM_RC == 0 ]] || fail "VM install flow exit $VM_RC [$VM_OUT]"
 vm_count 'select one listed local VM' 1 'unlisted VM ID'
@@ -174,6 +209,7 @@ vm_count "$address_reason" 3 'blank, underscored and spaced SSH addresses'
 vm_count 'a value is required' 1 'blank onboarding key'
 vm_count 'enter a whole number from 1 to 65535' 1 'SSH port out of range'
 vm_count "$file_reason" 6 'relative, symlinked, missing, unsafe and directory key and known-hosts paths'
+vm_count 'the known-hosts file must hold exactly one pinned key for 192.0.2.20' 1 'known-hosts file without the pin'
 vm_count 'choose an exact stable v2 release, e.g. 2.3.3' 1 'inexact release'
 vm_count "$url_reason" 1 'FTP Core URL'
 vm_count "$printable_reason" 2 'control character in the server name and tab in the key'
