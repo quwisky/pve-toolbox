@@ -186,6 +186,11 @@ declare -A CLI_FLAGS=(
     [doctor]="--json --quiet"
     [lxc-update]="--dry-run --allow-removals --notify"
 )
+# Global flags a command's own runner refuses (lxc-update execution needs an
+# interactive confirmation, so --yes and --force are rejected there). Help and
+# completion leave them out; the launcher still accepts and passes them, so
+# the runner remains the one that explains the refusal.
+declare -A CLI_NO_GLOBALS=([lxc-update]="-y|--yes -f|--force")
 declare -A CLI_ROOT=([install]=1 [update]=1 [uninstall]=1 [lxc-update]=1 [link]=1)
 declare -A CLI_DESC=(
     [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Use --dry-run for a cached preview, --allow-removals to enable package removals and cleanup, and --notify for a Discord report. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades. Package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local systemd schedule. Scheduled runs update every eligible local container with the non-removing policy, never catch up after downtime, and can report every batch to Discord when explicitly enabled. Use 'pve-toolbox status lxc-update' to inspect timer health and recent results."
@@ -217,7 +222,9 @@ cli_help_command() { # cli_help_command <command>
     [[ -z ${CLI_ROOT[$c]:-} ]] || printf '\nRequires root.\n'
     printf '\nOptions:\n'
     for f in ${CLI_FLAGS[$c]:-}; do printf '  %-16s %s\n' "$f" "${CLI_FLAG_DESC[$f]}"; done
-    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do printf '  %-16s %s\n' "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
+    while IFS= read -r spec; do
+        printf '  %-16s %s\n' "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"
+    done < <(cli_global_specs "$c")
     if [[ -n ${CLI_EXAMPLES[$c]:-} ]]; then
         printf '\nExamples:\n'
         while IFS= read -r line; do printf '  %s\n' "$line"; done <<<"${CLI_EXAMPLES[$c]}"
@@ -239,27 +246,37 @@ cli_long_flags() { # cli_long_flags -> every long flag, in table order, once eac
     done
 }
 
-cli_global_flag_names() { # cli_global_flag_names -> one global flag token per line
+# The global flags that apply to a command: all of them, less the ones listed
+# in CLI_NO_GLOBALS for it. No command (or an unknown one) gets every global.
+cli_global_specs() { # cli_global_specs [command] -> one CLI_GLOBAL_FLAGS entry per line
+    local c=${1:-} spec skip=""
+    [[ -z $c || -z ${CLI_NO_GLOBALS[$c]+x} ]] || skip=" ${CLI_NO_GLOBALS[$c]} "
+    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do
+        [[ $skip == *" $spec "* ]] || printf '%s\n' "$spec"
+    done
+}
+
+cli_global_flag_names() { # cli_global_flag_names [command] -> one global flag token per line
     local spec p
     local -a parts
-    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do
+    while IFS= read -r spec; do
         IFS='|' read -ra parts <<<"$spec"
         for p in "${parts[@]}"; do
             if [[ $p == *=* ]]; then printf '%s=\n' "${p%%=*}"; else printf '%s\n' "$p"; fi
         done
-    done
+    done < <(cli_global_specs "${1:-}")
 }
 
-cli_global_flag_help() { # cli_global_flag_help -> "flag:description" lines, one per flag token
+cli_global_flag_help() { # cli_global_flag_help [command] -> "flag:description" lines, one per flag token
     local spec p
     local -a parts
-    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do
+    while IFS= read -r spec; do
         IFS='|' read -ra parts <<<"$spec"
         for p in "${parts[@]}"; do
             [[ $p != *=* ]] || p=${p%%=*}=
             printf '%s:%s\n' "$p" "${CLI_GLOBAL_DESC[$spec]}"
         done
-    done
+    done < <(cli_global_specs "${1:-}")
 }
 
 cli_in() { # cli_in <word> <item>... -> true when word is one of the items
@@ -821,7 +838,7 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags|flags <cmd>|fla
             module_tags ;;
         flags)
             cmd=${2:-}
-            cli_global_flag_names
+            cli_global_flag_names "$cmd"
             # An empty subscript is a bad-array-subscript error under set -u,
             # not merely an unset one, so an absent or empty command has to be
             # ruled out before indexing at all; this is the completion a TAB
@@ -834,7 +851,7 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags|flags <cmd>|fla
             fi ;;
         flag-help)
             cmd=${2:-}
-            cli_global_flag_help
+            cli_global_flag_help "$cmd"
             if [[ -n $cmd && -n ${CLI_FLAGS[$cmd]+x} ]]; then
                 # shellcheck disable=SC2086 # CLI_FLAGS values are space-separated lists.
                 for f in ${CLI_FLAGS[$cmd]}; do

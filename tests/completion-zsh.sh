@@ -116,6 +116,9 @@ has $got --json || fail "status did not offer --json: $got"
 has $got --quiet || fail "status did not offer --quiet: $got"
 got=$(offers 3 ./pve-toolbox install "-")
 [[ $got != *--json* ]] || fail "install offered --json, which it does not accept: $got"
+got=$(offers 3 ./pve-toolbox lxc-update "-")
+has $got --dry-run || fail "lxc-update did not offer --dry-run: $got"
+[[ $got != *--yes* ]] || fail "lxc-update offered --yes, which its runner refuses: $got"
 print "ok  zsh offers a command'"'"'s own flags, not another command'"'"'s"
 
 # help completes command names, the same list as the bare prompt.

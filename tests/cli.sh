@@ -88,6 +88,32 @@ rc=0; launch help definitely-not >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 64 ]] || fail "help <unknown> exited $rc, want 64"
 pass "top-level and per-command help"
 
+# lxc-update's runner refuses --yes and --force, so neither its help nor its
+# completion offers them; every other global still applies. The launcher
+# itself keeps accepting them, so the runner is what explains the refusal.
+for flag in "-y, --yes" "-f, --force"; do
+    [[ $lxc_help != *"$flag"* ]] || fail "help lxc-update offers $flag, which it refuses"
+    [[ $(launch help status) == *"$flag"* ]] || fail "help status lost $flag"
+done
+[[ $lxc_help == *"--color=WHEN"* && $lxc_help == *"-h, --help"* ]] \
+    || fail "help lxc-update lost the globals that do apply"
+got=" $(launch _complete flags lxc-update | tr '\n' ' ') "
+for flag in -y --yes -f --force; do
+    [[ $got != *" $flag "* ]] || fail "'_complete flags lxc-update' offers $flag: $got"
+done
+[[ $got == *" --dry-run "* && $got == *" --color= "* ]] \
+    || fail "'_complete flags lxc-update' lost a flag that applies: $got"
+got=$(launch _complete flag-help lxc-update)
+[[ $got != *$'\n-y:'* && $got != -y:* && $got != *$'\n--force:'* ]] \
+    || fail "'_complete flag-help lxc-update' offers a refused global: $got"
+[[ $got == *$'\n--dry-run:'* ]] || fail "'_complete flag-help lxc-update' lost --dry-run: $got"
+[[ " $(launch _complete flags status | tr '\n' ' ') " == *" --yes "* ]] \
+    || fail "'_complete flags status' lost --yes"
+out=$(launch -y lxc-update --dry-run 2>&1) && rc=0 || rc=$?
+[[ $rc -ne 64 && $out != *"not supported by"* ]] \
+    || fail "the launcher started rejecting -y for lxc-update: $out"
+pass "help and completion leave out the globals lxc-update refuses"
+
 # --- flags and suggestions ----------------------------------------------------
 
 expect_usage() { # expect_usage <want-substring> <args...>

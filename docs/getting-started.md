@@ -107,7 +107,9 @@ JSON and quiet output are available for `status`, `check`, and `doctor`.
 `pve-toolbox help` lists every command with a one-line summary. `pve-toolbox
 help <command>` and `pve-toolbox <command> --help` are the same thing: that
 command's usage, its flags, whether it requires root, and examples where any
-are documented.
+are documented. A global flag the command refuses is left out of its help and
+its completion; `lxc-update` does not list `-y`/`--yes` or `-f`/`--force`,
+since LXC update execution requires interactive confirmation.
 
 An unknown command, an unsupported flag for the command given, an unknown
 module, or an unknown tag to `list` is a usage error: exit status `64`, the

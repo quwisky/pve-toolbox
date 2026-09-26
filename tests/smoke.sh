@@ -139,6 +139,9 @@ has "$got" --json  || fail "status did not offer --json, got: $got"
 has "$got" --quiet || fail "status did not offer --quiet, got: $got"
 got=$(complete_words 2 ./pve-toolbox install "-")
 has_not "$got" --json || fail "install offered --json, which it does not accept, got: $got"
+got=$(complete_words 2 ./pve-toolbox lxc-update "-")
+has "$got" --dry-run || fail "lxc-update did not offer --dry-run, got: $got"
+has_not "$got" --yes || fail "lxc-update offered --yes, which its runner refuses, got: $got"
 pass "bash offers a command's own flags, not another command's"
 
 # help completes command names, the same list as the bare prompt.
