@@ -68,13 +68,27 @@ The plain menu's install/reconfigure action supports the same flow; its update-a
 operation skips guest agents. The full-screen Update checklist leaves this
 module unchecked until selected. Guest-specific confirmation is still required.
 
-An invalid answer to the guest type, the container or VM ID, the VM transport,
-the existing-agent action, the retained-configuration action, the onboarding-key
-action, the release version, the Core URL, the SSH port, the SSH address, an
-SSH key or known-hosts path, or a blank replacement onboarding key is re-asked
-with the reason instead of aborting the operation. Consent prompts are
-unchanged: declining the apply preview and an unsupported downgrade still stop
-the operation outright, and the terminal/`--yes`/`--force` guard described
+An invalid answer is asked again with the reason instead of aborting the
+operation. This covers the guest type, the container or VM ID, the VM
+transport, the existing-agent, retained-configuration and onboarding-key actions
+(choices are not case-sensitive), a malformed release version, the Core URL,
+the SSH address and port, an SSH key or known-hosts path that is relative,
+missing, not a regular file, or unsafe (a symlink anywhere in the path, or the
+file or a parent directory not owned by root or writable by group or others;
+root-owned sticky directories such as `/tmp` are allowed), a blank onboarding
+key, and a server name or onboarding key that contains a tab or another control
+character.
+
+Some problems are only found after the answer is accepted, and they still stop
+the operation instead of being asked again: a known-hosts file that does not
+pin exactly one host key for the address and port, a well-formed release that
+does not exist or has no verified amd64 asset, and the identity, ownership and
+downgrade checks (a changed guest identity, uninstalling an agent the toolbox
+does not own, or a release older than the installed one).
+
+Consent prompts are unchanged. Declining any confirmation, such as the apply
+preview, adopting an existing installation, or recovering an interrupted
+operation, stops the operation. The terminal/`--yes`/`--force` guard described
 below still runs before any of these prompts.
 
 Choose an exact stable v2 version, for example `2.3.3`, after checking Core
