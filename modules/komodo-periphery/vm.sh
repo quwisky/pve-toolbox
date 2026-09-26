@@ -227,7 +227,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
     ask_choice transport 'VM transport' "${saved_transport:-qga}" qga ssh
     KP_VM_TRANSPORT=$transport KP_VM_HOST_FINGERPRINT='' KP_VM_ADDRESS='' KP_VM_PORT='' KP_VM_KEY='' KP_VM_HOSTS=''
     if [[ $transport == ssh ]]; then
-        ask_valid address 'Pinned SSH address or DNS name' "$(conf_get "$record" KP_ADDRESS)" valid_required
+        ask_valid address 'Pinned SSH address or DNS name' "$(conf_get "$record" KP_ADDRESS)" kp_valid_ssh_address
         saved_port=$(conf_get "$record" KP_PORT)
         ask_int port 'SSH port' "${saved_port:-22}" 1 65535
         ask_valid key_file 'Absolute root-owned SSH private-key path' "$(conf_get "$record" KP_KEY_FILE)" kp_valid_abs_path

@@ -29,6 +29,14 @@ kp_valid_vmid() { # a VM listed in PVE_QEMU_JSON by pve_qemu_inventory
 }
 # shellcheck disable=SC2034
 kp_valid_abs_path() { [[ $1 == /* ]] || { ASK_REASON='enter an absolute path'; return 1; }; }
+kp_ssh_address_ok() { # the one address rule for the SSH prompt and kp_ssh_prepare
+    [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]
+}
+# shellcheck disable=SC2034
+kp_valid_ssh_address() {
+    kp_ssh_address_ok "$1" \
+        || { ASK_REASON='enter a host name or IPv4 address (letters, digits, dots and hyphens)'; return 1; }
+}
 kp_host_require() {
     require_root
     local cmd

@@ -72,6 +72,16 @@ for path in '' id_ed25519 ./id_ed25519 '~/.ssh/id_ed25519'; do
 done
 pass 'absolute path validator'
 
+# The prompt must be as strict as kp_ssh_prepare, which checks it again later.
+address_reason='enter a host name or IPv4 address (letters, digits, dots and hyphens)'
+for address in vm.example.invalid 192.0.2.20 a vm-1 VM1.Example.invalid; do
+    accepts kp_valid_ssh_address "$address"
+done
+for address in '' host_name 'a b' -vm vm- .vm vm. 'vm;touch x' '[fd00::1]' fd00::1 "$(printf 'a%.0s' {1..254})"; do
+    rejects kp_valid_ssh_address "$address" "$address_reason"
+done
+pass 'SSH address validator'
+
 # --- VM flow through piped answers ----------------------------------------------
 
 kp_host_require() { KP_NODE=pve1; }
@@ -119,11 +129,12 @@ vm_clean() {
 
 # A fresh SSH install: every prompt gets one bad answer first.
 KP_FIXTURE_INSPECTION=$(inspection absent)
-vm_run install $'202\n201\nsshx\nSSH\n\n192.0.2.20\n70000\n\nid_ed25519\n/root/.ssh/id_ed25519\nknown\n/root/.ssh/known_hosts\n2.3\nv2.3.3\nftp://core.example.invalid\nhttps://core.example.invalid\n\n\nfixture-secret\nn\n'
+vm_run install $'202\n201\nsshx\nSSH\n\nhost_name\na b\n192.0.2.20\n70000\n\nid_ed25519\n/root/.ssh/id_ed25519\nknown\n/root/.ssh/known_hosts\n2.3\nv2.3.3\nftp://core.example.invalid\nhttps://core.example.invalid\n\n\nfixture-secret\nn\n'
 [[ $VM_RC == 0 ]] || fail "VM install flow exit $VM_RC [$VM_OUT]"
 vm_count 'select one listed local VM' 1 'unlisted VM ID'
 vm_count 'choose one of qga/ssh' 1 'unknown transport'
-vm_count 'a value is required' 2 'blank SSH address and blank onboarding key'
+vm_count "$address_reason" 3 'blank, underscored and spaced SSH addresses'
+vm_count 'a value is required' 1 'blank onboarding key'
 vm_count 'enter a whole number from 1 to 65535' 1 'SSH port out of range'
 vm_count 'enter an absolute path' 2 'relative key and known-hosts paths'
 vm_count 'choose an exact stable v2 release, e.g. 2.3.3' 1 'inexact release'

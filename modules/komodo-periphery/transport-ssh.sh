@@ -6,7 +6,7 @@ kp_ssh_prepare() { # <vmid> <address> <port> <key> <known-hosts>
     local id=$1 address=$2 port=$3 key=$4 hosts=$5 lookup fingerprint matches
     local -a entries=()
     kp_target_key qemu "$id" >/dev/null || return 1
-    [[ $address =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]] || return 1
+    kp_ssh_address_ok "$address" || return 1 # host.sh; a missing helper fails closed
     [[ $port =~ ^[0-9]{1,5}$ ]] && ((10#$port >= 1 && 10#$port <= 65535)) || return 1
     port=$((10#$port))
     for lookup in "$key" "$hosts"; do
