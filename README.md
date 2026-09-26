@@ -105,8 +105,8 @@ what was probably meant.
 
 Flags: `-y` non-interactive (modules read their env vars instead of prompting),
 `-f` force, `--json` versioned output, `--quiet` exit-status-only output,
-`-V` version, `-h` help. JSON and quiet output apply to `status`, `check`, and
-`doctor`.
+`--color=auto|always|never` colour output, `-V` version, `-h` help. JSON and
+quiet output apply to `status`, `check`, and `doctor`.
 
 Use `pve-toolbox lxc-update --dry-run` as root on PVE 9 to preview container
 package updates. Execution requires a terminal and confirmation; `--allow-removals`

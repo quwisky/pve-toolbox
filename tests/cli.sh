@@ -80,6 +80,10 @@ for c in list install status lxc-update; do
 done
 [[ $(launch help install) == *"Requires root"* ]] || fail "help install does not say it needs root"
 [[ $(launch help lxc-update) == *"--dry-run"* ]] || fail "help lxc-update lacks its flags"
+lxc_help=$(launch help lxc-update)
+lxc_root_count=$(grep -o "Requires root" <<<"$lxc_help" | wc -l)
+[[ $lxc_root_count -eq 1 ]] \
+    || fail "help lxc-update should say 'Requires root' exactly once, got $lxc_root_count"
 rc=0; launch help definitely-not >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 64 ]] || fail "help <unknown> exited $rc, want 64"
 pass "top-level and per-command help"
