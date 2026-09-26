@@ -86,6 +86,17 @@ _sc_valid_host_id() {
         || { ASK_REASON="the host id must be UTF-8 text without quotes, backslashes or control characters"; return 1; }
 }
 
+# The last guard before a collector's YAML is written. It names the key and
+# never the value, because the token is a secret. <what> is the file about to
+# be written, or "the collector configuration" before any file exists.
+_sc_check_yaml_values() { # _sc_check_yaml_values <what>
+    local key
+    for key in SCRUTINY_HOST_ID SCRUTINY_API_ENDPOINT SCRUTINY_API_TOKEN; do
+        _sc_yaml_safe "${!key:-}" \
+            || die "refusing to write $1: $key must be UTF-8 text without quotes, backslashes or control characters"
+    done
+}
+
 _sc_installed() {
     SC_PRESENT=()
     local s
@@ -122,14 +133,8 @@ _sc_version() {
 _sc_write_config() { # _sc_write_config <suffix>
     local file="$CONFIG_DIR/${SC_CONFIG[$1]}"
     # Defense in depth: module_install validates these at the prompt, but a
-    # refusal here must still happen before the file is touched, and must
-    # name the key - never the value, since the token is a secret.
-    _sc_yaml_safe "$SCRUTINY_HOST_ID" \
-        || die "refusing to write collector.yaml: host id contains a quote, backslash or control character"
-    _sc_yaml_safe "$SCRUTINY_API_ENDPOINT" \
-        || die "refusing to write collector.yaml: endpoint contains a quote, backslash or control character"
-    [[ -z $SCRUTINY_API_TOKEN ]] || _sc_yaml_safe "$SCRUTINY_API_TOKEN" \
-        || die "refusing to write collector.yaml: token contains a quote, backslash or control character"
+    # refusal here must still happen before the file is touched or backed up.
+    _sc_check_yaml_values "${SC_CONFIG[$1]}"
     backup_file "$file"
     {
         echo "# managed by pve-toolbox / $MODULE_NAME"
@@ -238,12 +243,7 @@ module_install() {
     # already staged would leave a half-installed module; catching it here
     # means the install never gets that far. _sc_write_config keeps its own
     # guard too, for any caller that reaches it without going through here.
-    _sc_yaml_safe "$SCRUTINY_HOST_ID" \
-        || die "refusing to install: host id contains a quote, backslash or control character"
-    _sc_yaml_safe "$SCRUTINY_API_ENDPOINT" \
-        || die "refusing to install: endpoint contains a quote, backslash or control character"
-    [[ -z $SCRUTINY_API_TOKEN ]] || _sc_yaml_safe "$SCRUTINY_API_TOKEN" \
-        || die "refusing to install: token contains a quote, backslash or control character"
+    _sc_check_yaml_values "the collector configuration"
 
     if curl -fsS --max-time 8 "$SCRUTINY_API_ENDPOINT/api/health" >/dev/null 2>&1; then
         ok "web API reachable"

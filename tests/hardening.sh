@@ -824,7 +824,8 @@ pass "scrutiny endpoints accept IPv6 literals and refuse YAML-breaking paths"
 ) || exit 1
 pass "scrutiny host id and token validators refuse YAML-breaking characters"
 
-# The token never appears in a warning, even across several rejected retries.
+# A token rejected at the prompt, for a quote, a C1 control or bytes that are
+# not UTF-8, is re-asked each time and never appears in the output.
 (
     export TOOLBOX_BIN_DIR="$WORK/sc-token-bin" TOOLBOX_LIB_DIR="$WORK/sc-token-lib"
     export TOOLBOX_CONF_DIR="$WORK/sc-token-conf" TOOLBOX_STATE_DIR="$WORK/sc-token-state"
@@ -935,6 +936,55 @@ pass "scrutiny rejects a YAML-breaking token without leaking its value"
 ) || exit 1
 pass "scrutiny -y preset with a YAML-breaking host id dies and writes nothing"
 
+# The same for a secret: the error names the variable and never the token.
+(
+    dir="$WORK/sc-preset-bad-token"
+    export TOOLBOX_BIN_DIR="$dir/bin" TOOLBOX_LIB_DIR="$dir/lib"
+    export TOOLBOX_CONF_DIR="$dir/conf" TOOLBOX_STATE_DIR="$dir/state"
+    export TOOLBOX_SYSTEMD_DIR="$dir/systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    ASSUME_YES=1
+    SCRUTINY_API_ENDPOINT=http://10.0.0.10:8080
+    SCRUTINY_HOST_ID=pve1
+    SCRUTINY_API_TOKEN='preset"s3cr3t'
+    unset SCRUTINY_VERSION SCRUTINY_SCHEDULE_METRICS SCRUTINY_SCHEDULE_ZFS \
+          SCRUTINY_SCHEDULE_MDADM SCRUTINY_SCHEDULE_PERFORMANCE
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    CONFIG_DIR="$dir/config"
+    require_root() { :; }
+    require_pve() { :; }
+    pkg_ensure() { :; }
+    detect_arch() { printf 'amd64'; }
+    curl() { return 0; }
+    gh_release() { GH_TAG=v2.0.0; }
+    gh_fetch_checksums() { CHECKSUM_FILE=""; }
+    _sc_stage_binary() { printf 'metrics\n' > "$3"; }
+    systemd_oneshot() { :; }
+    state_set() { :; }
+    have_zfs() { return 1; }
+    have_mdadm() { return 1; }
+
+    rc=0
+    out=$(module_install 2>&1) || rc=$?
+    [[ $rc -ne 0 ]] \
+        || fail "scrutiny installed with a YAML-breaking -y token preset"
+    [[ $out == *'SCRUTINY_API_TOKEN'* ]] \
+        || fail "scrutiny did not name SCRUTINY_API_TOKEN for a bad -y preset"
+    [[ $out != *s3cr3t* ]] \
+        || fail "scrutiny echoed the bad -y token value"
+    left=$(find "$dir" -type f)
+    [[ -z $left ]] \
+        || fail "scrutiny wrote files for a rejected -y token: $left"
+    [[ ! -e $CONFIG_DIR ]] \
+        || fail "scrutiny created $CONFIG_DIR for a rejected -y token"
+) || exit 1
+pass "scrutiny -y preset with a YAML-breaking token dies, writes nothing and hides the token"
+
 # Defense in depth: even a direct call bypassing the prompts must refuse to
 # write a YAML file that a bad value would break, and must name the key, not
 # the value, in its failure.
@@ -960,14 +1010,40 @@ pass "scrutiny -y preset with a YAML-breaking host id dies and writes nothing"
     out=$(_sc_write_config metrics 2>&1) || rc=$?
     [[ $rc -ne 0 ]] \
         || fail "_sc_write_config wrote collector.yaml with a quote in the token"
-    [[ $out == *token* ]] \
-        || fail "_sc_write_config did not name the token in its refusal: $out"
+    [[ $out == *SCRUTINY_API_TOKEN* ]] \
+        || fail "_sc_write_config did not name SCRUTINY_API_TOKEN in its refusal: $out"
     [[ $out != *"$secret"* ]] \
         || fail "_sc_write_config echoed the rejected token value: $out"
     [[ ! -e "$CONFIG_DIR/collector.yaml" ]] \
         || fail "_sc_write_config created collector.yaml despite refusing the token"
+
+    # With configs already in place, a refusal names the collector's own file
+    # and leaves every file as it was, without a backup copy.
+    printf 'metrics: original\n' > "$CONFIG_DIR/collector.yaml"
+    printf 'zfs: original\n' > "$CONFIG_DIR/collector-zfs.yaml"
+    for pair in metrics:collector.yaml zfs:collector-zfs.yaml; do
+        rc=0
+        out=$(_sc_write_config "${pair%%:*}" 2>&1) || rc=$?
+        [[ $rc -ne 0 ]] \
+            || fail "_sc_write_config ${pair%%:*} overwrote ${pair#*:} with a quote in the token"
+        [[ $out == *"refusing to write ${pair#*:}: SCRUTINY_API_TOKEN "* ]] \
+            || fail "_sc_write_config ${pair%%:*} did not name ${pair#*:} and SCRUTINY_API_TOKEN: $out"
+        [[ $out != *"$secret"* ]] \
+            || fail "_sc_write_config echoed the rejected token value"
+    done
+    SCRUTINY_API_TOKEN="" SCRUTINY_HOST_ID=$'pve\xc2\x85'
+    rc=0
+    out=$(_sc_write_config zfs 2>&1) || rc=$?
+    [[ $rc -ne 0 && $out == *'refusing to write collector-zfs.yaml: SCRUTINY_HOST_ID '* ]] \
+        || fail "_sc_write_config zfs did not refuse a C1 host id by name: $out"
+    [[ $(cat "$CONFIG_DIR/collector.yaml") == 'metrics: original' ]] \
+        || fail "_sc_write_config changed an existing collector.yaml it refused to write"
+    [[ $(cat "$CONFIG_DIR/collector-zfs.yaml") == 'zfs: original' ]] \
+        || fail "_sc_write_config changed an existing collector-zfs.yaml it refused to write"
+    baks=$(find "$CONFIG_DIR" -name '*.bak*')
+    [[ -z $baks ]] || fail "_sc_write_config made a backup before refusing: $baks"
 ) || exit 1
-pass "scrutiny refuses to write collector.yaml for a YAML-breaking value bypassing the prompts"
+pass "scrutiny refuses to write a collector config for a YAML-breaking value bypassing the prompts"
 
 # The run-now question used to come after the binaries, the token-bearing
 # collector config and the enabled timers were written, so closed input there

@@ -34,9 +34,14 @@ anywhere in the value, or bytes that are not valid UTF-8 — is re-asked with a
 reminder of the expected form. `SCRUTINY_HOST_ID` cannot be left blank, and —
 like `SCRUTINY_API_TOKEN` and the endpoint — must be valid UTF-8 text without a
 `"`, a `\` or a control character (C0, DEL, or C1 from U+0080 to U+009F), because
-all three are written into `collector.yaml` as YAML double-quoted strings; a
-bad value is re-asked at the prompt and refused a second time, without ever
-being written, if it somehow reaches the file-writing step. Each collector's
+all three are written as YAML double-quoted strings into each selected
+collector's file in `/opt/scrutiny/config`: `collector.yaml`,
+`collector-zfs.yaml`, `collector-mdadm.yaml` and `collector-performance.yaml`.
+A bad value is re-asked at the prompt. With `-y`, a bad preset stops the
+install before anything is written, and the error names the variable (for
+example `SCRUTINY_API_TOKEN`) but never repeats its value. If a bad value
+somehow reaches the file-writing step, it is refused there too, naming the
+file and the variable, and the existing file is left as it was. Each collector's
 schedule is validated the same way as any other module's timer, with
 `systemd-analyze calendar`.
 
