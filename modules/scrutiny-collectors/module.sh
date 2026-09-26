@@ -54,14 +54,37 @@ _sc_defaults() {
     : "${SCRUTINY_SCHEDULE_PERFORMANCE:=Sun *-*-* 02:00:00}"
 }
 
+# The host id, endpoint and token are all written into collector.yaml as YAML
+# double-quoted strings (see _sc_write_config); none of them may carry a ",
+# a \ or a control character (0x00-0x1f, 0x7f), the same technique as
+# komodo-periphery's kp_valid_printable.
+_sc_yaml_safe() {
+    local LC_ALL=C
+    [[ $1 != *[\"\\[:cntrl:]]* ]]
+}
+
 # The host is a name, an IPv4 address or a bracketed IPv6 literal. The path
-# must not carry " or \ because the endpoint is written into a YAML
-# double-quoted string in _sc_write_config.
+# must not carry " or \, and no control character is allowed anywhere in the
+# value, because the endpoint is written into a YAML double-quoted string in
+# _sc_write_config.
 _sc_valid_endpoint() {
     local re='^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]+)?(/[^[:space:]"\]*)?$'
-    [[ $1 =~ $re ]] \
+    [[ $1 =~ $re ]] && _sc_yaml_safe "$1" \
         || { ASK_REASON="enter an http:// or https:// URL, e.g. http://10.0.0.10:8080"; return 1; }
     ASK_NORMALIZED=${1%/}
+}
+
+# Blank is allowed (auth off); the reason is fixed text that never repeats the
+# value, because the token is a secret.
+_sc_valid_token() {
+    [[ -z $1 ]] || _sc_yaml_safe "$1" \
+        || { ASK_REASON="the token must not contain quotes, backslashes or control characters"; return 1; }
+}
+
+_sc_valid_host_id() {
+    valid_required "$1" || return 1
+    _sc_yaml_safe "$1" \
+        || { ASK_REASON="the host id must not contain quotes, backslashes or control characters"; return 1; }
 }
 
 _sc_installed() {
@@ -99,6 +122,15 @@ _sc_version() {
 
 _sc_write_config() { # _sc_write_config <suffix>
     local file="$CONFIG_DIR/${SC_CONFIG[$1]}"
+    # Defense in depth: module_install validates these at the prompt, but a
+    # refusal here must still happen before the file is touched, and must
+    # name the key - never the value, since the token is a secret.
+    _sc_yaml_safe "$SCRUTINY_HOST_ID" \
+        || die "refusing to write collector.yaml: host id contains a quote, backslash or control character"
+    _sc_yaml_safe "$SCRUTINY_API_ENDPOINT" \
+        || die "refusing to write collector.yaml: endpoint contains a quote, backslash or control character"
+    [[ -z $SCRUTINY_API_TOKEN ]] || _sc_yaml_safe "$SCRUTINY_API_TOKEN" \
+        || die "refusing to write collector.yaml: token contains a quote, backslash or control character"
     backup_file "$file"
     {
         echo "# managed by pve-toolbox / $MODULE_NAME"
@@ -198,8 +230,21 @@ module_install() {
     step "Scrutiny web instance"
     ask_valid SCRUTINY_API_ENDPOINT "API endpoint of the Scrutiny web container" \
         "${SCRUTINY_API_ENDPOINT:-http://10.0.0.10:8080}" _sc_valid_endpoint
-    ask_secret SCRUTINY_API_TOKEN "collector API token (optional; leave empty if auth is off)"
-    ask_valid SCRUTINY_HOST_ID "host id shown in the dashboard" "$SCRUTINY_HOST_ID" valid_required
+    ask_secret SCRUTINY_API_TOKEN "collector API token (optional; leave empty if auth is off)" \
+        _sc_valid_token
+    ask_valid SCRUTINY_HOST_ID "host id shown in the dashboard" "$SCRUTINY_HOST_ID" _sc_valid_host_id
+
+    # Defense in depth: validate once, right here, before the first write of
+    # the install (mkdir/binary staging below). A refusal after binaries are
+    # already staged would leave a half-installed module; catching it here
+    # means the install never gets that far. _sc_write_config keeps its own
+    # guard too, for any caller that reaches it without going through here.
+    _sc_yaml_safe "$SCRUTINY_HOST_ID" \
+        || die "refusing to install: host id contains a quote, backslash or control character"
+    _sc_yaml_safe "$SCRUTINY_API_ENDPOINT" \
+        || die "refusing to install: endpoint contains a quote, backslash or control character"
+    [[ -z $SCRUTINY_API_TOKEN ]] || _sc_yaml_safe "$SCRUTINY_API_TOKEN" \
+        || die "refusing to install: token contains a quote, backslash or control character"
 
     if curl -fsS --max-time 8 "$SCRUTINY_API_ENDPOINT/api/health" >/dev/null 2>&1; then
         ok "web API reachable"

@@ -772,8 +772,194 @@ http://h/a\b
 http://h/a b
 http://[fd00::10
 EOF
+    # Control characters elsewhere in the path (not just " and \) must also be
+    # refused, since they would still land unescaped in the YAML double-quoted
+    # string.
+    for endpoint in $'http://h/a\x01b' $'http://h/a\x7fb'; do
+        if _sc_valid_endpoint "$endpoint"; then
+            fail "an invalid scrutiny endpoint was accepted: $(printf '%q' "$endpoint")"
+        fi
+    done
 ) || exit 1
 pass "scrutiny endpoints accept IPv6 literals and refuse YAML-breaking paths"
+
+(
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    _sc_valid_host_id "" \
+        && fail "an empty scrutiny host id was accepted"
+    [[ $ASK_REASON == 'a value is required' ]] \
+        || fail "an empty scrutiny host id gave the wrong reason: $ASK_REASON"
+
+    for id in 'h"x' $'h\x01' $'h\x7f'; do
+        if _sc_valid_host_id "$id"; then
+            fail "a YAML-breaking scrutiny host id was accepted: $(printf '%q' "$id")"
+        fi
+        [[ $ASK_REASON == 'the host id must not contain quotes, backslashes or control characters' ]] \
+            || fail "wrong reason for a bad scrutiny host id: $ASK_REASON"
+    done
+    _sc_valid_host_id 'pve-1' \
+        || fail "a valid scrutiny host id was rejected: $ASK_REASON"
+
+    # The token is a secret: blank stays accepted (auth off), and a rejection
+    # reason must never depend on - or repeat - the value.
+    _sc_valid_token '' \
+        || fail "a blank scrutiny token was rejected: $ASK_REASON"
+    for token in 'ab"c' 'a\b' $'a\tb'; do
+        if _sc_valid_token "$token"; then
+            fail "a YAML-breaking scrutiny token was accepted: $(printf '%q' "$token")"
+        fi
+        [[ $ASK_REASON == 'the token must not contain quotes, backslashes or control characters' ]] \
+            || fail "wrong reason for a bad scrutiny token: $ASK_REASON"
+    done
+    _sc_valid_token 'plain-token-123' \
+        || fail "a valid scrutiny token was rejected: $ASK_REASON"
+) || exit 1
+pass "scrutiny host id and token validators refuse YAML-breaking characters"
+
+# The token never appears in a warning, even across several rejected retries.
+(
+    export TOOLBOX_BIN_DIR="$WORK/sc-token-bin" TOOLBOX_LIB_DIR="$WORK/sc-token-lib"
+    export TOOLBOX_CONF_DIR="$WORK/sc-token-conf" TOOLBOX_STATE_DIR="$WORK/sc-token-state"
+    export TOOLBOX_SYSTEMD_DIR="$WORK/sc-token-systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    unset SCRUTINY_API_ENDPOINT SCRUTINY_API_TOKEN SCRUTINY_HOST_ID SCRUTINY_VERSION \
+          SCRUTINY_SCHEDULE_METRICS SCRUTINY_SCHEDULE_ZFS SCRUTINY_SCHEDULE_MDADM \
+          SCRUTINY_SCHEDULE_PERFORMANCE
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    CONFIG_DIR="$WORK/sc-token-config"
+    require_root() { :; }
+    require_pve() { :; }
+    pkg_ensure() { :; }
+    detect_arch() { printf 'amd64'; }
+    curl() { return 0; }
+    gh_release() { GH_TAG=v2.0.0; }
+    gh_fetch_checksums() { CHECKSUM_FILE=""; }
+    _sc_stage_binary() { printf 'metrics\n' > "$3"; }
+    systemd_oneshot() { :; }
+    state_set() { :; }
+    have_zfs() { return 1; }
+    have_mdadm() { return 1; }
+    hostname() { :; }
+    systemd-analyze() {
+        [[ $1 == calendar && $2 == --iterations=1 ]] || return 2
+        case $3 in
+            daily) printf '  Next elapse: Thu 2026-10-01 00:00:00 UTC\n' ;;
+            *)     return 1 ;;
+        esac
+    }
+
+    secret='s3cr3t"tok'
+    answers=$'http://10.0.0.10:8080\n'  # endpoint
+    answers+="$secret"$'\n'             # token: rejected (quote)
+    answers+=$'\n'                       # token: Enter, accepted (blank)
+    answers+=$'pve1\n'                   # host id
+    answers+=$'y\n'                       # SMART metrics collector
+    answers+=$'n\n'                       # fio performance collector
+    answers+=$'daily\n'                   # metrics schedule
+    answers+=$'\n'                        # release tag: Enter
+    answers+=$'n\n'                       # run now
+
+    out=$(printf '%s' "$answers" | module_install 2>&1) \
+        || fail "scrutiny install with a rejected token then a valid one failed: $out"
+
+    grep -Fq "$secret" <<<"$out" \
+        && fail "the rejected token value leaked into install output: $out"
+    count=$(grep -Fc 'the token must not contain quotes, backslashes or control characters' <<<"$out")
+    [[ $count -eq 1 ]] \
+        || fail "expected exactly one token rejection, got $count: $out"
+) || exit 1
+pass "scrutiny rejects a YAML-breaking token without leaking its value"
+
+# A bad -y preset must die naming the variable, before any file is written.
+(
+    dir="$WORK/sc-preset-bad-host"
+    export TOOLBOX_BIN_DIR="$dir/bin" TOOLBOX_LIB_DIR="$dir/lib"
+    export TOOLBOX_CONF_DIR="$dir/conf" TOOLBOX_STATE_DIR="$dir/state"
+    export TOOLBOX_SYSTEMD_DIR="$dir/systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    ASSUME_YES=1
+    SCRUTINY_API_ENDPOINT=http://10.0.0.10:8080
+    SCRUTINY_HOST_ID='h"x'
+    unset SCRUTINY_API_TOKEN SCRUTINY_VERSION SCRUTINY_SCHEDULE_METRICS SCRUTINY_SCHEDULE_ZFS \
+          SCRUTINY_SCHEDULE_MDADM SCRUTINY_SCHEDULE_PERFORMANCE
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    CONFIG_DIR="$dir/config"
+    require_root() { :; }
+    require_pve() { :; }
+    pkg_ensure() { :; }
+    detect_arch() { printf 'amd64'; }
+    curl() { return 0; }
+    gh_release() { GH_TAG=v2.0.0; }
+    gh_fetch_checksums() { CHECKSUM_FILE=""; }
+    _sc_stage_binary() { printf 'metrics\n' > "$3"; }
+    systemd_oneshot() { :; }
+    state_set() { :; }
+    have_zfs() { return 1; }
+    have_mdadm() { return 1; }
+
+    rc=0
+    out=$(module_install 2>&1) || rc=$?
+    [[ $rc -ne 0 ]] \
+        || fail "scrutiny installed with a YAML-breaking -y host id preset: $out"
+    [[ $out == *'SCRUTINY_HOST_ID'* ]] \
+        || fail "scrutiny did not name SCRUTINY_HOST_ID for a bad -y preset: $out"
+    [[ $out != *'h"x'* ]] \
+        || fail "scrutiny echoed the bad -y host id value: $out"
+    left=$(find "$dir" -type f)
+    [[ -z $left ]] \
+        || fail "scrutiny wrote files for a rejected -y host id: $left"
+    [[ ! -e $CONFIG_DIR ]] \
+        || fail "scrutiny created $CONFIG_DIR for a rejected -y host id"
+) || exit 1
+pass "scrutiny -y preset with a YAML-breaking host id dies and writes nothing"
+
+# Defense in depth: even a direct call bypassing the prompts must refuse to
+# write a YAML file that a bad value would break, and must name the key, not
+# the value, in its failure.
+(
+    export TOOLBOX_BIN_DIR="$WORK/sc-guard-bin" TOOLBOX_LIB_DIR="$WORK/sc-guard-lib"
+    export TOOLBOX_CONF_DIR="$WORK/sc-guard-conf" TOOLBOX_STATE_DIR="$WORK/sc-guard-state"
+    export TOOLBOX_SYSTEMD_DIR="$WORK/sc-guard-systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/scrutiny-collectors/module.sh
+    source "$ROOT/modules/scrutiny-collectors/module.sh"
+
+    CONFIG_DIR="$WORK/sc-guard-config"
+    mkdir -p "$CONFIG_DIR"
+    SCRUTINY_HOST_ID=pve1
+    SCRUTINY_API_ENDPOINT=http://10.0.0.10:8080
+    secret='bad"token'
+    SCRUTINY_API_TOKEN=$secret
+
+    rc=0
+    out=$(_sc_write_config metrics 2>&1) || rc=$?
+    [[ $rc -ne 0 ]] \
+        || fail "_sc_write_config wrote collector.yaml with a quote in the token"
+    [[ $out == *token* ]] \
+        || fail "_sc_write_config did not name the token in its refusal: $out"
+    [[ $out != *"$secret"* ]] \
+        || fail "_sc_write_config echoed the rejected token value: $out"
+    [[ ! -e "$CONFIG_DIR/collector.yaml" ]] \
+        || fail "_sc_write_config created collector.yaml despite refusing the token"
+) || exit 1
+pass "scrutiny refuses to write collector.yaml for a YAML-breaking value bypassing the prompts"
 
 # The run-now question used to come after the binaries, the token-bearing
 # collector config and the enabled timers were written, so closed input there
