@@ -38,7 +38,9 @@ load_conf() {
         source "$RD_CONF"
     fi
     [[ $RD_STORAGE =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || die "invalid configured storage"
-    [[ $RD_VMID_START =~ ^[1-9][0-9]*$ && $RD_VMID_START -le 999999999 ]] || die "invalid VMID start"
+    # 18 digits at most keeps the comparisons inside bash's 64-bit arithmetic.
+    [[ $RD_VMID_START =~ ^[1-9][0-9]{0,17}$ && $RD_VMID_START -ge 100 && $RD_VMID_START -le 999999999 ]] \
+        || die "invalid VMID start; it must be between 100 and 999999999"
     [[ $RD_BOOT_PROBE =~ ^[01]$ && $RD_BOOT_TIMEOUT =~ ^[1-9][0-9]*$ ]] || die "invalid probe policy"
     [[ $RD_ALLOW_UNATTENDED =~ ^[01]$ ]] || die "invalid unattended policy"
 }

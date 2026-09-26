@@ -305,6 +305,24 @@ _lx_health() {
     fi
 }
 
+# Container IDs as the runner accepts them (run.sh). "none" or a blank value
+# clears the list; the stored form is single-space separated.
+_lx_valid_exclude() { # _lx_valid_exclude <answer>
+    local IFS=$' \t\n' id
+    local reason="enter container IDs (100-999999999) separated by spaces, or none"
+    local -a ids=()
+    if [[ $1 =~ ^[[:blank:]]*(none)?[[:blank:]]*$ ]]; then
+        ASK_NORMALIZED=none
+        return 0
+    fi
+    [[ $1 =~ ^[[:blank:]0-9]+$ ]] || { ASK_REASON=$reason; return 1; }
+    read -r -a ids <<<"$1"
+    for id in "${ids[@]}"; do
+        [[ $id =~ ^[1-9][0-9]{2,8}$ ]] || { ASK_REASON=$reason; return 1; }
+    done
+    ASK_NORMALIZED="${ids[*]}"
+}
+
 _lx_lock_idle() {
     command -v flock >/dev/null 2>&1 || die "missing host command: flock"
     [[ ! -L $TOOLBOX_STATE_DIR ]] || die "unsafe state directory"
@@ -323,18 +341,19 @@ module_install() {
     local requested_preset=${LX_SCHEDULE_PRESET:-}
     local requested_schedule=${LX_SCHEDULE:-}
     local requested_notify=${LX_SCHEDULE_NOTIFY:-}
+    local requested_exclude=${LX_EXCLUDE:-}
     local LX_EXCLUDE="" DISCORD_WEBHOOK="" LX_SCHEDULE_ENABLED=0
     local LX_SCHEDULE="$LX_DEFAULT_SCHEDULE" LX_SCHEDULE_NOTIFY=0
-    local id schedule_enabled schedule_notify schedule_preset rollback install_failed=0
+    local schedule_enabled schedule_notify schedule_preset rollback install_failed=0
     if conf_exists "$MODULE_NAME"; then conf_load "$MODULE_NAME"; fi
     [[ -z $requested_enabled ]] || LX_SCHEDULE_ENABLED=$requested_enabled
     [[ -z $requested_schedule ]] || LX_SCHEDULE=$requested_schedule
     [[ -z $requested_notify ]] || LX_SCHEDULE_NOTIFY=$requested_notify
-    ask LX_EXCLUDE "Excluded container IDs, space-separated (use none to clear)" "${LX_EXCLUDE:-none}"
+    # A blank preset keeps the saved list; clearing it takes an explicit none.
+    [[ $requested_exclude != *[![:space:]]* ]] || LX_EXCLUDE=$requested_exclude
+    ask_valid LX_EXCLUDE "Excluded container IDs, space-separated (use none to clear)" \
+        "${LX_EXCLUDE:-none}" _lx_valid_exclude
     [[ $LX_EXCLUDE != none ]] || LX_EXCLUDE=""
-    for id in $LX_EXCLUDE; do
-        [[ $id =~ ^[1-9][0-9]{2,8}$ ]] || { warn "invalid container ID: $id"; return 1; }
-    done
     ask_secret DISCORD_WEBHOOK "Discord webhook URL (optional)"
     [[ $DISCORD_WEBHOOK != none ]] || DISCORD_WEBHOOK=""
 

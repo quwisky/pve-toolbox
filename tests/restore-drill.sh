@@ -58,6 +58,16 @@ output=$(run_helper --backup "$backup")
     || fail "dry run changed restore state"
 pass "default invocation is a collision-aware dry run"
 
+# The helper holds the saved VMID start to the range the install prompt
+# accepts, so a range below 100 from an older configuration is refused.
+printf '%s\n' "RD_STORAGE='test-store'" "RD_VMID_START='50'" \
+    "RD_BOOT_PROBE='1'" "RD_BOOT_TIMEOUT='1'" "RD_ALLOW_UNATTENDED='1'" > "$WORK/conf/low-start.conf"
+if output=$(RD_CONF="$WORK/conf/low-start.conf" run_helper --backup "$backup" 2>&1); then
+    fail "helper accepted a configured VMID start below 100: $output"
+fi
+[[ $output == *'invalid VMID start'* ]] || fail "helper did not name the VMID start: $output"
+pass "helper refuses a configured VMID start below 100"
+
 if run_helper --backup "$backup" --vmid 900000 --execute --unattended >/dev/null 2>&1; then
     fail "explicit VMID collision was accepted"
 fi
@@ -204,3 +214,69 @@ pass "cleanup fails closed when ownership proof does not match"
     ) || exit 1
 ) || exit 1
 pass "restore drill validates storage and probe settings at the prompt"
+
+# Status reads the saved configuration through _rd_validate, which holds the
+# same VMID start range as the install prompt.
+(
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/restore-drill/module.sh
+    source "$ROOT/modules/restore-drill/module.sh"
+    RD_STORAGE=local-lvm RD_BOOT_PROBE=1 RD_BOOT_TIMEOUT=60 RD_ALLOW_UNATTENDED=0
+    for start in 99 1 0100 1000000000 18446744073709551716; do
+        RD_VMID_START=$start
+        if _rd_validate; then fail "saved VMID start $start was accepted"; fi
+        [[ $RD_ERROR == 'VMID start must be between 100 and 999999999' ]] \
+            || fail "VMID start $start error was not specific: $RD_ERROR"
+    done
+    for start in 100 900000 999999999; do
+        RD_VMID_START=$start
+        _rd_validate || fail "saved VMID start $start was refused: $RD_ERROR"
+    done
+) || exit 1
+pass "saved VMID start is checked against the install range"
+
+# Doctor and the short status report a saved configuration the helper would
+# refuse, instead of passing or showing it as ready.
+(
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=lib/report.sh
+    source "$ROOT/lib/report.sh"
+    # shellcheck source=lib/doctor.sh
+    source "$ROOT/lib/doctor.sh"
+    # shellcheck source=modules/restore-drill/module.sh
+    source "$ROOT/modules/restore-drill/module.sh"
+    unset "${RD_CONF_KEYS[@]}"
+    export TOOLBOX_CONF_DIR="$WORK/rd-doctor-conf" TOOLBOX_STATE_DIR="$WORK/rd-doctor-state" \
+        TOOLBOX_BIN_DIR="$WORK/rd-doctor-bin"
+    mkdir -p "$TOOLBOX_BIN_DIR"
+    install -m 0755 "$HELPER" "$TOOLBOX_BIN_DIR/$RD_BIN"
+    doctor_lines() { # one "state id summary | detail" line per result
+        local i
+        doctor_reset
+        module_doctor
+        for ((i = 0; i < ${#REPORT_IDS[@]}; i++)); do
+            printf '%s %s %s | %s\n' "${REPORT_STATES[$i]}" "${REPORT_IDS[$i]}" \
+                "${REPORT_SUMMARIES[$i]}" "${REPORT_DETAILS[$i]}"
+        done
+    }
+    conf_set restore-drill RD_STORAGE local-lvm
+    conf_set restore-drill RD_BOOT_PROBE 1
+    conf_set restore-drill RD_BOOT_TIMEOUT 60
+    conf_set restore-drill RD_ALLOW_UNATTENDED 0
+    conf_set restore-drill RD_VMID_START 50
+    out=$(doctor_lines)
+    [[ $out == *'fail configuration VMID start must be between 100 and 999999999 | reconfigure with: pve-toolbox install restore-drill'* ]] \
+        || fail "doctor passed a VMID start below 100: $out"
+    status=$(module_status) || fail "invalid configuration was reported as not installed: $status"
+    [[ $status == 'invalid configuration  [VMID start must be between 100 and 999999999]' ]] \
+        || fail "status did not report the invalid configuration: $status"
+    conf_set restore-drill RD_VMID_START 900000
+    out=$(doctor_lines)
+    [[ $out == *'pass configuration restore drill configuration is valid'* ]] \
+        || fail "doctor did not pass a valid configuration: $out"
+    [[ $out != *'fail configuration'* ]] || fail "doctor failed a valid configuration: $out"
+    [[ $(module_status) == 'ready, dry-run by default' ]] || fail 'valid configuration was not ready'
+) || exit 1
+pass "doctor and status report an invalid saved configuration"

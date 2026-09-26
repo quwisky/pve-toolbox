@@ -53,6 +53,38 @@ kp_valid_ssh_file() {
         return 1
     }
 }
+kp_ssh_pin_host() { # <address> <port>; the known-hosts name ssh looks up
+    if [[ $2 == 22 ]]; then printf '%s' "$1"; else printf '[%s]:%s' "$1" "$2"; fi
+}
+# shellcheck disable=SC2034 # KP_SSH_PIN_FINGERPRINT is read by kp_ssh_prepare
+kp_ssh_pin_ok() { # <address> <port> <known-hosts>; the one pin rule for the prompt and kp_ssh_prepare
+    local matches fingerprint
+    local -a entries=()
+    KP_SSH_PIN_FINGERPRINT=''
+    kp_ssh_address_ok "$1" || return 1
+    [[ $2 =~ ^[1-9][0-9]{0,4}$ ]] && (($2 <= 65535)) || return 1
+    matches=$(ssh-keygen -F "$(kp_ssh_pin_host "$1" "$2")" -f "$3" 2>/dev/null) || return 1
+    mapfile -t entries < <(sed '/^#/d;/^$/d' <<<"$matches")
+    ((${#entries[@]} == 1)) || return 1
+    fingerprint=$(printf '%s\n' "${entries[0]}" | ssh-keygen -lf - 2>/dev/null) || return 1
+    [[ -n $fingerprint ]] || return 1
+    fingerprint=$(awk '{print $2}' <<<"$fingerprint")
+    [[ $fingerprint == SHA256:* ]] || return 1
+    KP_SSH_PIN_FINGERPRINT=$fingerprint
+}
+# vm.sh sets KP_PIN_ADDRESS and KP_PIN_PORT to the answers already given
+# before asking for the known-hosts file: bash has no closures, and one prompt
+# runs at a time.
+# shellcheck disable=SC2034
+kp_valid_ssh_known_hosts() {
+    kp_valid_ssh_file "$1" || return 1
+    command -v ssh-keygen >/dev/null 2>&1 \
+        || { ASK_REASON='ssh-keygen is needed to check the pinned host key'; return 1; }
+    kp_ssh_pin_ok "${KP_PIN_ADDRESS:-}" "${KP_PIN_PORT:-}" "$1" || {
+        ASK_REASON="the known-hosts file must hold exactly one pinned key for $(kp_ssh_pin_host "${KP_PIN_ADDRESS:-}" "${KP_PIN_PORT:-}")"
+        return 1
+    }
+}
 kp_host_require() {
     require_root
     local cmd

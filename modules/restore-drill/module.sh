@@ -28,8 +28,10 @@ _rd_validate() {
     RD_ERROR=""
     [[ $RD_STORAGE =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
         || { RD_ERROR="target storage name is invalid"; return 1; }
-    [[ $RD_VMID_START =~ ^[1-9][0-9]*$ && $RD_VMID_START -le 999999999 ]] \
-        || { RD_ERROR="VMID start must be between 1 and 999999999"; return 1; }
+    # 18 digits at most keeps the comparisons inside bash's 64-bit arithmetic.
+    [[ $RD_VMID_START =~ ^[1-9][0-9]{0,17}$ && $RD_VMID_START -ge 100 \
+        && $RD_VMID_START -le 999999999 ]] \
+        || { RD_ERROR="VMID start must be between 100 and 999999999"; return 1; }
     [[ $RD_BOOT_PROBE =~ ^[01]$ && $RD_BOOT_TIMEOUT =~ ^[1-9][0-9]*$ \
         && $RD_ALLOW_UNATTENDED =~ ^[01]$ ]] \
         || { RD_ERROR="probe and unattended settings are invalid"; return 1; }
@@ -100,7 +102,9 @@ module_update() {
 module_status() {
     conf_exists "$MODULE_NAME" && [[ -x $TOOLBOX_BIN_DIR/$RD_BIN ]] \
         || { printf 'not installed'; return 1; }
-    if [[ -f $(_rd_run_state) ]]; then printf 'attention: unfinished drill'; else printf 'ready, dry-run by default'; fi
+    if [[ -f $(_rd_run_state) ]]; then printf 'attention: unfinished drill'
+    elif ! _rd_load; then printf 'invalid configuration  [%s]' "$RD_ERROR"
+    else printf 'ready, dry-run by default'; fi
 }
 
 module_status_long() {
@@ -115,6 +119,14 @@ module_status_long() {
 }
 
 module_doctor() {
+    if conf_exists "$MODULE_NAME"; then
+        if _rd_load; then
+            doctor_result pass configuration "restore drill configuration is valid"
+        else
+            doctor_result fail configuration "$RD_ERROR" \
+                "reconfigure with: pve-toolbox install restore-drill"
+        fi
+    fi
     if [[ ! -x $TOOLBOX_BIN_DIR/$RD_BIN ]]; then
         doctor_result fail helper "restore drill helper is missing"
     else

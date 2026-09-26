@@ -75,15 +75,16 @@ transport, the existing-agent, retained-configuration and onboarding-key actions
 the SSH address and port, an SSH key or known-hosts path that is relative,
 missing, not a regular file, or unsafe (a symlink anywhere in the path, or the
 file or a parent directory not owned by root or writable by group or others;
-root-owned sticky directories such as `/tmp` are allowed), a blank onboarding
-key, and a server name or onboarding key that contains a tab or another control
-character.
+root-owned sticky directories such as `/tmp` are allowed), a known-hosts file
+that does not pin exactly one host key for the address and port just entered
+(looked up as `address`, or `[address]:port` for a port other than 22), a blank
+onboarding key, and a server name or onboarding key that contains a tab or
+another control character.
 
 Some problems are only found after the answer is accepted, and they still stop
-the operation instead of being asked again: a known-hosts file that does not
-pin exactly one host key for the address and port, a well-formed release that
-does not exist or has no verified amd64 asset, and the identity, ownership and
-downgrade checks (a changed guest identity, uninstalling an agent the toolbox
+the operation instead of being asked again: a well-formed release that does not
+exist or has no verified amd64 asset, and the identity, ownership and downgrade
+checks (a changed guest identity, uninstalling an agent the toolbox
 does not own, or a release older than the installed one).
 
 Consent prompts are unchanged. Declining any confirmation, such as the apply

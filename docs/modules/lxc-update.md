@@ -166,6 +166,11 @@ Operator input is stored through the config helpers in
 | `LX_SCHEDULE_NOTIFY` | `1` to report every scheduled batch to Discord |
 
 Run `pve-toolbox install lxc-update` to reconfigure. Use `none` to clear a field.
+The excluded IDs prompt takes container IDs from 100 to 999999999 separated by
+spaces, or `none`; an invalid ID is asked again. With `-y`, `LX_EXCLUDE` in the
+environment presets the list (`none` clears it; a blank value keeps the saved
+list), and an invalid preset stops the install, naming `LX_EXCLUDE`, before
+anything is changed.
 Configuration is optional unless exclusions, notifications, or scheduling are
 wanted. Existing hosts remain unscheduled until enabled. Module updates preserve
 the exact saved calendar, enabled state, and scheduled-notification choice. If
