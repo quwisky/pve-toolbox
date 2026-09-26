@@ -54,8 +54,12 @@ preceded by a single space, so match `error:` within the line rather than
 anchoring a pattern on `^error:`. When a close candidate exists, a
 `did you mean: a, b?` line follows (at most three, closest match first);
 otherwise there is no suggestion line. The last line always names where to
-read the usage: `run 'pve-toolbox help <command>' for usage` when the command
-itself is known, or `run 'pve-toolbox help' for usage` otherwise:
+read the usage. It is `run 'pve-toolbox help <command>' for usage` when a
+known command rejects its own arguments or flags (an unknown module or tag, a
+missing module name, a flag that command does not accept). It is the general
+`run 'pve-toolbox help' for usage` for anything rejected before a command is
+considered (an unknown command, an unknown flag such as `status --jsn`, or a
+bad `--color` value) and for the internal `_complete` command:
 
 ```
  error: unknown command: stauts

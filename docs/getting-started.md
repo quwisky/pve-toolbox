@@ -115,8 +115,9 @@ An unknown command, an unsupported flag for the command given, an unknown
 module, or an unknown tag to `list` is a usage error: exit status `64`, the
 message on stderr as `error: <what was wrong>` after a single leading space, a
 `did you mean: ...?` line when a close match exists, and a final line naming
-where to read the usage (`run 'pve-toolbox help <command>' for usage`, or the
-general help when the mistyped word is not itself a known command).
+where to read the usage: `run 'pve-toolbox help <command>' for usage` when
+a known command rejects its own arguments or flags, or the general help for
+an unknown command or an unknown flag.
 
 ## Colour
 
