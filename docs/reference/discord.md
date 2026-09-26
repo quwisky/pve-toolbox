@@ -74,6 +74,27 @@ by hand and nothing is stripped.
 
 An empty value renders as `-` rather than producing an invalid embed.
 
+## Validating a webhook URL
+
+`valid_webhook_url <url>` is a prompt validator for
+[`ask_secret`](common.md#prompts):
+
+```bash
+ask_secret MY_WEBHOOK "Discord webhook URL" valid_webhook_url
+```
+
+- An empty value is refused (`a webhook URL is required`), which makes the
+  prompt required.
+- Anything that is not an `https://` URL made of letters, digits and
+  `._~/-` is refused.
+- An `https://` URL outside `discord.com/api/webhooks/`,
+  `discordapp.com/api/webhooks/` and `ptb.discord.com/api/webhooks/` is
+  accepted with a warning, since any endpoint taking the same JSON works.
+- The reason it gives never repeats the URL, which carries the webhook token.
+
+It uses `warn` from `lib/common.sh`, so only modules call it; the standalone
+runners do not.
+
 ## Other helpers
 
 `discord_payload <color> <title> <desc> [name value ...]`
