@@ -140,13 +140,13 @@ pass "bash offers nothing where nothing is taken"
 
 # --- usage -------------------------------------------------------------------
 
-# usage() read a hardcoded line range of the header comment, so growing that
-# header spilled `set -euo pipefail` and the code under it into --help.
+# --help is generated from the command table, not read off the header
+# comment, so it cannot spill shell code or comment markers into its output.
 help=$(launch ./pve-toolbox --help)
-[[ $help == *"pve-toolbox list [tag]"* ]] || fail "--help lost the command list"
-[[ $help == *"Flags:"* ]]                 || fail "--help lost the flags line"
-[[ $help != *"set -euo"* ]]               || fail "--help leaked shell code"
-[[ $help != *"#"* ]]                      || fail "--help leaked a comment marker"
+[[ $help == *"Commands:"* ]] || fail "--help lost the command list"
+[[ $help == *"Options:"* ]]  || fail "--help lost the options list"
+[[ $help != *"set -euo"* ]]  || fail "--help leaked shell code"
+[[ $help != *"#"* ]]         || fail "--help leaked a comment marker"
 pass "usage stops at the end of the header"
 
 # The package launcher lives separately from its modules and libraries. An

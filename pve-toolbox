@@ -1,24 +1,6 @@
 #!/usr/bin/env bash
 #
-# pve-toolbox - interactive launcher for custom Proxmox scripts.
-#
-#   pve-toolbox                    interactive menu
-#   pve-toolbox ui                 full-screen menu (needs whiptail)
-#   pve-toolbox list [tag]         list modules
-#   pve-toolbox install <mod>...   install specific modules
-#   pve-toolbox update [mod]...    update (all installed if none given)
-#   pve-toolbox check [mod]...     report available updates, change nothing
-#   pve-toolbox status [mod]       detailed status
-#   pve-toolbox doctor             read-only host and module health audit
-#   pve-toolbox lxc-update [ID]...  update local running Debian/Ubuntu containers
-#   pve-toolbox uninstall <mod>...
-#   pve-toolbox link               symlink into /usr/local/bin + completions
-#   pve-toolbox self-update        git pull this checkout
-#   pve-toolbox --version          print the installed version
-#
-# Flags: -y/--yes non-interactive, -f/--force, --json, --quiet,
-#        -V/--version, -h/--help
-# LXC update flags: --dry-run, --allow-removals, --notify (interactive only)
+# pve-toolbox - modular administration toolbox for Proxmox VE hosts. Run 'pve-toolbox help'.
 #
 set -euo pipefail
 
@@ -69,6 +51,103 @@ OUTPUT_QUIET=0
 usage_error() {
     printf '%s error:%s %s\n' "$e_red$e_bold" "$e_reset" "$*" >&2
     exit 64
+}
+
+# ------------------------------------------------------------ command table --
+#
+# The one description of the command line. Help, flag validation,
+# suggestions, completions and the generated man page all read these; add a
+# command here first. Data only: nothing runs while it is defined.
+
+CLI_COMMANDS=(menu ui list install update check status doctor lxc-update uninstall link self-update help)
+
+CLI_GLOBAL_FLAGS=("-y|--yes" "-f|--force" "--color=WHEN" "-V|--version" "-h|--help")
+declare -A CLI_GLOBAL_DESC=(
+    ["-y|--yes"]="non-interactive: take configured values and defaults"
+    ["-f|--force"]="force reinstall or redownload where a module supports it"
+    ["--color=WHEN"]="colour output: auto (default), always or never; NO_COLOR also disables it"
+    ["-V|--version"]="print the installed version"
+    ["-h|--help"]="show help; with a command, that command's help"
+)
+declare -A CLI_FLAG_DESC=(
+    [--json]="emit versioned, machine-readable JSON"
+    [--quiet]="print nothing; return only the standardized exit status"
+    [--dry-run]="preview using cached package indexes; change nothing"
+    [--allow-removals]="allow package removals and cleanup"
+    [--notify]="send a Discord report after the run"
+)
+declare -A CLI_SUMMARY=(
+    [menu]="interactive menu (default when no command is given)"
+    [ui]="full-screen menu (needs whiptail or dialog)"
+    [list]="list modules, optionally filtered by tag"
+    [install]="install or reconfigure modules"
+    [update]="update modules (all installed when none named)"
+    [check]="report available updates, change nothing"
+    [status]="show detailed module status"
+    [doctor]="read-only host and module health audit"
+    [lxc-update]="update running Debian/Ubuntu containers on this node"
+    [uninstall]="remove modules after confirmation"
+    [link]="link a git checkout into /usr/local/bin and completions"
+    [self-update]="update a git checkout (packaged installs use apt)"
+    [help]="show help for a command"
+)
+declare -A CLI_USAGE=(
+    [menu]="menu"
+    [ui]="ui"
+    [list]="list [tag]"
+    [install]="install <module>..."
+    [update]="update [module]..."
+    [check]="check [--json|--quiet] [module]..."
+    [status]="status [--json|--quiet] [module]..."
+    [doctor]="doctor [--json|--quiet]"
+    [lxc-update]="lxc-update [--dry-run] [--allow-removals] [--notify] [ID]..."
+    [uninstall]="uninstall <module>..."
+    [link]="link"
+    [self-update]="self-update"
+    [help]="help [command]"
+)
+declare -A CLI_FLAGS=(
+    [check]="--json --quiet"
+    [status]="--json --quiet"
+    [doctor]="--json --quiet"
+    [lxc-update]="--dry-run --allow-removals --notify"
+)
+declare -A CLI_ROOT=([install]=1 [update]=1 [uninstall]=1 [lxc-update]=1 [link]=1)
+declare -A CLI_DESC=(
+    [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades; package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local schedule and 'pve-toolbox status lxc-update' to inspect it."
+    [doctor]="Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
+)
+declare -A CLI_EXAMPLES=(
+    [list]=$'pve-toolbox list\npve-toolbox list storage'
+    [install]=$'pve-toolbox install config-backup\npve-toolbox -y install zfs-scrub'
+    [status]=$'pve-toolbox status\npve-toolbox status --json zfs-scrub'
+    [check]='pve-toolbox check --quiet'
+    [doctor]='pve-toolbox doctor --json'
+    [lxc-update]='pve-toolbox lxc-update --dry-run 101 102'
+    [help]='pve-toolbox help status'
+)
+
+cli_help_overview() {
+    local c spec
+    printf 'Usage: pve-toolbox [options] [command] [arguments]\n\nCommands:\n'
+    for c in "${CLI_COMMANDS[@]}"; do printf '  %-12s %s\n' "$c" "${CLI_SUMMARY[$c]}"; done
+    printf '\nOptions:\n'
+    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do printf '  %-16s %s\n' "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
+    printf "\nRun 'pve-toolbox help <command>' for details.\n"
+}
+
+cli_help_command() { # cli_help_command <command>
+    local c=$1 f spec line
+    printf 'Usage: pve-toolbox %s\n\n%s\n' "${CLI_USAGE[$c]}" "${CLI_SUMMARY[$c]}"
+    if [[ -n ${CLI_DESC[$c]:-} ]]; then printf '\n'; fold -s -w 78 <<<"${CLI_DESC[$c]}"; fi
+    [[ -z ${CLI_ROOT[$c]:-} ]] || printf '\nRequires root.\n'
+    printf '\nOptions:\n'
+    for f in ${CLI_FLAGS[$c]:-}; do printf '  %-16s %s\n' "$f" "${CLI_FLAG_DESC[$f]}"; done
+    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do printf '  %-16s %s\n' "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
+    if [[ -n ${CLI_EXAMPLES[$c]:-} ]]; then
+        printf '\nExamples:\n'
+        while IFS= read -r line; do printf '  %s\n' "$line"; done <<<"${CLI_EXAMPLES[$c]}"
+    fi
 }
 
 # --------------------------------------------------------------- discovery --
@@ -613,10 +692,6 @@ cmd_self_update() {
     ok "now at $(git -C "$TOOLBOX_ROOT" describe --always --dirty)"
 }
 
-# Print the header block, stopping at the first non-comment line, so the
-# range never has to be kept in sync with the code underneath it.
-usage() { awk 'NR < 3 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; }
-
 # ------------------------------------------------------------------- main --
 
 # Colour has to be decided before anything below can fail, so every usage
@@ -644,6 +719,7 @@ toolbox_color_setup
 
 ARGS=()
 LXC_FLAGS=()
+WANT_HELP=0
 while [[ $# -gt 0 ]]; do
     case $1 in
         -y|--yes)   ASSUME_YES=1 ;;
@@ -657,7 +733,7 @@ while [[ $# -gt 0 ]]; do
         --color)    usage_error "--color needs a value: --color=auto|always|never" ;;
         --dry-run|--allow-removals|--notify) LXC_FLAGS+=("$1") ;;
         -V|--version) printf 'pve-toolbox %s\n' "$TOOLBOX_VERSION"; exit 0 ;;
-        -h|--help)  usage; exit 0 ;;
+        -h|--help)  WANT_HELP=1 ;;
         --)         shift; ARGS+=("$@"); break ;;
         -*)         usage_error "unknown flag: $1" ;;
         *)          ARGS+=("$1") ;;
@@ -668,6 +744,15 @@ done
     || usage_error "--json and --quiet cannot be used together"
 
 command_name=${ARGS[0]:-menu}
+if [[ $WANT_HELP -eq 1 ]]; then
+    if [[ ${#ARGS[@]} -eq 0 ]]; then
+        cli_help_overview
+        exit 0
+    fi
+    [[ -v CLI_SUMMARY[$command_name] ]] || usage_error "unknown command: $command_name"
+    cli_help_command "$command_name"
+    exit 0
+fi
 [[ ${#LXC_FLAGS[@]} == 0 || $command_name == lxc-update ]] \
     || usage_error "LXC update flags apply only to lxc-update"
 if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
@@ -703,5 +788,11 @@ case $command_name in
     link)        cmd_link ;;
     _complete)   cmd_complete "${ARGS[@]:1}" ;;
     self-update) cmd_self_update ;;
+    help)        if [[ ${#ARGS[@]} -eq 1 ]]; then
+                     cli_help_overview
+                 else
+                     [[ -v CLI_SUMMARY[${ARGS[1]}] ]] || usage_error "unknown command: ${ARGS[1]}"
+                     cli_help_command "${ARGS[1]}"
+                 fi ;;
     *)           usage_error "unknown command: ${ARGS[0]} (try --help)" ;;
 esac

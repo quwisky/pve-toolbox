@@ -62,3 +62,24 @@ out=$(pty "cd '$ROOT' && ./pve-toolbox --color=never --bogus-flag" || true)
 out=$(launch --color=always --dry-run status 2>&1 || true)
 [[ $out == *"${ESC}31"* ]] || fail "--color=always did not colour the LXC-flag error"
 pass "colour is decided before any argument-parsing usage error"
+
+# --- help ---------------------------------------------------------------------
+
+help=$(launch --help)
+for c in menu ui list install update check status doctor lxc-update uninstall link self-update help; do
+    [[ $help == *"  $c "* ]] || fail "--help does not list $c"
+done
+[[ $help == *"pve-toolbox help <command>"* ]] || fail "--help lacks the per-command hint"
+[[ $help != *"set -euo"* && $help != *"#"* ]] || fail "--help leaked source text"
+[[ $(launch help) == "$help" ]] || fail "'help' and '--help' differ"
+for c in list install status lxc-update; do
+    a=$(launch help "$c") || fail "help $c failed"
+    b=$(launch "$c" --help) || fail "$c --help failed"
+    [[ $a == "$b" ]] || fail "help $c and $c --help differ"
+    [[ $a == *"Usage: pve-toolbox $c"* ]] || fail "help $c lacks its usage line"
+done
+[[ $(launch help install) == *"Requires root"* ]] || fail "help install does not say it needs root"
+[[ $(launch help lxc-update) == *"--dry-run"* ]] || fail "help lxc-update lacks its flags"
+rc=0; launch help definitely-not >/dev/null 2>&1 || rc=$?
+[[ $rc -eq 64 ]] || fail "help <unknown> exited $rc, want 64"
+pass "top-level and per-command help"
