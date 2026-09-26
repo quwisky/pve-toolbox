@@ -1,3 +1,17 @@
+pve-toolbox (0.10.0) unstable; urgency=medium
+
+  * **komodo-periphery:** manage agents in selected VMs via QGA or SSH ([#81](https://github.com/quwisky/pve-toolbox/issues/81)) ([dac0e4b](https://github.com/quwisky/pve-toolbox/commit/dac0e4b9b9968d6cbf46314b82f98057a877ad16))
+  * **audit:** validate settings where they are asked ([#84](https://github.com/quwisky/pve-toolbox/issues/84)) ([0530b87](https://github.com/quwisky/pve-toolbox/commit/0530b878437a55ad2e7f1a7b2ff65d5ec43d2429))
+  * **input:** tighten printable checks and polish scrutiny and restore-drill ([#91](https://github.com/quwisky/pve-toolbox/issues/91)) ([0d111e8](https://github.com/quwisky/pve-toolbox/commit/0d111e8747148bf5cb0130d08c939d1f73b03d6d))
+  * **input:** validate prompts and fail closed on EOF ([#83](https://github.com/quwisky/pve-toolbox/issues/83)) ([9c1547e](https://github.com/quwisky/pve-toolbox/commit/9c1547e5bae4a244869b7e265b5f82ac1f192b1f))
+  * **input:** validate scheduled-module settings at the prompt ([#85](https://github.com/quwisky/pve-toolbox/issues/85)) ([8700f98](https://github.com/quwisky/pve-toolbox/commit/8700f985fd84a14c5b789d8e1a55a9671833a073))
+  * **input:** validate the remaining install prompts ([#88](https://github.com/quwisky/pve-toolbox/issues/88)) ([de5fdd0](https://github.com/quwisky/pve-toolbox/commit/de5fdd088c4a08a1fa6a88e3e3f191281f4ed38e))
+  * **komodo-periphery:** re-ask invalid answers ([#86](https://github.com/quwisky/pve-toolbox/issues/86)) ([1c0ce03](https://github.com/quwisky/pve-toolbox/commit/1c0ce03ad9c4d340dcef7505666cd786cccfeaf4))
+  * **komodo-periphery:** wait for agent readiness on startup ([#79](https://github.com/quwisky/pve-toolbox/issues/79)) ([891ba9d](https://github.com/quwisky/pve-toolbox/commit/891ba9df07cd2928d4abff9b124751ad426fcc48))
+  * **scrutiny-collectors:** validate host id, token and endpoint for YAML safety ([#89](https://github.com/quwisky/pve-toolbox/issues/89)) ([f622955](https://github.com/quwisky/pve-toolbox/commit/f6229550e5851efc9906f0a7a29e8416af884c52))
+
+ -- Bence Nagy <quwisky@qwky.eu>  Sat, 26 Sep 2026 19:01:45 +0000
+
 pve-toolbox (0.9.0) unstable; urgency=medium
 
   * **komodo-periphery:** support configuration-only updates ([#77](https://github.com/quwisky/pve-toolbox/issues/77)) ([fdc50fb](https://github.com/quwisky/pve-toolbox/commit/fdc50fbddca3ce9ddaaf2a8bf24900e7339fa029))
