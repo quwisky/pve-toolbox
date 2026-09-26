@@ -27,6 +27,14 @@ kp_valid_vmid() { # a VM listed in PVE_QEMU_JSON by pve_qemu_inventory
     kp_target_key qemu "$1" >/dev/null && jq -e --argjson id "$1" 'any(.[];.vmid==$id)' <<<"$PVE_QEMU_JSON" >/dev/null \
         || { ASK_REASON='select one listed local VM'; return 1; }
 }
+# The guest refuses bytes below 32 and 127 in the server name and onboarding
+# key, but only after the Apply confirm. The reason never repeats the value.
+# shellcheck disable=SC2034
+kp_valid_printable() { # blank passes; see kp_valid_required_printable
+    local LC_ALL=C
+    [[ $1 != *[[:cntrl:]]* ]] || { ASK_REASON='use printable characters only (no tabs or other control characters)'; return 1; }
+}
+kp_valid_required_printable() { valid_required "$1" && kp_valid_printable "$1"; }
 kp_ssh_address_ok() { # the one address rule for the SSH prompt and kp_ssh_prepare
     [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$ ]]
 }
@@ -328,16 +336,16 @@ kp_host_change() ( # Subshell owns locks, protected temporary files and traps.
     : > "$KP_WORK/key"; chmod 0600 "$KP_WORK/key"
     if [[ $action == configure || $configure_retained == true ]]; then
         ask_valid core 'Core URL (HTTP or HTTPS; blank keeps current)' '' kp_valid_core_url_or_blank
-        ask name 'Server name in Core (blank keeps current)' ''
+        ask_valid name 'Server name in Core (blank keeps current)' '' kp_valid_printable
         ask_choice key_action 'Onboarding key action' keep keep replace remove
         if [[ $key_action == replace ]]; then
-            ask_secret key 'Core v2 onboarding key' valid_required
+            ask_secret key 'Core v2 onboarding key' kp_valid_required_printable
             printf '%s' "$key" > "$KP_WORK/key"; unset key
         fi
     elif [[ $layout == absent && $retained_config == false ]]; then
         ask_valid core 'Core URL (HTTP or HTTPS)' '' kp_valid_core_url
-        ask_valid name 'Server name in Core' "ct-$id" valid_required
-        ask_secret key 'Core v2 onboarding key' valid_required
+        ask_valid name 'Server name in Core' "ct-$id" kp_valid_required_printable
+        ask_secret key 'Core v2 onboarding key' kp_valid_required_printable
         printf '%s' "$key" > "$KP_WORK/key"; unset key
     fi
     info "Node $KP_NODE / CT $id: $action Periphery ${version:-absent} -> $release"

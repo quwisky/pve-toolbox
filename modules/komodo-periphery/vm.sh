@@ -328,16 +328,16 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
     : > "$KP_VM_WORK/key"; chmod 0600 "$KP_VM_WORK/key"
     if [[ $action == configure || $configure_retained == true ]]; then
         ask_valid core 'Core URL (HTTP or HTTPS; blank keeps current)' '' kp_valid_core_url_or_blank
-        ask name 'Server name in Core (blank keeps current)' ''
+        ask_valid name 'Server name in Core (blank keeps current)' '' kp_valid_printable
         ask_choice key_action 'Onboarding key action' keep keep replace remove
         if [[ $key_action == replace ]]; then
-            ask_secret key 'Core v2 onboarding key' valid_required
+            ask_secret key 'Core v2 onboarding key' kp_valid_required_printable
             printf '%s' "$key" > "$KP_VM_WORK/key"; unset key
         fi
     elif [[ $layout == absent && $retained == false ]]; then
         ask_valid core 'Core URL (HTTP or HTTPS)' '' kp_valid_core_url
-        ask_valid name 'Server name in Core' "vm-$id" valid_required
-        ask_secret key 'Core v2 onboarding key' valid_required
+        ask_valid name 'Server name in Core' "vm-$id" kp_valid_required_printable
+        ask_secret key 'Core v2 onboarding key' kp_valid_required_printable
         printf '%s' "$key" > "$KP_VM_WORK/key"; unset key
     fi
     info "Node $KP_NODE / VM $id ($transport): $action Periphery ${version:-absent} -> $release"

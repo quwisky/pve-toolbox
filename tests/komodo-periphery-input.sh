@@ -99,6 +99,23 @@ for address in '' host_name 'a b' -vm vm- .vm vm. 'vm;touch x' '[fd00::1]' fd00:
 done
 pass 'SSH address validator'
 
+# The guest refuses control characters in the server name and onboarding key
+# only after the Apply confirm, so the prompts refuse them first.
+printable_reason='use printable characters only (no tabs or other control characters)'
+for text in '' ct-101 'Server one' 'Szerver ä' '#!$%&*'; do
+    accepts kp_valid_printable "$text"
+    [[ -z $text ]] || accepts kp_valid_required_printable "$text"
+done
+for text in $'ct\t101' $'ct\x01' $'ct\x1b[31m' $'ct\x7f' $'\x1f'; do
+    rejects kp_valid_printable "$text" "$printable_reason"
+    rejects kp_valid_required_printable "$text" "$printable_reason"
+done
+rejects kp_valid_required_printable '' 'a value is required'
+ASK_REASON=""
+kp_valid_required_printable $'tab-secret\tx' || true
+[[ $ASK_REASON != *tab-secret* ]] || fail 'printable validator reason contains the value'
+pass 'printable-only validators for the server name and onboarding key'
+
 # --- VM flow through piped answers ----------------------------------------------
 
 kp_host_require() { KP_NODE=pve1; }
@@ -139,7 +156,8 @@ vm_count() { # vm_count <text> <times> <what>; each rejected answer warns once
     [[ $n == "$2" ]] || fail "$3: [$1] shown $n times, not $2 [$VM_OUT]"
 }
 vm_clean() {
-    [[ $VM_OUT != *fixture-secret* && $VM_OUT != *new-secret* ]] || fail "$1: onboarding key echoed"
+    [[ $VM_OUT != *fixture-secret* && $VM_OUT != *new-secret* && $VM_OUT != *tab-secret* ]] \
+        || fail "$1: onboarding key echoed"
     [[ ! -e $TOOLBOX_CONF_DIR/komodo-periphery-qemu-201.conf ]] || fail "$1: declined change saved a VM record"
 }
 
@@ -148,7 +166,7 @@ KP_FIXTURE_INSPECTION=$(inspection absent)
 vm_run install "$(printf '%s\n' 202 201 sshx SSH '' host_name 'a b' 192.0.2.20 70000 '' \
     id_ed25519 "$WORK/ssh/link" "$WORK/ssh/id_ed25519" known "$WORK/ssh/missing" "$OUTSIDE/id_ed25519" \
     "$WORK/ssh/dir" "$WORK/ssh/known_hosts" 2.3 v2.3.3 ftp://core.example.invalid https://core.example.invalid \
-    '' '' fixture-secret n)"
+    $'vm\x01one' '' '' $'tab-secret\tx' fixture-secret n)"
 [[ $VM_RC == 0 ]] || fail "VM install flow exit $VM_RC [$VM_OUT]"
 vm_count 'select one listed local VM' 1 'unlisted VM ID'
 vm_count 'choose one of qga/ssh' 1 'unknown transport'
@@ -158,6 +176,7 @@ vm_count 'enter a whole number from 1 to 65535' 1 'SSH port out of range'
 vm_count "$file_reason" 6 'relative, symlinked, missing, unsafe and directory key and known-hosts paths'
 vm_count 'choose an exact stable v2 release, e.g. 2.3.3' 1 'inexact release'
 vm_count "$url_reason" 1 'FTP Core URL'
+vm_count "$printable_reason" 2 'control character in the server name and tab in the key'
 grep -Fxq "prepare 201 192.0.2.20 22 $WORK/ssh/id_ed25519 $WORK/ssh/known_hosts" "$WORK/calls" \
     || fail "SSH answers not passed on: $(cat "$WORK/calls")"
 grep -Fxq 'release v2.3.3' "$WORK/calls" || fail 'v-prefixed release not normalized once'
@@ -185,12 +204,13 @@ pass 'VM SSH prompts default to the saved connection'
 
 # An existing agent: the action and key-action choices re-ask a typo.
 KP_FIXTURE_INSPECTION=$(inspection supported)
-vm_run install $'201\nqga\nreinstall\nCONFIGURE\nftp://core.example.invalid\n\n\nrotate\nreplace\n\nnew-secret\nn\n'
+vm_run install $'201\nqga\nreinstall\nCONFIGURE\nftp://core.example.invalid\n\nname\x1b[31m\n\nrotate\nreplace\n\ntab-secret\tx\nnew-secret\nn\n'
 [[ $VM_RC == 0 ]] || fail "VM configure flow exit $VM_RC [$VM_OUT]"
 vm_count 'choose one of update/configure' 1 'unknown existing-agent action'
 vm_count "$url_reason" 1 'FTP Core URL on configure'
 vm_count 'choose one of keep/replace/remove' 1 'unknown key action'
 vm_count 'a value is required' 1 'blank replacement key'
+vm_count "$printable_reason" 2 'escape sequence in the server name and tab in the replacement key'
 vm_expect 'VM 201 (qga): configure Periphery 2.3.2 -> 2.3.2' 'configure preview'
 if grep -q '^release ' "$WORK/calls"; then fail 'configure fetched a release'; fi
 vm_clean 'VM configure flow'
@@ -274,7 +294,8 @@ host_run() { # host_run <inspection> <pattern> <answer>... -> HOST_OUT, HOST_RC
 }
 host_clean() {
     [[ $HOST_RC == 0 ]] || fail "$1: exit $HOST_RC [$HOST_OUT]"
-    [[ $HOST_OUT != *fixture-secret* && $HOST_OUT != *new-secret* ]] || fail "$1: onboarding key echoed"
+    [[ $HOST_OUT != *fixture-secret* && $HOST_OUT != *new-secret* && $HOST_OUT != *tab-secret* ]] \
+        || fail "$1: onboarding key echoed"
     [[ $HOST_OUT == *'cancelled; guest unchanged'* ]] || fail "$1: not declined [$HOST_OUT]"
     [[ ! -e $TOOLBOX_CONF_DIR/komodo-periphery-101.conf ]] || fail "$1: declined change saved a record"
 }
@@ -285,8 +306,9 @@ host_run "$(inspection absent)" \
     'Exact stable Periphery v2' 2.3.3-rc1 "$release_reason" '<none>' 'Exact stable Periphery v2' v2.3.3 \
     'Core URL (HTTP or HTTPS) [' 'http://user:pw@core.example.invalid' "$url_reason" '<none>' \
     'Core URL (HTTP or HTTPS) [' https://core.example.invalid \
-    'Server name in Core [' '' \
-    'Core v2 onboarding key: ' '' 'a value is required' '<none>' 'Core v2 onboarding key: ' fixture-secret \
+    'Server name in Core [' $'ct\x01one' "$printable_reason" '<none>' 'Server name in Core [' '' \
+    'Core v2 onboarding key: ' '' 'a value is required' '<none>' \
+    'Core v2 onboarding key: ' $'tab-secret\tx' "$printable_reason" '<none>' 'Core v2 onboarding key: ' fixture-secret \
     'CT 101: install Periphery absent -> 2.3.3' '<none>' \
     'Apply this operation to the selected container (y/n) [' n
 host_clean 'LXC install flow'
@@ -299,10 +321,12 @@ host_run "$(inspection supported)" \
     'Existing agent action (update/configure) [' configure \
     'Core URL (HTTP or HTTPS; blank keeps current) [' ftp://core.example.invalid "$url_reason" '<none>' \
     'Core URL (HTTP or HTTPS; blank keeps current) [' '' \
+    'Server name in Core (blank keeps current) [' $'name\x1b[31m' "$printable_reason" '<none>' \
     'Server name in Core (blank keeps current) [' '' \
     'Onboarding key action (keep/replace/remove) [' rotate 'choose one of keep/replace/remove' '<none>' \
     'Onboarding key action (keep/replace/remove) [' replace \
-    'Core v2 onboarding key: ' '' 'a value is required' '<none>' 'Core v2 onboarding key: ' new-secret \
+    'Core v2 onboarding key: ' '' 'a value is required' '<none>' \
+    'Core v2 onboarding key: ' $'tab-secret\tx' "$printable_reason" '<none>' 'Core v2 onboarding key: ' new-secret \
     'CT 101: configure Periphery 2.3.2 -> 2.3.2' '<none>' \
     'onboarding key: replace' '<none>' \
     'Apply this operation to the selected container (y/n) [' n
