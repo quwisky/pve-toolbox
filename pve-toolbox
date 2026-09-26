@@ -67,7 +67,7 @@ OUTPUT_JSON=0
 OUTPUT_QUIET=0
 
 usage_error() {
-    printf '%s error:%s %s\n' "$c_red$c_bold" "$c_reset" "$*" >&2
+    printf '%s error:%s %s\n' "$e_red$e_bold" "$e_reset" "$*" >&2
     exit 64
 }
 
@@ -627,6 +627,12 @@ while [[ $# -gt 0 ]]; do
         -f|--force) FORCE=1 ;;
         --json)     OUTPUT_JSON=1 ;;
         --quiet)    OUTPUT_QUIET=1 ;;
+        --color=*)  TOOLBOX_COLOR=${1#--color=}
+                    case $TOOLBOX_COLOR in
+                        auto|always|never) ;;
+                        *) usage_error "--color must be auto, always or never" ;;
+                    esac ;;
+        --color)    usage_error "--color needs a value: --color=auto|always|never" ;;
         --dry-run|--allow-removals|--notify) LXC_FLAGS+=("$1") ;;
         -V|--version) printf 'pve-toolbox %s\n' "$TOOLBOX_VERSION"; exit 0 ;;
         -h|--help)  usage; exit 0 ;;
@@ -647,9 +653,10 @@ if [[ $OUTPUT_JSON -eq 1 || $OUTPUT_QUIET -eq 1 ]]; then
         status|check|doctor) ;;
         *) usage_error "--json and --quiet are supported by status, check, and doctor" ;;
     esac
-    c_reset=""; c_bold=""; c_dim=""; c_red=""; c_green=""; c_yellow=""; c_blue=""
+    TOOLBOX_COLOR=never
 fi
-export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED
+export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED TOOLBOX_COLOR
+toolbox_color_setup
 
 case $command_name in
     menu)        menu ;;

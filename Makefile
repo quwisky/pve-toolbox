@@ -62,6 +62,7 @@ test: syntax
 	@./tests/package.sh
 	@./tests/repository.sh
 	@./tests/smoke.sh
+	@./tests/cli.sh
 	@./tests/completion-zsh.sh
 	@./tests/tui.sh
 
