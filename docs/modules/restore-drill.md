@@ -32,6 +32,12 @@ The VMID range is scanned without overwriting existing guests. Set the target
 to storage intended for temporary drill data. Boot probing can be disabled,
 but configuration and isolation checks always run.
 
+At the install prompt, `RD_STORAGE` must start with a letter or digit and
+contain only `[A-Za-z0-9._-]`. `RD_VMID_START` accepts 100-999999999.
+`RD_BOOT_TIMEOUT` accepts any positive integer number of seconds. The boot
+probe and the unattended-run toggle are each asked as a yes/no question but
+stored in the config as `1` (yes) or `0` (no).
+
 ## Plan first
 
 Supply the exact Proxmox backup volume or archive path:

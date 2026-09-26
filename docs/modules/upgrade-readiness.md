@@ -33,6 +33,11 @@ UR_BACKUP_HOURS=48
 UR_MIN_FREE_MB=2048
 ```
 
+At the install prompt, `UR_POLICY` is chosen from the policies shipped under
+`modules/upgrade-readiness/policies/` (currently only `pve-9`); an install
+refuses if none are shipped. `UR_BACKUP_HOURS` and `UR_MIN_FREE_MB` accept any
+positive integer.
+
 The backup age is deliberately operator-controlled. Set it to the recovery
 policy your environment actually requires; the default is 48 hours. Backup
 history is read from every cluster node because PVE 9 exposes the necessary
