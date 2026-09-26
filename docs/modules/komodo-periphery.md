@@ -68,6 +68,15 @@ The plain menu's install/reconfigure action supports the same flow; its update-a
 operation skips guest agents. The full-screen Update checklist leaves this
 module unchecked until selected. Guest-specific confirmation is still required.
 
+An invalid answer to the guest type, the container or VM ID, the VM transport,
+the existing-agent action, the retained-configuration action, the onboarding-key
+action, the release version, the Core URL, the SSH port, the SSH address, an
+SSH key or known-hosts path, or a blank replacement onboarding key is re-asked
+with the reason instead of aborting the operation. Consent prompts are
+unchanged: declining the apply preview and an unsupported downgrade still stop
+the operation outright, and the terminal/`--yes`/`--force` guard described
+below still runs before any of these prompts.
+
 Choose an exact stable v2 version, for example `2.3.3`, after checking Core
 compatibility. The binary is fetched from the selected official GitHub release,
 verified against that exact asset's SHA-256 metadata, and checked again inside

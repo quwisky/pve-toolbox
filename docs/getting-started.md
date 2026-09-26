@@ -219,9 +219,14 @@ ZFS_SCRUB_POOLS='rpool tank' \
 
 Presets read through validated prompts are checked under `-y` before the
 module writes its configuration, and an invalid one stops the install naming
-the setting or prompt; the remaining modules are being migrated. Without `-y`,
-answers may be piped in, but running out of them is an error. The toolbox
-never fills in defaults for unanswered prompts.
+the setting or prompt. Every module's install prompts are now validated where
+a rule applies; settings with no fixed form — dataset names, syncoid options,
+ownership/mode overrides, exclude lists, release tags, and a Core server name
+left blank to keep the current one — still take whatever is typed. zfs-scrub's
+own schedule prompts are the one input still pending this kind of validation,
+tracked in #56 and #57. Without `-y`, answers may be piped in, but running out
+of them is an error. The toolbox never fills in defaults for unanswered
+prompts.
 
 The per-module pages list the variables each one accepts.
 
