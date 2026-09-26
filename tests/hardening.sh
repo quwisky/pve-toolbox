@@ -261,6 +261,46 @@ pass "zfs-replication locks and fixups fail closed"
 ) || exit 1
 pass "zfs-replication job prompt validates the schedule"
 
+(
+    export TOOLBOX_BIN_DIR="$WORK/zr-y-bin" TOOLBOX_LIB_DIR="$WORK/zr-y-lib"
+    export TOOLBOX_CONF_DIR="$WORK/zr-y-conf" TOOLBOX_STATE_DIR="$WORK/zr-y-state"
+    export TOOLBOX_SYSTEMD_DIR="$WORK/zr-y-systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    unset ZFS_REPL_OPTS ZFS_REPL_SCHEDULE \
+          ZFS_REPL_NIGHTLY_SRC ZFS_REPL_NIGHTLY_DST ZFS_REPL_NIGHTLY_OPTS \
+          ZFS_REPL_NIGHTLY_CHOWN ZFS_REPL_NIGHTLY_CHMOD ZFS_REPL_NIGHTLY_PATH
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/zfs-replication/module.sh
+    source "$ROOT/modules/zfs-replication/module.sh"
+
+    have_zfs() { return 1; }
+    systemd-analyze() {
+        [[ $1 == calendar && $2 == --iterations=1 ]] || return 2
+        case $3 in
+            daily) printf '  Next elapse: Thu 2026-10-01 00:00:00 UTC\n' ;;
+            *)     return 1 ;;
+        esac
+    }
+    _zr_defaults
+
+    ASSUME_YES=1
+    export ZFS_REPL_NIGHTLY_SRC=tank/a ZFS_REPL_NIGHTLY_DST=backup/a \
+           ZFS_REPL_NIGHTLY_SCHEDULE=bogus
+
+    out=$(_zr_ask_job nightly 2>&1) && fail "an invalid -y replication schedule was accepted"
+    [[ $out == *'schedule for nightly'* ]] \
+        || fail "the -y schedule failure did not name the job: $out"
+    [[ $out == *'not a systemd OnCalendar expression: bogus'* ]] \
+        || fail "the -y schedule failure did not include the reason: $out"
+    grep -q '^JOB_NIGHTLY_' "$TOOLBOX_CONF_DIR/zfs-replication.conf" 2>/dev/null \
+        && fail "an invalid -y replication schedule wrote job keys anyway"
+    [[ ! -e "$TOOLBOX_SYSTEMD_DIR/$ZR_UNIT@nightly.timer" ]] \
+        || fail "an invalid -y replication schedule wrote a timer file anyway"
+) || exit 1
+pass "an invalid -y replication schedule names the job and writes nothing for it"
+
 # --- zfs-scrub --------------------------------------------------------------
 
 (
@@ -330,14 +370,18 @@ pass "zfs-scrub rejects unsafe timers and preserves native ownership"
     detect_arch() { printf 'amd64'; }
     curl() { :; }
     ask() { :; }
+    ask_valid() { :; }
     ask_secret() { :; }
     ask_yn() { :; }
+    ask_schedule() { :; }
     have_zfs() { return 0; }
     have_mdadm() { return 1; }
     zpool() { printf 'tank\n'; }
     gh_release() { GH_TAG=v2.0.0; }
     gh_fetch_checksums() { CHECKSUM_FILE=""; }
+    : > "$WORK/sc-new-staged"
     _sc_stage_binary() {
+        printf '%s\n' "$1" >> "$WORK/sc-new-staged"
         [[ $1 == collector-zfs ]] && return 1
         printf 'new metrics\n' > "$3"
     }
@@ -347,6 +391,13 @@ pass "zfs-scrub rejects unsafe timers and preserves native ownership"
     fi
     [[ ! -e "$TOOLBOX_BIN_DIR/${SC_BIN[metrics]}" ]] \
         || fail "a failed collector install left a partial binary set"
+    # Proves the staging loop actually ran (rather than the install dying
+    # earlier, e.g. on an un-stubbed validator hitting closed stdin): both
+    # the metrics and the failing zfs asset must have been staged.
+    grep -Fxq 'collector-metrics' "$WORK/sc-new-staged" \
+        || fail "the metrics asset was never staged - install died before reaching it"
+    grep -Fxq 'collector-zfs' "$WORK/sc-new-staged" \
+        || fail "the missing zfs asset was never staged - install died before reaching it"
 ) || exit 1
 pass "scrutiny installs require every selected release asset"
 
@@ -510,6 +561,8 @@ pass "scrutiny updates stage first and restore timers on failure"
     _sc_stage_binary() { printf 'metrics\n' > "$3"; }
     systemd_oneshot() { :; }
     state_set() { :; }
+    have_zfs() { return 1; }
+    have_mdadm() { return 1; }
     systemd-analyze() {
         [[ $1 == calendar && $2 == --iterations=1 ]] || return 2
         case $3 in

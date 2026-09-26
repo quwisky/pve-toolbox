@@ -228,7 +228,7 @@ _zr_ask_job() { # _zr_ask_job <job>
         own=""; mode=""; path=""
     fi
     sched=${sched:-$ZFS_REPL_SCHEDULE}
-    ask_schedule sched "  schedule (systemd OnCalendar)" "$sched"
+    ask_schedule sched "  schedule for $job (systemd OnCalendar)" "$sched"
 
     conf_set "$MODULE_NAME" "$(_zr_key "$job" SRC)"   "$src"
     conf_set "$MODULE_NAME" "$(_zr_key "$job" DST)"   "$dst"
