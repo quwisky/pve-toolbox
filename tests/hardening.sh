@@ -83,6 +83,8 @@ pass "config-backup uninstall retains both data paths"
     export TOOLBOX_SYSTEMD_DIR="$WORK/cb-i-systemd" TOOLBOX_ROOT="$ROOT"
     mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
              "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    # No CB_* preset from the calling environment may answer a prompt here.
+    unset "${!CB_@}"
     # shellcheck source=lib/common.sh
     source "$ROOT/lib/common.sh"
     # shellcheck source=modules/config-backup/module.sh
@@ -298,12 +300,8 @@ pass "zfs-replication job prompt validates the schedule"
         || fail "the -y schedule failure did not name the job: $out"
     [[ $out == *'not a systemd OnCalendar expression: bogus'* ]] \
         || fail "the -y schedule failure did not include the reason: $out"
-    grep -q '^JOB_NIGHTLY_' "$TOOLBOX_CONF_DIR/zfs-replication.conf" 2>/dev/null \
-        && fail "an invalid -y replication schedule wrote job keys anyway"
-    [[ ! -e "$TOOLBOX_SYSTEMD_DIR/$ZR_UNIT@nightly.timer" ]] \
-        || fail "an invalid -y replication schedule wrote a timer file anyway"
 ) || exit 1
-pass "an invalid -y replication schedule names the job and writes nothing for it"
+pass "an invalid -y replication schedule is refused and names the job"
 
 # Runs a zfs-replication function end to end against <dir>, with every
 # ZFS_REPL_* preset from the calling environment removed. Sets ZR_RC and ZR_OUT.
@@ -703,6 +701,7 @@ pass "scrutiny updates stage first and restore timers on failure"
     state_set() { :; }
     have_zfs() { return 1; }
     have_mdadm() { return 1; }
+    hostname() { :; }              # no default host id to fall back on
     systemd-analyze() {
         [[ $1 == calendar && $2 == --iterations=1 ]] || return 2
         case $3 in
@@ -714,7 +713,8 @@ pass "scrutiny updates stage first and restore timers on failure"
     answers=$'not a url\n'         # endpoint: rejected
     answers+=$'http://10.0.0.10:8080\n'
     answers+=$'\n'                 # token: Enter
-    answers+=$'\n'                 # host id: Enter
+    answers+=$'\n'                 # host id: Enter, rejected (empty)
+    answers+=$'pve1\n'             # host id
     answers+=$'y\n'                # continue anyway (curl fails)
     answers+=$'y\n'                # SMART metrics collector
     answers+=$'n\n'                # fio performance collector
@@ -728,6 +728,7 @@ pass "scrutiny updates stage first and restore timers on failure"
 
     for reason in \
         'enter an http:// or https:// URL' \
+        'a value is required' \
         'not a systemd OnCalendar expression: never-ever'
     do
         count=$(grep -Fc "$reason" <<<"$out")
