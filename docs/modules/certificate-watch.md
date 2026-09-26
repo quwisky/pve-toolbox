@@ -41,6 +41,10 @@ CW_FAIL_DAYS=7
 CW_ACME_STALE_DAYS=45
 ```
 
+At the install prompt, `CW_WARN_DAYS` accepts 2 or higher. `CW_FAIL_DAYS`
+must be at least 1 and below the warning value just entered.
+`CW_ACME_STALE_DAYS` accepts any positive integer.
+
 When ACME is configured, `acmerenew` and `acmenewcert` task history is read
 from every node. The latest failure is a failure when it is newer than the
 latest success; an absent or stale success is a warning. An unavailable or

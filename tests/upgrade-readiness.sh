@@ -125,3 +125,44 @@ _ur_load && fail "unsafe policy name was accepted"
 UR_POLICY=pve-9 UR_BACKUP_HOURS=0 UR_MIN_FREE_MB=2048
 _ur_load && fail "zero backup policy was accepted"
 pass "upgrade policy input fails closed"
+
+# Thresholds and the policy choice are checked where they are typed: a bad
+# answer is re-asked instead of discarding every answer at the end.
+(
+    unset "${UR_CONF_KEYS[@]}"
+    require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+    export TOOLBOX_CONF_DIR="$WORK/ur-install-conf" TOOLBOX_STATE_DIR="$WORK/ur-install-state"
+    # policy pve-8 (rejected, no such policy) then PVE-9 (normalized to
+    # pve-9); backup-hours default; free MiB 0 (rejected) then 4096.
+    out=$(printf '%s\n' pve-8 PVE-9 '' 0 4096 | module_install 2>&1) \
+        || fail "install with corrected answers failed: $out"
+    [[ $out == *'choose one of pve-9'* ]] || fail "unknown policy was not re-asked: $out"
+    [[ $out == *'enter a whole number of at least 1'* ]] || fail "free space of 0 was not re-asked: $out"
+    [[ $(conf_get upgrade-readiness UR_POLICY) == pve-9 ]] || fail "normalized policy not stored"
+    [[ $(conf_get upgrade-readiness UR_MIN_FREE_MB) == 4096 ]] || fail "corrected free-space threshold not stored"
+    # A fresh conf dir: conf_load would otherwise overwrite the env preset.
+    # Its own subshell: the expected die must not end this test block.
+    if out=$( TOOLBOX_CONF_DIR="$WORK/ur-yes-conf" TOOLBOX_STATE_DIR="$WORK/ur-yes-state" \
+        ASSUME_YES=1 UR_MIN_FREE_MB=0 module_install 2>&1 ); then
+        fail "an out-of-range preset was accepted under -y"
+    fi
+    [[ $out == *'invalid value for UR_MIN_FREE_MB'* ]] || fail "-y error did not name UR_MIN_FREE_MB: $out"
+    [[ ! -e $WORK/ur-yes-conf/upgrade-readiness.conf ]] || fail "a rejected -y preset still wrote configuration"
+) || exit 1
+pass "upgrade readiness validates policy and thresholds at the prompt"
+
+# A reinstall stores what the operator typed, not the previously stored conf.
+(
+    unset "${UR_CONF_KEYS[@]}"
+    require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+    export TOOLBOX_CONF_DIR="$WORK/ur-reinstall-conf" TOOLBOX_STATE_DIR="$WORK/ur-reinstall-state"
+    out=$(printf '%s\n' pve-9 24 4096 | module_install 2>&1) \
+        || fail "first install failed: $out"
+    [[ $(conf_get upgrade-readiness UR_BACKUP_HOURS) == 24 ]] || fail "first install did not store 24 hours"
+    unset "${UR_CONF_KEYS[@]}"
+    out=$(printf '%s\n' pve-9 72 8192 | module_install 2>&1) \
+        || fail "reinstall with new answers failed: $out"
+    [[ $(conf_get upgrade-readiness UR_BACKUP_HOURS) == 72 ]] || fail "reinstall discarded the typed backup age: $out"
+    [[ $(conf_get upgrade-readiness UR_MIN_FREE_MB) == 8192 ]] || fail "reinstall discarded the typed free-space threshold: $out"
+) || exit 1
+pass "upgrade readiness reinstall stores the new answers"

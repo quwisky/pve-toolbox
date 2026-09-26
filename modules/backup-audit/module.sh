@@ -358,10 +358,10 @@ module_install() {
     fi
     pkg_ensure jq:jq
 
-    ask BA_FRESHNESS_HOURS "maximum backup age (hours)" "$BA_FRESHNESS_HOURS"
-    ask BA_STORAGE_WARN "storage warning threshold (percent)" "$BA_STORAGE_WARN"
-    ask BA_STORAGE_FAIL "storage failure threshold (percent)" "$BA_STORAGE_FAIL"
-    ask BA_MIN_KEEP_LAST "minimum keep-last retention" "$BA_MIN_KEEP_LAST"
+    ask_int BA_FRESHNESS_HOURS "maximum backup age (hours)" "$BA_FRESHNESS_HOURS" 1
+    ask_int BA_STORAGE_WARN "storage warning threshold (percent)" "$BA_STORAGE_WARN" 0 99
+    ask_int BA_STORAGE_FAIL "storage failure threshold (percent)" "$BA_STORAGE_FAIL" "$((BA_STORAGE_WARN + 1))" 100
+    ask_int BA_MIN_KEEP_LAST "minimum keep-last retention" "$BA_MIN_KEEP_LAST" 1
     _ba_validate_settings || die "invalid backup audit settings: $BA_CONFIG_ERROR"
 
     conf_set "$MODULE_NAME" BA_FRESHNESS_HOURS "$BA_FRESHNESS_HOURS"

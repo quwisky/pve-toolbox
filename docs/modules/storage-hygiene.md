@@ -85,8 +85,11 @@ SH_THIN_WARN='80'
 SH_THIN_FAIL='95'
 ```
 
-Age values must be positive integers. Percentage pairs must satisfy
-`0 <= warning < failure <= 100`. Invalid settings fail the module doctor check.
+At the install prompt, `SH_SNAPSHOT_DAYS` and `SH_CONTENT_DAYS` accept any
+positive integer. `SH_CAPACITY_WARN` and `SH_THIN_WARN` accept 0-99; the
+matching failure threshold (`SH_CAPACITY_FAIL`, `SH_THIN_FAIL`) must be above
+the warning value just entered, up to 100. Invalid settings fail the module
+doctor check.
 
 Unattended configuration:
 

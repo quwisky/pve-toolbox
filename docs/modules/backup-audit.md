@@ -66,10 +66,11 @@ BA_STORAGE_FAIL='95'
 BA_MIN_KEEP_LAST='2'
 ```
 
-All four values are validated. Freshness and minimum retention must be positive
-integers; storage thresholds must satisfy
-`0 <= BA_STORAGE_WARN < BA_STORAGE_FAIL <= 100`. Invalid configuration is a
-failed doctor result rather than a silently weakened audit.
+All four values are validated at the install prompt. `BA_FRESHNESS_HOURS` and
+`BA_MIN_KEEP_LAST` accept any positive integer. `BA_STORAGE_WARN` accepts
+0-99; `BA_STORAGE_FAIL` must be above the warning value just entered, up to
+100. Invalid configuration is a failed doctor result rather than a silently
+weakened audit.
 
 For an unattended first install:
 
