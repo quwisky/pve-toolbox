@@ -315,12 +315,14 @@ module_install() {
     done
     [[ ${#kept[@]} -eq 0 ]] && { warn "no usable jobs"; return 1; }
 
+    step "Notifications"
     ask_yn ZFS_REPL_NOTIFY_START "also notify when a job starts" "$ZFS_REPL_NOTIFY_START"
     step "After the install"
     local t=y now=n
     ask_yn t "send a test notification to Discord now" "y"
     ask_yn now "run the jobs once right now" "n"
 
+    step "Save configuration"
     conf_set "$MODULE_NAME" DISCORD_WEBHOOK "$ZFS_REPL_WEBHOOK"
     conf_set "$MODULE_NAME" LOG_DIR "$ZR_LOG_DIR"
     for job in "${kept[@]}"; do
