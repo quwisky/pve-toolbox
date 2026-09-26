@@ -195,6 +195,27 @@ ask_schedule() { # ask_schedule <var> <prompt> <default>
 # A validator for any prompt that must not be left blank.
 valid_required() { [[ -n ${1:-} ]] || { ASK_REASON="a value is required"; return 1; }; }
 
+# Blank passes. Refuses bytes that are not UTF-8 and every control character:
+# C0, DEL and C1 (U+0080-U+009F), which [[:cntrl:]] only sees in a UTF-8
+# locale. The locale is local to the call. The reasons never repeat the value,
+# so this can check secrets.
+#
+# glibc's UTF-8 to UTF-8 conversion passes code points above U+10FFFF and the
+# old 5- and 6-byte forms; converting to UTF-32 refuses them. Without the
+# locale [[:cntrl:]] would silently miss C1, so that refuses too. Tests point
+# _PRINTABLE_LOCALE at a missing locale to exercise that.
+_PRINTABLE_LOCALE=C.UTF-8
+valid_printable() { # valid_printable <value> -> 0, or 1 with ASK_REASON
+    local LC_ALL=$_PRINTABLE_LOCALE 2>/dev/null   # a missing locale warns
+    [[ -n ${1:-} ]] || return 0
+    [[ $'\xc2\x85' == [[:cntrl:]] ]] \
+        || { ASK_REASON="cannot check characters: the C.UTF-8 locale is unavailable"; return 1; }
+    printf '%s' "$1" | iconv -f UTF-8 -t UTF-32 >/dev/null 2>&1 \
+        || { ASK_REASON="use valid UTF-8 text"; return 1; }
+    [[ $1 != *[[:cntrl:]]* ]] \
+        || { ASK_REASON="use printable characters only (no tabs or other control characters)"; return 1; }
+}
+
 # Never echoed and never shown as a default. With a value already present,
 # Enter keeps it and "none" clears it. A validator that refuses an empty value
 # makes the secret required. Under -y only a value already present counts.

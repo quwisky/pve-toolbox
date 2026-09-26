@@ -149,6 +149,17 @@ rejects kp_valid_required_printable '' 'a value is required'
 ASK_REASON=""
 kp_valid_required_printable $'tab-secret\tx' || true
 [[ $ASK_REASON != *tab-secret* ]] || fail 'printable validator reason contains the value'
+# C1 controls are valid UTF-8 but still control characters; a lone 0x80 byte
+# is not UTF-8 at all.
+utf8_reason='use valid UTF-8 text'
+for text in $'ct\xc2\x85one' $'\xc2\x9f'; do
+    rejects kp_valid_printable "$text" "$printable_reason"
+    rejects kp_valid_required_printable "$text" "$printable_reason"
+done
+for text in $'ct\x80one' $'\xff'; do
+    rejects kp_valid_printable "$text" "$utf8_reason"
+    rejects kp_valid_required_printable "$text" "$utf8_reason"
+done
 pass 'printable-only validators for the server name and onboarding key'
 
 # --- VM flow through piped answers ----------------------------------------------
@@ -251,6 +262,18 @@ vm_expect 'VM 201 (qga): configure Periphery 2.3.2 -> 2.3.2' 'configure preview'
 if grep -q '^release ' "$WORK/calls"; then fail 'configure fetched a release'; fi
 vm_clean 'VM configure flow'
 pass 'VM configure re-asks choices and a blank replacement key'
+
+# C1 controls and bytes that are not UTF-8 are re-asked in both the server
+# name and the onboarding key, and the rejected key is never echoed.
+KP_FIXTURE_INSPECTION=$(inspection absent)
+vm_run install $'201\nqga\n2.3.3\nhttps://core.example.invalid\nvm\xc2\x85one\nvm\x80one\n\nc1-secret\xc2\x85x\nutf-secret\x80x\nfixture-secret\nn\n'
+[[ $VM_RC == 0 ]] || fail "VM C1 and UTF-8 flow exit $VM_RC [$VM_OUT]"
+vm_count "$printable_reason" 2 'C1 control in the server name and the key'
+vm_count "$utf8_reason" 2 'invalid UTF-8 in the server name and the key'
+[[ $VM_OUT != *c1-secret* && $VM_OUT != *utf-secret* ]] || fail 'rejected onboarding key echoed'
+vm_expect 'cancelled; VM unchanged' 'declined C1 and UTF-8 flow'
+vm_clean 'VM C1 and UTF-8 flow'
+pass 'VM prompts re-ask C1 controls and invalid UTF-8 without echoing the key'
 
 # Retained configuration from an earlier uninstall.
 KP_FIXTURE_INSPECTION=$(inspection absent true)

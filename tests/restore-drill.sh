@@ -68,6 +68,35 @@ fi
 [[ $output == *'invalid VMID start'* ]] || fail "helper did not name the VMID start: $output"
 pass "helper refuses a configured VMID start below 100"
 
+# An explicit --vmid is held to the same range as the saved start: no VMID
+# below 100, no leading zero, and nothing long enough to wrap bash's 64-bit
+# arithmetic back into range (2^64 + 100 wraps to 100).
+for bad in 50 0100 18446744073709551716 1000000000; do
+    if output=$(run_helper --backup "$backup" --vmid "$bad" 2>&1); then
+        fail "helper accepted --vmid $bad: $output"
+    fi
+    [[ $output == *'invalid VMID (100-999999999)'* ]] \
+        || fail "helper did not explain the VMID range for --vmid $bad: $output"
+done
+output=$(run_helper --backup "$backup" --vmid 999999999)
+[[ $output == *'VMID=999999999'* ]] || fail "helper refused the top --vmid 999999999: $output"
+pass "helper holds --vmid to 100-999999999"
+
+# Allocation stops at the top of the range instead of offering a VMID above it.
+printf '%s\n' "RD_STORAGE='test-store'" "RD_VMID_START='999999995'" \
+    "RD_BOOT_PROBE='1'" "RD_BOOT_TIMEOUT='1'" "RD_ALLOW_UNATTENDED='1'" > "$WORK/conf/top-start.conf"
+for id in 999999995 999999996 999999997 999999998 999999999; do
+    : > "$MOCK_STATE/$id.exists"
+    printf 'stopped' > "$MOCK_STATE/$id.status"
+done
+if output=$(RD_CONF="$WORK/conf/top-start.conf" run_helper --backup "$backup" 2>&1); then
+    fail "helper allocated a VMID above 999999999: $output"
+fi
+[[ $output == *'no free temporary VMID'* ]] \
+    || fail "helper did not report an exhausted range at the top: $output"
+rm -f -- "$MOCK_STATE"/99999999[5-9].*
+pass "VMID allocation never goes above 999999999"
+
 if run_helper --backup "$backup" --vmid 900000 --execute --unattended >/dev/null 2>&1; then
     fail "explicit VMID collision was accepted"
 fi
