@@ -176,13 +176,35 @@ ask_schedule() { # ask_schedule <var> <prompt> <default>
     _ask_read "$1" "$2" "$3" valid_schedule
 }
 
-# ask_secret <varname> <prompt>
-ask_secret() {
-    local __var=$1 __prompt=$2 __reply
-    if [[ $ASSUME_YES -eq 1 || -n ${!__var:-} ]]; then return 0; fi
-    read -r -s -p "$(printf '%s: ' "$__prompt")" __reply || true
-    echo
-    printf -v "$__var" '%s' "$__reply"
+# Never echoed and never shown as a default. With a value already present,
+# Enter keeps it and "none" clears it. A validator that refuses an empty value
+# makes the secret required. Under -y only a value already present counts.
+ask_secret() { # ask_secret <var> <prompt> [validator]
+    local __var=$1 __prompt=$2 __fn=${3:-} __current __hint="" __reply
+    __current=${!__var:-}
+    if [[ $ASSUME_YES -eq 1 ]]; then
+        _ask_check "$__fn" "$__current" \
+            || die "invalid value for $__var: $ASK_REASON"
+        printf -v "$__var" '%s' "$ASK_VALUE"
+        return 0
+    fi
+    [[ -z $__current ]] || __hint=' [set; Enter keeps, "none" clears]'
+    while true; do
+        if ! _ask_line "$__prompt$__hint: " secret; then
+            [[ ! -t 0 ]] || printf '\n' >&2
+            die "no answer for \"$__prompt\" (input closed); $(_ask_hint "$__var")"
+        fi
+        [[ ! -t 0 ]] || printf '\n' >&2   # read -s swallows the newline
+        __reply=$ASK_LINE
+        if [[ -z $__reply ]]; then __reply=$__current
+        elif [[ $__reply == none ]]; then __reply=""
+        fi
+        if _ask_check "$__fn" "$__reply"; then
+            printf -v "$__var" '%s' "$ASK_VALUE"
+            return 0
+        fi
+        warn "$ASK_REASON"
+    done
 }
 
 confirm() { # confirm <prompt> <default y|n> -> exit status

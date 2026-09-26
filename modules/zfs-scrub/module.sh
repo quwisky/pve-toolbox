@@ -207,19 +207,7 @@ module_install() {
     pkg_ensure curl:curl jq:jq
 
     step "Discord webhook"
-    if [[ -z $ZFS_SCRUB_WEBHOOK && $ASSUME_YES -eq 1 ]]; then
-        die "set ZFS_SCRUB_WEBHOOK for a non-interactive install"
-    fi
-    while [[ -z $ZFS_SCRUB_WEBHOOK ]]; do
-        ask ZFS_SCRUB_WEBHOOK "Discord webhook URL" ""
-    done
-    if [[ ! $ZFS_SCRUB_WEBHOOK =~ ^https://[A-Za-z0-9._~/-]+$ ]]; then
-        die "that does not look like a URL (Server Settings -> Integrations -> Webhooks)"
-    fi
-    case $ZFS_SCRUB_WEBHOOK in
-        https://discord.com/api/webhooks/*|https://discordapp.com/api/webhooks/*|https://ptb.discord.com/api/webhooks/*) ;;
-        *) warn "not a discord.com/api/webhooks URL - continuing, it just has to accept the same JSON" ;;
-    esac
+    ask_secret ZFS_SCRUB_WEBHOOK "Discord webhook URL" valid_webhook_url
 
     step "Pools"
     local all=() p

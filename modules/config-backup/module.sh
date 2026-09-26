@@ -318,19 +318,7 @@ module_install() {
     pkg_ensure curl:curl jq:jq util-linux:flock
 
     step "Discord webhook"
-    if [[ -z $CB_WEBHOOK && $ASSUME_YES -eq 1 ]]; then
-        die "set CB_WEBHOOK for a non-interactive install"
-    fi
-    while [[ -z $CB_WEBHOOK ]]; do
-        ask CB_WEBHOOK "Discord webhook URL" ""
-    done
-    if [[ ! $CB_WEBHOOK =~ ^https://[A-Za-z0-9._~/-]+$ ]]; then
-        die "that does not look like a URL (Server Settings -> Integrations -> Webhooks)"
-    fi
-    case $CB_WEBHOOK in
-        https://discord.com/api/webhooks/*|https://discordapp.com/api/webhooks/*|https://ptb.discord.com/api/webhooks/*) ;;
-        *) warn "not a discord.com/api/webhooks URL - continuing, it just has to accept the same JSON" ;;
-    esac
+    ask_secret CB_WEBHOOK "Discord webhook URL" valid_webhook_url
 
     step "Backends"
     dim "  archives are self-contained snapshots; git is a history of the changes"

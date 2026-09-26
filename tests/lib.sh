@@ -363,3 +363,33 @@ prompt_run $'daily\n' t_sched_missing
 expect_rc nonzero "ask_schedule without systemd-analyze"
 expect_out 'systemd-analyze is needed to check schedules' "ask_schedule without systemd-analyze"
 pass "ask_schedule validates with systemd-analyze and never guesses"
+
+HOOK_OK='https://discord.com/api/webhooks/1/tok-en_1'
+t_secret()      { local TOKEN=""; ask_secret TOKEN "token"; [[ $TOKEN == s3cret-value ]] && echo 'stored=typed'; }
+t_secret_keep() { local TOKEN=old-secret; ask_secret TOKEN "token"; [[ $TOKEN == old-secret ]] && echo 'stored=kept'; }
+t_secret_none() { local TOKEN=old-secret; ask_secret TOKEN "token"; [[ -z $TOKEN ]] && echo 'stored=cleared'; }
+t_hook()        { local HOOK=""; ask_secret HOOK "Discord webhook URL" valid_webhook_url; [[ $HOOK == "$HOOK_OK" ]] && echo 'stored=hook'; }
+t_hook_yes()    { ASSUME_YES=1; local HOOK=""; ask_secret HOOK "Discord webhook URL" valid_webhook_url; echo 'stored=?'; }
+t_hook_other()  { local HOOK=""; ask_secret HOOK "hook" valid_webhook_url; [[ $HOOK == https://hooks.example.invalid/x ]] && echo 'stored=other'; }
+
+prompt_run $'s3cret-value\n' t_secret
+expect_out 'stored=typed' "ask_secret stores the typed value"
+refuse_out 's3cret-value' "ask_secret output"
+prompt_run $'\n' t_secret_keep
+expect_out 'stored=kept' "ask_secret Enter keeps"
+prompt_run $'none\n' t_secret_none
+expect_out 'stored=cleared' "ask_secret none clears"
+prompt_run $'\nhttp://leak.example.invalid/tok\n'"$HOOK_OK"$'\n' t_hook
+expect_out 'a webhook URL is required' "required secret re-prompts on blank"
+expect_out 'does not look like a URL' "malformed webhook rejected"
+refuse_out 'leak.example.invalid' "rejected secret value is never echoed"
+expect_out 'stored=hook' "webhook accepted after re-prompt"
+prompt_run '' t_hook_yes
+expect_rc nonzero "missing required secret under -y"
+expect_out 'invalid value for HOOK: a webhook URL is required' "missing required secret under -y"
+prompt_run '' t_secret
+expect_rc nonzero "ask_secret on closed input"; expect_out 'no answer for "token"' "ask_secret on closed input"
+prompt_run $'https://hooks.example.invalid/x\n' t_hook_other
+expect_out 'not a discord.com/api/webhooks URL' "non-Discord webhook warns"
+expect_out 'stored=other' "non-Discord webhook still accepted"
+pass "ask_secret keeps, clears, validates and never echoes"

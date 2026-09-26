@@ -325,7 +325,7 @@ module_install() {
     local requested_notify=${LX_SCHEDULE_NOTIFY:-}
     local LX_EXCLUDE="" DISCORD_WEBHOOK="" LX_SCHEDULE_ENABLED=0
     local LX_SCHEDULE="$LX_DEFAULT_SCHEDULE" LX_SCHEDULE_NOTIFY=0
-    local id replacement="" schedule_enabled schedule_notify schedule_preset rollback install_failed=0
+    local id schedule_enabled schedule_notify schedule_preset rollback install_failed=0
     if conf_exists "$MODULE_NAME"; then conf_load "$MODULE_NAME"; fi
     [[ -z $requested_enabled ]] || LX_SCHEDULE_ENABLED=$requested_enabled
     [[ -z $requested_schedule ]] || LX_SCHEDULE=$requested_schedule
@@ -335,10 +335,7 @@ module_install() {
     for id in $LX_EXCLUDE; do
         [[ $id =~ ^[1-9][0-9]{2,8}$ ]] || { warn "invalid container ID: $id"; return 1; }
     done
-    if [[ $ASSUME_YES == 0 ]]; then
-        ask_secret replacement "Discord webhook URL (blank keeps existing; none clears)"
-        [[ -z $replacement ]] || DISCORD_WEBHOOK=$replacement
-    fi
+    ask_secret DISCORD_WEBHOOK "Discord webhook URL (optional)"
     [[ $DISCORD_WEBHOOK != none ]] || DISCORD_WEBHOOK=""
 
     schedule_enabled=n

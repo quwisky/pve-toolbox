@@ -250,18 +250,10 @@ module_install() {
     pkg_ensure curl:curl jq:jq syncoid:sanoid util-linux:flock
 
     step "Discord webhook"
-    if [[ -z $ZFS_REPL_WEBHOOK && $ASSUME_YES -eq 1 ]]; then
-        die "set ZFS_REPL_WEBHOOK for a non-interactive install"
-    fi
     if [[ -z $ZFS_REPL_WEBHOOK ]]; then
         ZFS_REPL_WEBHOOK=$(conf_get "$MODULE_NAME" DISCORD_WEBHOOK)
     fi
-    while [[ -z $ZFS_REPL_WEBHOOK ]]; do
-        ask ZFS_REPL_WEBHOOK "Discord webhook URL" ""
-    done
-    if [[ ! $ZFS_REPL_WEBHOOK =~ ^https://[A-Za-z0-9._~/-]+$ ]]; then
-        die "that does not look like a URL (Server Settings -> Integrations -> Webhooks)"
-    fi
+    ask_secret ZFS_REPL_WEBHOOK "Discord webhook URL" valid_webhook_url
 
     step "Jobs"
     dim "  one timer per job, so each pair syncs on its own schedule"

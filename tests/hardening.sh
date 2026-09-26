@@ -382,3 +382,35 @@ pass "scrutiny performance installs and repairs its fio dependency"
     fi
 ) || exit 1
 pass "scrutiny updates stage first and restore timers on failure"
+
+# --- webhook prompts ----------------------------------------------------------
+
+# A webhook URL is a credential: it must never be read with the echoing ask.
+if grep -nE '^\s*ask [A-Z_]*WEBHOOK\b' modules/*/module.sh; then
+    fail "a webhook URL is read with the echoing ask"
+fi
+
+# Closed input at the webhook prompt used to spin forever in
+# `while [[ -z $X ]]; do ask X ...; done`. It must now fail promptly.
+webhook_eof() { # webhook_eof <module> <var>
+    local rc=0 out
+    out=$(printf '' | timeout 20 bash -c '
+        set -euo pipefail
+        export TOOLBOX_CONF_DIR=$1/conf TOOLBOX_STATE_DIR=$1/state
+        mkdir -p "$TOOLBOX_CONF_DIR" "$TOOLBOX_STATE_DIR"
+        source lib/common.sh
+        source "modules/$2/module.sh"
+        require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+        have_zfs() { return 0; }; _zs_native_owner() { return 1; }
+        unset "$3"
+        module_install
+    ' _ "$WORK/eof-$1" "$1" "$2" 2>&1) || rc=$?
+    [[ $rc -ne 124 ]] || fail "$1 hung on closed input at the webhook prompt"
+    [[ $rc -ne 0 ]] || fail "$1 installed with no webhook on closed input"
+    [[ $out == *'no answer for "Discord webhook URL"'* ]] \
+        || fail "$1 did not report the unanswered webhook prompt: $out"
+}
+webhook_eof config-backup CB_WEBHOOK
+webhook_eof zfs-scrub ZFS_SCRUB_WEBHOOK
+webhook_eof zfs-replication ZFS_REPL_WEBHOOK
+pass "webhook prompts are secret and fail closed on EOF"
