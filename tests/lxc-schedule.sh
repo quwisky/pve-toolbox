@@ -351,6 +351,10 @@ LX_EXCLUDE=' 101	 102 ' LX_SCHEDULE_ENABLED=n ./pve-toolbox --yes install lxc-up
     || fail 'valid excluded container ID preset was refused'
 [[ $(conf_get lxc-update LX_EXCLUDE) == '101 102' ]] \
     || fail "excluded container ID preset was not stored: $(conf_get lxc-update LX_EXCLUDE)"
+LX_EXCLUDE=' ' LX_SCHEDULE_ENABLED=n ./pve-toolbox --yes install lxc-update >/dev/null \
+    || fail 'blank excluded container ID preset was refused'
+[[ $(conf_get lxc-update LX_EXCLUDE) == '101 102' ]] \
+    || fail "blank excluded container ID preset replaced the saved list: $(conf_get lxc-update LX_EXCLUDE)"
 LX_EXCLUDE=none LX_SCHEDULE_ENABLED=n ./pve-toolbox --yes install lxc-update >/dev/null \
     || fail 'excluded container ID preset none was refused'
 [[ -z $(conf_get lxc-update LX_EXCLUDE) ]] || fail 'excluded container ID preset none did not clear'

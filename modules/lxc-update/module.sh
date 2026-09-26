@@ -349,7 +349,8 @@ module_install() {
     [[ -z $requested_enabled ]] || LX_SCHEDULE_ENABLED=$requested_enabled
     [[ -z $requested_schedule ]] || LX_SCHEDULE=$requested_schedule
     [[ -z $requested_notify ]] || LX_SCHEDULE_NOTIFY=$requested_notify
-    [[ -z $requested_exclude ]] || LX_EXCLUDE=$requested_exclude
+    # A blank preset keeps the saved list; clearing it takes an explicit none.
+    [[ $requested_exclude != *[![:space:]]* ]] || LX_EXCLUDE=$requested_exclude
     ask_valid LX_EXCLUDE "Excluded container IDs, space-separated (use none to clear)" \
         "${LX_EXCLUDE:-none}" _lx_valid_exclude
     [[ $LX_EXCLUDE != none ]] || LX_EXCLUDE=""
