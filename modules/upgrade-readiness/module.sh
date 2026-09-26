@@ -254,9 +254,14 @@ module_install() {
     require_root; require_pve; _ur_defaults
     if conf_exists "$MODULE_NAME"; then conf_load "$MODULE_NAME"; fi
     pkg_ensure jq:jq
-    local -a policies=() p
+    local -a policies=()
+    local p n
+    # Offer only names the validator accepts, from regular files.
     for p in "$(_ur_module_dir)"/policies/*.conf; do
-        [[ -f $p && ! -L $p ]] && policies+=("$(basename -- "$p" .conf)")
+        [[ -f $p && ! -L $p ]] || continue
+        n=$(basename -- "$p" .conf)
+        [[ $n =~ ^[a-z0-9][a-z0-9.-]*$ ]] || continue
+        policies+=("$n")
     done
     [[ ${#policies[@]} -gt 0 ]] || die "no upgrade policies are shipped with this module"
     ask_choice UR_POLICY "upgrade policy" "$UR_POLICY" "${policies[@]}"
