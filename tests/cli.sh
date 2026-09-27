@@ -429,6 +429,11 @@ color_force="$(mroff "--json") or $(mroff "--quiet") always force"
     || fail "man page's TOOLBOX_COLOR entry does not say it overrides NO_COLOR"
 pass "generated man page carries every fact from the deleted static page"
 
+# The TOOLBOX_COLOR entry keeps its operator-facing facts but drops the
+# internal-mechanics sentence about the launcher exporting it from --color.
+[[ $man != *"reaches the same decision"* ]] \
+    || fail "man page's TOOLBOX_COLOR entry still explains launcher internals"
+
 # The man-page summary reads as a capitalised sentence opener; 'help' keeps
 # the lowercase, mid-sentence form used in its own table.
 help_summary=$(launch help lxc-update | sed -n '3p')
