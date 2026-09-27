@@ -8,5 +8,6 @@ site/
 /debian/debhelper-build-stamp
 /debian/files
 /debian/pve-toolbox/
+/debian/pve-toolbox.1
 /debian/pve-toolbox.debhelper.log
 /debian/pve-toolbox.substvars

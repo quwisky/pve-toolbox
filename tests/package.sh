@@ -149,6 +149,15 @@ for target in \
 do
     [[ -f $target ]] || fail "package omitted ${target#"$WORK/root"}"
 done
+man_page=$(gzip -dc "$WORK/root/usr/share/man/man1/pve-toolbox.1.gz")
+[[ $man_page == *".B help"* ]] || fail "packaged man page is missing the help command"
+[[ $man_page == *"NO_COLOR"* ]] || fail "packaged man page is missing NO_COLOR"
+for placeholder in @COMMANDS@ @OPTIONS@ @DATE@; do
+    count=$(grep -Fc -- "$placeholder" <<<"$man_page")
+    [[ $count == 0 ]] \
+        || fail "packaged man page still contains the $placeholder placeholder"
+done
+pass "packaged man page is generated at build time"
 cmp -s "$ROOT/pve-toolbox" "$WORK/root/usr/bin/pve-toolbox" \
     || fail "packaged launcher differs from source"
 cmp -s "$ROOT/scripts/pve-toolbox-native-notify" \
