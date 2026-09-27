@@ -669,27 +669,83 @@ out=$(TMPDIR="$big_tmp" PVE_TOOLBOX_ROOT="$big_root" launch_bin \
 [[ -z $(ls -A "$big_tmp") ]] || fail "list left its status directory behind: $(ls -A "$big_tmp")"
 pass "a status result cut short fails closed and names the module"
 
-# An interrupt while statuses are still being computed (b-two sleeps) also
-# removes the temporary directory. The launcher runs as its own job so the
-# interrupt reaches its process group, as a terminal's ^C would.
-sig_tmp=$(tmp)
-sig_rc=$(
-    set -m
-    TMPDIR="$sig_tmp" status_launch list >/dev/null 2>&1 &
-    pid=$!
-    for _ in $(seq 50); do
-        [[ -z $(ls -A "$sig_tmp") ]] || break
-        sleep 0.1
+# group_left <pgid> -> the live processes still in a process group, from
+# /proc; zombies waiting for their reaper do not count.
+group_left() {
+    local f s st pg
+    for f in /proc/[0-9]*/stat; do
+        IFS= read -r s 2>/dev/null < "$f" || continue
+        read -r st _ pg _ <<<"${s##*) }"
+        [[ $pg != "$1" || $st == Z ]] || printf '%s ' "${f//[!0-9]/}"
     done
-    [[ -n $(ls -A "$sig_tmp") ]] || { kill -- "-$pid" 2>/dev/null; echo "no-dir"; exit 0; }
-    kill -INT -- "-$pid"
-    rc=0; wait "$pid" || rc=$?
-    echo "$rc"
-)
+}
+
+# interrupt_run <dir> <delay> <signal> <command...> -> runs the command as its
+# own job with TMPDIR=<dir>, so the signal reaches its whole process group as
+# a terminal's ^C would. Once the status directory appears in <dir> it waits
+# <delay>s and signals the group. Prints the exit status, followed by
+# "left: <pids>" if anything of the group outlived the command by 3s. Prints
+# "no-dir" if the directory never appeared, and "hang" if the command still
+# ran 10s after the signal. It never blocks: whatever is left of the group
+# then is killed. The command's stderr goes to <dir>.err.
+interrupt_run() {
+    local dir=$1 delay=$2 sig=$3; shift 3
+    (
+        set -m
+        TMPDIR="$dir" "$@" >/dev/null 2>"$dir.err" &
+        pid=$!
+        for _ in $(seq 250); do
+            [[ -z $(ls -A "$dir") ]] || break
+            sleep 0.02
+        done
+        if [[ -z $(ls -A "$dir") ]]; then
+            kill -KILL -- "-$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            echo no-dir; exit 0
+        fi
+        sleep "$delay"
+        kill -"$sig" -- "-$pid" 2>/dev/null || true
+        for _ in $(seq 100); do
+            kill -0 "$pid" 2>/dev/null || break
+            sleep 0.1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -KILL -- "-$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            echo hang; exit 0
+        fi
+        rc=0; wait "$pid" || rc=$?
+        left=$(group_left "$pid")
+        for _ in $(seq 30); do
+            [[ -n $left ]] || break
+            sleep 0.1
+            left=$(group_left "$pid")
+        done
+        if [[ -n $left ]]; then
+            kill -KILL -- "-$pid" 2>/dev/null || true
+            echo "$rc left: $left"
+        else
+            echo "$rc"
+        fi
+    )
+}
+
+# A shell started in the background without job control ignores SIGINT, and
+# so would every launcher it starts: these tests could not interrupt it.
+sig_ign=$(awk '/^SigIgn:/ { print $2 }' "/proc/$BASHPID/status")
+(( (16#$sig_ign & 2) == 0 )) \
+    || fail "SIGINT is ignored here, so the interrupt tests cannot run; run tests/cli.sh in the foreground or under timeout(1)"
+
+# An interrupt while statuses are still being computed (b-two sleeps) also
+# removes the temporary directory.
+sig_tmp=$(tmp)
+sig_rc=$(interrupt_run "$sig_tmp" 0 INT status_launch list)
 [[ $sig_rc != no-dir ]] || fail "list never created its status directory under TMPDIR"
-[[ $sig_rc -ne 0 ]] || fail "list exited 0 although it was interrupted"
+[[ $sig_rc != hang ]] || fail "an interrupted list was still running 10s later"
+[[ $sig_rc == 130 ]] || fail "an interrupted list exited '$sig_rc', want 130 and nothing left running"
 [[ -z $(ls -A "$sig_tmp") ]] \
     || fail "an interrupted list left its status directory behind: $(ls -A "$sig_tmp")"
+[[ ! -s $sig_tmp.err ]] || fail "an interrupted list printed errors: $(cat "$sig_tmp.err")"
 # The interrupted status workers must not write into it afterwards either:
 # check again once b-two's and d-four's 3s sleeps are over.
 sleep 3.5
@@ -701,7 +757,7 @@ pass "an interrupted list removes its status directory"
 # is still forking workers when the interrupt arrives. A worker that inherits
 # the launcher's EXIT trap must not remove the directory under its siblings.
 # A few short runs at different moments; each must exit 130, leave nothing
-# behind and print no error about a result file that vanished.
+# behind and print nothing.
 many_root=$(tmp)
 mkdir -p "$many_root/lib"
 cp "$ROOT"/lib/*.sh "$many_root/lib/"
@@ -716,31 +772,61 @@ for n in $(seq -w 1 16); do
         "module_status() { sleep 0.$(( 10#$n % 5 + 2 )); printf 'installed $n'; }" \
         > "$many_root/modules/m$n/module.sh"
 done
+many_launch() { PVE_TOOLBOX_ROOT="$many_root" launch_bin "$many_root/pve-toolbox" "$@"; }
 for delay in 0 0.1 0.2 0.3; do
     many_tmp=$(tmp)
-    many_rc=$(
-        set -m
-        TMPDIR="$many_tmp" PVE_TOOLBOX_ROOT="$many_root" \
-            launch_bin "$many_root/pve-toolbox" list >/dev/null 2>"$many_tmp.err" &
-        pid=$!
-        for _ in $(seq 250); do
-            [[ -z $(ls -A "$many_tmp") ]] || break
-            sleep 0.02
-        done
-        [[ -n $(ls -A "$many_tmp") ]] || { kill -- "-$pid" 2>/dev/null; echo "no-dir"; exit 0; }
-        sleep "$delay"
-        kill -INT -- "-$pid"
-        rc=0; wait "$pid" || rc=$?
-        echo "$rc"
-    )
+    many_rc=$(interrupt_run "$many_tmp" "$delay" INT many_launch list)
     [[ $many_rc != no-dir ]] || fail "list over 16 modules never created its status directory"
-    [[ $many_rc -eq 130 ]] || fail "list over 16 modules interrupted after ${delay}s exited $many_rc, want 130"
+    [[ $many_rc != hang ]] || fail "list over 16 modules interrupted after ${delay}s was still running 10s later"
+    [[ $many_rc == 130 ]] \
+        || fail "list over 16 modules interrupted after ${delay}s exited '$many_rc', want 130 and nothing left running"
     [[ -z $(ls -A "$many_tmp") ]] \
         || fail "list over 16 modules interrupted after ${delay}s left its status directory: $(ls -AR "$many_tmp")"
-    ! grep -qE 'cannot stat|No such file|cannot remove' "$many_tmp.err" \
-        || fail "list over 16 modules interrupted after ${delay}s lost a result file: $(cat "$many_tmp.err")"
+    [[ ! -s $many_tmp.err ]] \
+        || fail "list over 16 modules interrupted after ${delay}s printed errors: $(cat "$many_tmp.err")"
 done
 pass "an interrupted list over more modules than run at once removes its directory cleanly"
+
+# A module_status that ^C does not stop (a stuck command, or a bash subshell
+# spinning with SIGINT blocked) must not keep an interrupted launcher
+# waiting: the launcher stops the workers and everything they started, and
+# exits promptly. A TERM to the group ends it the same way. The fixtures
+# ignore SIGINT themselves, so the test does not depend on the workers
+# ignoring it.
+stuck_root=$(tmp)
+mkdir -p "$stuck_root/lib" "$stuck_root/modules/s-sleep" "$stuck_root/modules/s-spin"
+cp "$ROOT"/lib/*.sh "$stuck_root/lib/"
+cp "$ROOT/VERSION" "$stuck_root/VERSION"
+cp "$ROOT/pve-toolbox" "$stuck_root/pve-toolbox"
+chmod 0755 "$stuck_root/pve-toolbox"
+printf '%s\n' \
+    'MODULE_NAME="s-sleep"' 'MODULE_TITLE="S sleep"' 'MODULE_DESC="fixture"' \
+    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+    "module_status() { trap '' INT; sleep 60; printf 'installed'; }" \
+    > "$stuck_root/modules/s-sleep/module.sh"
+printf '%s\n' \
+    'MODULE_NAME="s-spin"' 'MODULE_TITLE="S spin"' 'MODULE_DESC="fixture"' \
+    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+    "module_status() { trap '' INT; while :; do :; done; }" \
+    > "$stuck_root/modules/s-spin/module.sh"
+stuck_launch() { PVE_TOOLBOX_ROOT="$stuck_root" launch_bin "$stuck_root/pve-toolbox" "$@"; }
+for sig in INT TERM; do
+    want=130; [[ $sig == INT ]] || want=143
+    stuck_tmp=$(tmp)
+    SECONDS=0
+    stuck_rc=$(interrupt_run "$stuck_tmp" 0.3 "$sig" stuck_launch list)
+    stuck_elapsed=$SECONDS
+    [[ $stuck_rc != no-dir ]] || fail "list over stuck modules never created its status directory"
+    [[ $stuck_rc != hang ]] || fail "list over stuck modules was still running 10s after $sig"
+    [[ $stuck_rc == "$want" ]] \
+        || fail "list over stuck modules exited '$stuck_rc' after $sig, want $want and nothing left running"
+    (( stuck_elapsed <= 6 )) || fail "list over stuck modules took ${stuck_elapsed}s to stop after $sig"
+    [[ -z $(ls -A "$stuck_tmp") ]] \
+        || fail "list over stuck modules left its status directory after $sig: $(ls -AR "$stuck_tmp")"
+    [[ ! -s $stuck_tmp.err ]] \
+        || fail "list over stuck modules printed errors after $sig: $(cat "$stuck_tmp.err")"
+done
+pass "an interrupted list stops a module_status that ^C does not stop"
 
 # --- list --json ------------------------------------------------------------
 

@@ -38,7 +38,9 @@ word meaningful — the menu shows only that word in the `STATUS` column.
 `list`, tab completion, and the default (no modules named) form of `update`,
 `check`, and `status` compute every module's `module_status` at the same time
 in separate processes, so it must be read-only and safe to run concurrently
-with other modules' `module_status`.
+with other modules' `module_status`. There `module_status` and the processes
+it starts ignore `SIGINT` and `SIGQUIT`; when the command is interrupted or
+terminated, the launcher sends them `SIGTERM` instead.
 
 !!! warning "`not installed` is compared exactly"
 
