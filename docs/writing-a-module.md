@@ -118,10 +118,10 @@ patterns such as `JOB_*_SRC`. Every other key shows only `(set, hidden)` or
     `JOB_A_OPTS`. When in doubt, leave the key out; a module without
     `MODULE_CONFIG_PUBLIC` shows every key hidden.
 
-    Public values are shown as the shell expands them when it reads the
-    file. A hand-edited public line that refers to a hidden key, such as
-    `E_DIR="/srv/$E_TOKEN"`, displays that secret. A public key must hold a
-    literal, non-secret value.
+    `config show` parses the stored `KEY='value'` lines and never runs the
+    file, so public values are shown exactly as stored, never expanded.
+    Files that are not in that format, including hand-edited lines with
+    double quotes, `$`, or commands, are refused.
 
 A module that keeps more than one configuration file names the others in
 `module_config_files`, one name per line, each matching `^[a-z0-9][a-z0-9-]*$`
@@ -140,8 +140,10 @@ module_config_files() {
 ```
 
 `config show` refuses the directory or any file that is a symbolic link, is
-not owned by root, or is writable by group or others, and prints nothing from
-any file when it does. Files written with `conf_set` already meet that.
+not owned by root, or is writable by group or others, or a file with a line
+that is not blank, a `#` comment, or `KEY='value'` as `conf_set` writes it.
+The refusal names the file and the line, never its content, and nothing from
+any file is printed. Files written with `conf_set` already meet all of that.
 
 ## Module health checks
 

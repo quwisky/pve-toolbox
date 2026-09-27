@@ -1025,8 +1025,9 @@ else
     # Public values are still cleaned: credentials in a URL are redacted and
     # control characters never reach the terminal or break the JSON.
     dir=$(tmp)
+    esc=$'\e'
     conf_write "$dir" e-conf "E_DIR='https://user:SECRET6@host.example/x'" \
-        "E_JOB_A_SRC='tank/\"q\"'\$'\\e''[31mred\\x'"
+        "E_JOB_A_SRC='tank/\"q\"${esc}[31mred\\x'"
     out=$(conf_launch "$dir" config show e-conf) || fail "config show with odd public values failed: $out"
     no_secret "config show of a URL with credentials" "$out"
     [[ $out == *"[redacted]"* ]] || fail "config show did not redact a credential URL: $out"
@@ -1052,63 +1053,114 @@ else
         || fail "config show --json did not carry a 300 KB public value"
     pass "config show handles a public value larger than a command-line argument"
 
-    # The file is sourced in a subshell: its own variables cannot redirect
-    # what is printed, and anything it writes is discarded.
+    # --- the parser: exactly the format conf_set writes
+    conf_value() { # conf_value <conf-dir> <key> -> the JSON value config show gives <key> in e-conf
+        conf_launch "$1" config show --json e-conf \
+            | jq -r --arg k "$2" '.files[0].keys[] | select(.key == $k) | .value'
+    }
     dir=$(tmp)
-    conf_write "$dir" e-conf "E_WEBHOOK='SECRET7'" "key='E_WEBHOOK'" "f='E_WEBHOOK'" \
-        "value='SECRET8'" "name='E_WEBHOOK'" "E_DIR='/srv/e'" \
-        'echo "SECRET9 $E_WEBHOOK"' 'echo "SECRET10 $E_WEBHOOK" >&2'
-    rc=0; out=$(conf_launch "$dir" config show e-conf 2>&1) || rc=$?
-    [[ $rc -eq 0 ]] || fail "config show of a file with colliding names exited $rc: $out"
-    no_secret "config show of a file with colliding names" "$out"
-    grep -Eq '^  E_DIR +/srv/e$' <<<"$out" || fail "config show lost E_DIR next to colliding names: $out"
-    rc=0; out=$(conf_launch "$dir" config show --json e-conf 2>&1) || rc=$?
-    [[ $rc -eq 0 ]] || fail "config show --json of a file with colliding names exited $rc: $out"
-    no_secret "config show --json of a file with colliding names" "$out"
-    # Nor by assigning the reader's own reserved names, as a key or mid-line:
-    # making every key public that way fails the read instead.
-    for line in "_cfgscan_x='1'" ": ; _cfgscan_patterns=('*')" ": ; _cfgscan_live=(E_WEBHOOK)"; do
-        dir=$(tmp)
-        conf_write "$dir" e-conf "E_WEBHOOK='SECRET13'" "E_DIR='/srv/e'" "$line"
-        expect_config_fail "a file assigning $line" "$dir/e-conf.conf" "$dir" config show e-conf
-    done
-    # Nor by defining a function: this one answers the reader's printf with
-    # a forged public record. A file that defines or redefines a function,
-    # builtin/command/declare included, is refused; so is one that sets a
-    # trap (an EXIT trap could append forged records).
+    ( umask 077; printf '%s\n' '# managed by pve-toolbox / e-conf' '' '# a comment' \
+        "E_DIR='/srv/a'" "E_JOB_A_SRC='first" "second'" '' "E_JOB_B_SRC='it'\\''s'" \
+        "E_JOB_C_SRC=''" "E_WEBHOOK='SECRETD'" "E_JOB_D_SRC='/srv/#not-a-comment'" \
+        "E_DIR='/srv/b'" '#' > "$dir/e-conf.conf"
+      printf '%s' "E_JOB_E_SRC='no newline at the end'" >> "$dir/e-conf.conf" )
+    out=$(conf_launch "$dir" config show e-conf) || fail "config show of a valid conf_set file failed: $out"
+    no_secret "config show of a valid conf_set file" "$out"
+    order=$(grep -oE '^  E_[A-Z_]+' <<<"$out" | tr -d ' ' | tr '\n' ' ')
+    [[ $order == "E_DIR E_JOB_A_SRC E_JOB_B_SRC E_JOB_C_SRC E_WEBHOOK E_JOB_D_SRC E_JOB_E_SRC " ]] \
+        || fail "config show keys not in first-appearance order: $order"
+    grep -Eq '^  E_DIR +/srv/b$' <<<"$out" || fail "the last assignment of a key did not win: $out"
+    grep -Eq '^  E_JOB_A_SRC +first; second$' <<<"$out" || fail "a multi-line value was not shown cleaned: $out"
+    grep -Eq '^  E_JOB_C_SRC +\(not set\)$' <<<"$out" || fail "an empty value was not (not set): $out"
+    grep -Eq '^  E_WEBHOOK +\(set, hidden\)$' <<<"$out" || fail "E_WEBHOOK was not hidden: $out"
+    [[ $(conf_value "$dir" E_JOB_A_SRC) == "first; second" ]] || fail "multi-line value wrong in JSON"
+    [[ $(conf_value "$dir" E_JOB_B_SRC) == "it's" ]] || fail "a '\\'' value was not unescaped"
+    [[ $(conf_value "$dir" E_JOB_C_SRC) == "" ]] || fail "an empty value was not empty"
+    [[ $(conf_value "$dir" E_JOB_D_SRC) == "/srv/#not-a-comment" ]] || fail "a # inside a value was lost"
+    [[ $(conf_value "$dir" E_JOB_E_SRC) == "no newline at the end" ]] || fail "a last line without a newline was lost"
+    pass "config show parses comments, blank lines, multi-line, escaped-quote, empty and repeated values"
+
+    # Valid conf_set syntax is shown exactly as stored: nothing is expanded.
     dir=$(tmp)
-    conf_write "$dir" e-conf "E_WEBHOOK='SECRETA'" "E_DIR='/srv/e'" \
-        'printf() { if [[ $1 == '"'"'ok\0'"'"' ]]; then builtin printf '"'"'ok\0'"'"'; else builtin printf '"'"'%s\0%s\0%s\0%s\0'"'"' "$2" 1 1 "${!2}"; fi; }'
-    expect_config_fail "a file defining printf" "$dir/e-conf.conf: it defines or redefines a shell function" \
-        "$dir" config show e-conf
-    expect_config_fail "a file defining printf (json)" "$dir/e-conf.conf" "$dir" config show --json e-conf
-    # A declare that replays the reader's own snapshot would pass the
-    # function comparison; the separate check for a declare function stops it.
-    dir=$(tmp)
-    conf_write "$dir" e-conf "E_WEBHOOK='SECRETA'" "E_DIR='/srv/e'" \
+    conf_write "$dir" e-conf "E_WEBHOOK='SECRETE'" "E_DIR='\$(printf %s \"\$E_WEBHOOK\")'" \
+        "E_JOB_A_SRC='\$E_WEBHOOK \`echo \$E_WEBHOOK\` \${E_WEBHOOK}'" "key='E_WEBHOOK'" "f='E_WEBHOOK'"
+    out=$(conf_launch "$dir" config show e-conf 2>&1) || fail "config show of literal shell syntax failed: $out"
+    no_secret "config show of literal shell syntax" "$out"
+    [[ $(conf_value "$dir" E_DIR) == '$(printf %s "$E_WEBHOOK")' ]] \
+        || fail "a command substitution inside single quotes was not shown literally"
+    [[ $(conf_value "$dir" E_JOB_A_SRC) == '$E_WEBHOOK `echo $E_WEBHOOK` ${E_WEBHOOK}' ]] \
+        || fail "expansions inside single quotes were not shown literally"
+    pass "config show shows stored values literally, never expanded"
+
+    # Everything else is refused: exit 1, the file and the line named, and
+    # no planted secret anywhere. Line 3 is the offending line in each.
+    printf_fn='printf() { if [[ $1 == '"'"'ok\0'"'"' ]]; then builtin printf '"'"'ok\0'"'"'; else builtin printf '"'"'%s\0%s\0%s\0%s\0'"'"' "$2" 1 1 "${!2}"; fi; }'
+    esc=$'\e'
+    for bad in "$printf_fn" \
         'declare() { builtin printf '"'"'%s'"'"' "$_cfgscan_functions"; }' \
-        'printf() { if [[ $1 == '"'"'ok\0'"'"' ]]; then builtin printf '"'"'ok\0'"'"'; else builtin printf '"'"'%s\0%s\0%s\0%s\0'"'"' "$2" 1 1 "${!2}"; fi; }'
-    expect_config_fail "a file whose declare replays the snapshot" \
-        "$dir/e-conf.conf: it defines or redefines a shell function" "$dir" config show e-conf
-    for def in 'builtin() { :; }' 'command() { :; }' 'declare() { :; }' 'readonly -f conf_file' \
-        'conf_file() { :; }' 'function helper { :; }'; do
+        'builtin() { :; }' 'command() { :; }' 'function helper { :; }' 'readonly -f conf_file' \
+        "trap 'printf \"%s\\0\" E_DIR 1 1 \"\$E_WEBHOOK\" ok' EXIT" \
+        "trap 'printf \"%s\\0\" E_DIR 1 1 \"\$E_WEBHOOK\"' DEBUG" \
+        'shopt -s nocasematch' 'declare -n E_DIR=E_WEBHOOK' 'export E_DIR' \
+        'echo "$E_WEBHOOK"' 'echo "$E_WEBHOOK" >&2' \
+        'E_DIR=$(printf %s "$E_WEBHOOK")' 'E_DIR=`echo "$E_WEBHOOK"`' 'E_DIR="/srv/$E_WEBHOOK"' \
+        'E_DIR=/srv/e' 'E_DIR=' "E_DIR='/srv/'\"\$E_WEBHOOK\"" "E_DIR='/srv/e' # trailing" \
+        "E_DIR='/srv/e';echo \"\$E_WEBHOOK\"" "E_DIR='/srv/e'"$'\r' "  E_DIR='/srv/e'" \
+        "E_DIR='/srv/${esc}'x" ' ' "E_TOKEN='SECRETC"; do
         dir=$(tmp)
-        conf_write "$dir" e-conf "E_WEBHOOK='SECRETA'" "E_DIR='/srv/e'" "$def"
-        expect_config_fail "a file running '$def'" "$dir/e-conf.conf" "$dir" config show e-conf
+        conf_write "$dir" e-conf "E_WEBHOOK='SECRETA'" "e_dir='SECRETB'" "$bad" "E_DIR='/srv/e'"
+        expect_config_fail "a file with line 3: ${bad:0:60}" "$dir/e-conf.conf: line 3: " "$dir" config show e-conf
+        expect_config_fail "a file with line 3 (json): ${bad:0:60}" "$dir/e-conf.conf: line 3: " \
+            "$dir" config show --json e-conf
     done
-    for def in "trap 'printf \"%s\\0\" E_DIR 1 1 \"\$E_WEBHOOK\" ok' EXIT" "trap ':' ERR"; do
-        dir=$(tmp)
-        conf_write "$dir" e-conf "E_WEBHOOK='SECRETA'" "E_DIR='/srv/e'" "$def"
-        expect_config_fail "a file running $def" "$dir/e-conf.conf: it sets a trap" "$dir" config show e-conf
-    done
-    # Shell options it sets cannot make a hidden key public: nocasematch
-    # would otherwise let e_dir match the public pattern E_DIR. The launcher
-    # recomputes which keys are public and refuses the mismatch.
+    # The reasons, and the line counted past a multi-line value.
     dir=$(tmp)
-    conf_write "$dir" e-conf "e_dir='SECRETB'" "E_DIR='/srv/e'" 'shopt -s nocasematch'
-    expect_config_fail "a file setting nocasematch" "could not read configuration file $dir/e-conf.conf" \
-        "$dir" config show e-conf
-    pass "config show is not redirected by the file's own variables or output"
+    conf_write "$dir" e-conf '# managed' "E_A='x" "y'" "E_TOKEN='SECRETF"
+    expect_config_fail "an unterminated quote" "line 4: unterminated single quote" "$dir" config show e-conf
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_A='x" "y'" 'E_DIR="$E_A"'
+    expect_config_fail "a double-quoted value" "line 3: the value is not single-quoted" "$dir" config show e-conf
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_DIR='x'SECRETG"
+    expect_config_fail "text after the value" "line 1: unexpected text after the value" "$dir" config show e-conf
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_A='x'" 'export SECRETH'
+    expect_config_fail "a command line" "line 2: not a comment or a KEY='value' line" "$dir" config show e-conf
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_DIR='/srv/e'"
+    printf "E_TOKEN='SECRETI\0'\n" >> "$dir/e-conf.conf"
+    expect_config_fail "a NUL byte" "it contains a NUL byte" "$dir" config show e-conf
+    pass "config show refuses anything but the conf_set format, naming the file and line"
+
+    # Round trip through the real conf_set: every tricky value comes back
+    # exactly, as report_clean_text renders it.
+    dir=$(tmp)
+    tricky=("it's a \"quote\" \\ and '\\'' too" $'multi\nline\n' "" "a=b=c" "#leading hash"
+        "''" "\$HOME \`id\` \$(id) \${x}" "trailing space " "plain/path with spaces")
+    (
+        TOOLBOX_CONF_DIR=$dir
+        # shellcheck source=lib/common.sh
+        source "$ROOT/lib/common.sh"
+        i=0
+        for v in "${tricky[@]}"; do
+            conf_set e-conf "E_JOB_${i}_SRC" "$v"
+            i=$((i + 1))
+        done
+        conf_set e-conf E_WEBHOOK "https://discord.com/api/webhooks/1/SECRETJ"
+        conf_set e-conf E_JOB_0_SRC "${tricky[0]}"
+    )
+    json=$(conf_launch "$dir" config show --json e-conf) || fail "config show of a conf_set file failed"
+    no_secret "config show --json of a conf_set file" "$json"
+    i=0
+    for v in "${tricky[@]}"; do
+        want=$(source "$ROOT/lib/report.sh"; report_clean_text "$v")
+        got=$(jq -r --arg k "E_JOB_${i}_SRC" '.files[0].keys[] | select(.key == $k) | .value' <<<"$json")
+        [[ $got == "$want" ]] || fail "conf_set round trip of value $i: got '$got', want '$want'"
+        i=$((i + 1))
+    done
+    jq -e '.files[0].keys | map(select(.key == "E_WEBHOOK")) == [{key:"E_WEBHOOK",set:true,hidden:true}]' \
+        <<<"$json" >/dev/null || fail "conf_set round trip: E_WEBHOOK not hidden: $json"
+    pass "config show round-trips values written by conf_set"
 
     # --- what it refuses (P4-2): each names the file, exits 1 and prints
     # nothing from any file, including the ones that were fine.

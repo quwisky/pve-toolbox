@@ -22,10 +22,9 @@
 #                       leave out anything that could ever hold a secret -
 #                       a token, a webhook URL, a password, a remote URL that
 #                       can embed credentials, a key or token file path.
-#                       Values are shown as the shell expands them, so a
-#                       hand-edited public line such as E_DIR="/srv/$E_TOKEN"
-#                       displays the hidden key it refers to: a public key
-#                       must hold a literal, non-secret value.
+#                       config show parses the stored KEY='value' lines and
+#                       never runs the file: public values are shown exactly
+#                       as stored, and a file not in that format is refused.
 #
 #   Functions:
 #     module_install      interactive install / reconfigure
