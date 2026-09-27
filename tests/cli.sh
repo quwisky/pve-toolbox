@@ -1062,12 +1062,12 @@ else
     ( umask 077; printf '%s\n' '# managed by pve-toolbox / e-conf' '' '# a comment' \
         "E_DIR='/srv/a'" "E_JOB_A_SRC='first" "second'" '' "E_JOB_B_SRC='it'\\''s'" \
         "E_JOB_C_SRC=''" "E_WEBHOOK='SECRETD'" "E_JOB_D_SRC='/srv/#not-a-comment'" \
-        "E_DIR='/srv/b'" '#' > "$dir/e-conf.conf"
+        "E_DIR='/srv/b'" "E_JOB_F_SRC='x'\\''" "y'" '#' > "$dir/e-conf.conf"
       printf '%s' "E_JOB_E_SRC='no newline at the end'" >> "$dir/e-conf.conf" )
     out=$(conf_launch "$dir" config show e-conf) || fail "config show of a valid conf_set file failed: $out"
     no_secret "config show of a valid conf_set file" "$out"
     order=$(grep -oE '^  E_[A-Z_]+' <<<"$out" | tr -d ' ' | tr '\n' ' ')
-    [[ $order == "E_DIR E_JOB_A_SRC E_JOB_B_SRC E_JOB_C_SRC E_WEBHOOK E_JOB_D_SRC E_JOB_E_SRC " ]] \
+    [[ $order == "E_DIR E_JOB_A_SRC E_JOB_B_SRC E_JOB_C_SRC E_WEBHOOK E_JOB_D_SRC E_JOB_F_SRC E_JOB_E_SRC " ]] \
         || fail "config show keys not in first-appearance order: $order"
     grep -Eq '^  E_DIR +/srv/b$' <<<"$out" || fail "the last assignment of a key did not win: $out"
     grep -Eq '^  E_JOB_A_SRC +first; second$' <<<"$out" || fail "a multi-line value was not shown cleaned: $out"
@@ -1076,6 +1076,7 @@ else
     [[ $(conf_value "$dir" E_JOB_A_SRC) == "first; second" ]] || fail "multi-line value wrong in JSON"
     [[ $(conf_value "$dir" E_JOB_B_SRC) == "it's" ]] || fail "a '\\'' value was not unescaped"
     [[ $(conf_value "$dir" E_JOB_C_SRC) == "" ]] || fail "an empty value was not empty"
+    [[ $(conf_value "$dir" E_JOB_F_SRC) == "x'; y" ]] || fail "a '\\'' ending a line did not continue the value"
     [[ $(conf_value "$dir" E_JOB_D_SRC) == "/srv/#not-a-comment" ]] || fail "a # inside a value was lost"
     [[ $(conf_value "$dir" E_JOB_E_SRC) == "no newline at the end" ]] || fail "a last line without a newline was lost"
     pass "config show parses comments, blank lines, multi-line, escaped-quote, empty and repeated values"
@@ -1123,6 +1124,14 @@ else
     dir=$(tmp)
     conf_write "$dir" e-conf "E_DIR='x'SECRETG"
     expect_config_fail "text after the value" "line 1: unexpected text after the value" "$dir" config show e-conf
+    # A quote is escaped only as '\'' in full: a \' or \ ending the line,
+    # or \' followed by text, is text after the value.
+    for bad in "E_DIR='x'\\'" "E_DIR='x'\\" "E_DIR='x'\\'SECRETG'"; do
+        dir=$(tmp)
+        conf_write "$dir" e-conf "E_A='x'" "$bad" "SECRETG'"
+        expect_config_fail "an incomplete escape: $bad" "line 2: unexpected text after the value" \
+            "$dir" config show e-conf
+    done
     dir=$(tmp)
     conf_write "$dir" e-conf "E_A='x'" 'export SECRETH'
     expect_config_fail "a command line" "line 2: not a comment or a KEY='value' line" "$dir" config show e-conf
@@ -1215,15 +1224,54 @@ else
     no_secret "module_config_files stderr" "$out $(<"$errfile")"
     pass "config show never runs a file module_config_files reads, and discards its stderr"
 
-    # The parser is linear: 5000 keys parse in well under the bound.
+    # Refusals travel on a channel of their own, never the module's stdout,
+    # so a value a module prints cannot pose as one; every refusal message
+    # is config show's own. Nothing is left behind in TMPDIR.
+    conf_module n-prints 'module_config_files() { conf_get "$MODULE_NAME" LIST; }'
     dir=$(tmp)
-    ( umask 077; for ((i = 0; i < 5000; i++)); do printf "E_K_%s='value %s'\n" "$i" "$i"; done > "$dir/e-conf.conf" )
+    conf_write "$dir" n-prints "LIST='ok-name" "refuse:SECRETB2'"
+    chan_tmp=$(tmp)
+    rc=0; out=$(TMPDIR=$chan_tmp conf_launch "$dir" config show n-prints 2>"$errfile") || rc=$?
+    [[ $rc -eq 1 ]] || fail "a printed value that looks like a refusal: exited $rc, want 1: $out"
+    no_secret "a printed value that looks like a refusal" "$out $(<"$errfile")"
+    rc=0; out=$(TMPDIR=$chan_tmp conf_launch "$dir" config show --json n-prints 2>"$errfile") || rc=$?
+    [[ $rc -eq 1 ]] || fail "a printed value that looks like a refusal (json): exited $rc, want 1: $out"
+    no_secret "a printed value that looks like a refusal (json)" "$out $(<"$errfile")"
+    # Lines in the channel's own form are, on stdout, only names.
+    conf_write "$dir" n-prints "LIST='file n-prints'"
+    expect_config_fail "a printed value in the refusal channel's form" \
+        "module n-prints listed an invalid configuration name" "$dir" config show n-prints
+    for line in load name; do
+        conf_write "$dir" n-prints "LIST='$line'"
+        out=$(conf_launch "$dir" config show n-prints 2>&1) \
+            || fail "a printed value '$line' was taken for a refusal: $out"
+    done
+    conf_write "$dir" n-prints "LIST='SECRETB3'" "touch '$dir/RAN'"
+    rc=0; out=$(TMPDIR=$chan_tmp conf_launch "$dir" config show n-prints 2>"$errfile") || rc=$?
+    [[ $rc -eq 1 && $(<"$errfile") == *"$dir/n-prints.conf: line 2: "* ]] \
+        || fail "a refusal read through the channel: exited $rc: $out $(<"$errfile")"
+    no_secret "a refusal read through the channel" "$out $(<"$errfile")"
+    [[ -z $(ls -A "$chan_tmp") ]] || fail "config show left files in TMPDIR: $(ls -A "$chan_tmp")"
+    pass "config show takes refusals only from its own channel and leaves no temporary file"
+
+    # The parser is linear: each line is split on its quotes once, so 20000
+    # keys, or 20000 escaped quotes on one line, parse well within the bound.
+    dir=$(tmp)
+    ( umask 077; for ((i = 0; i < 20000; i++)); do printf "E_K_%s='value %s'\n" "$i" "$i"; done > "$dir/e-conf.conf" )
     start=$SECONDS
-    out=$(conf_launch "$dir" config show e-conf) || fail "config show of 5000 keys failed"
+    out=$(conf_launch "$dir" config show e-conf) || fail "config show of 20000 keys failed"
     elapsed=$((SECONDS - start))
-    [[ $(grep -c '^  E_K_' <<<"$out") -eq 5000 ]] || fail "config show of 5000 keys did not show them all"
-    [[ $elapsed -lt 10 ]] || fail "config show of 5000 keys took ${elapsed}s"
-    pass "config show parses 5000 keys in ${elapsed}s"
+    [[ $(grep -c '^  E_K_' <<<"$out") -eq 20000 ]] || fail "config show of 20000 keys did not show them all"
+    [[ $elapsed -lt 10 ]] || fail "config show of 20000 keys took ${elapsed}s"
+    printf -v big "a'%.0s" {1..20000}
+    ( umask 077; { printf "E_DIR='"; printf "a'\\\\''%.0s" {1..20000}; printf "'\n"; } > "$dir/e-conf.conf" )
+    start=$SECONDS
+    out=$(conf_launch "$dir" config show --json e-conf) || fail "config show of 20000 escaped quotes failed"
+    elapsed2=$((SECONDS - start))
+    [[ $(jq -r '.files[0].keys[0].value' <<<"$out") == "$big" ]] \
+        || fail "config show of 20000 escaped quotes did not return the stored value"
+    [[ $elapsed2 -lt 10 ]] || fail "config show of 20000 escaped quotes on one line took ${elapsed2}s"
+    pass "config show parses 20000 keys in ${elapsed}s and 20000 escaped quotes on one line in ${elapsed2}s"
 
     # --- what it refuses (P4-2): each names the file, exits 1 and prints
     # nothing from any file, including the ones that were fine.

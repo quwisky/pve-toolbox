@@ -123,8 +123,9 @@ patterns such as `JOB_*_SRC`. Every other key shows only `(set, hidden)` or
     literally. A line outside that form, such as a double-quoted or unquoted
     value or a command, refuses the whole file. A public value is shown as
     stored after the usual cleanup: credentials in URLs and webhook URLs are
-    redacted, newlines are joined with `; `, and control characters are
-    replaced.
+    redacted, tabs and carriage returns become spaces, and newlines are
+    joined with `; `. The text output then replaces every other control
+    character with `?`; `--json` keeps them, escaped as JSON.
 
 A module that keeps more than one configuration file names the others in
 `module_config_files`, one name per line, each matching `^[a-z0-9][a-z0-9-]*$`

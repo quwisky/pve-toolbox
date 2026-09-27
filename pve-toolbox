@@ -200,7 +200,7 @@ declare -A CLI_DESC=(
     [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Use --dry-run for a cached preview, --allow-removals to enable package removals and cleanup, and --notify for a Discord report. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades. Package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local systemd schedule. Scheduled runs update every eligible local container with the non-removing policy, never catch up after downtime, and can report every batch to Discord when explicitly enabled. Use 'pve-toolbox status lxc-update' to inspect timer health and recent results."
     [doctor]="The audit covers host, cluster, storage and installed modules. Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
     [link]="Packaged installs refuse this command."
-    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, newlines joined, control characters replaced); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
+    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, tabs and newlines flattened; any other control character shown as ? in text and JSON-escaped in --json); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
 )
 declare -A CLI_EXAMPLES=(
     [list]=$'pve-toolbox list\npve-toolbox list storage\npve-toolbox list --json'
@@ -800,15 +800,14 @@ _config_check_path() { # _config_check_path <file|directory> <path>
 # wins, as it would for the shell. Anything else refuses the file with the
 # line number and the reason, never the line itself. Values are therefore
 # exactly what was stored: nothing is expanded, and nothing in the file can
-# run. One pass over the lines, each looked at once.
+# run. One pass over the lines; each line is split on its quotes once.
 CONFIG_ORDER=()
 declare -A CONFIG_VALUES=()
 _config_parse() { # _config_parse <file>
     local LC_ALL=C
-    local file=$1 content="" size n start key value text state
+    local file=$1 content="" size n i last start key value text state
     local re_assign='^([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
-    local re_close="^([^']*)'(.*)$"
-    local -a lines=()
+    local -a lines=() pieces=()
     CONFIG_ORDER=()
     CONFIG_VALUES=()
     # Byte-wise from here on. read stops at a NUL byte, which a text file
@@ -817,13 +816,14 @@ _config_parse() { # _config_parse <file>
     IFS= read -r -d '' content <"$file" || true
     [[ ${#content} -eq $size ]] || die "refusing configuration file $file: it contains a NUL byte"
     [[ -z $content ]] || mapfile -t lines <<<"${content%$'\n'}"
-    # state: out (between entries), in (inside a quoted segment, which may
-    # continue on the next line), after (just past a closing quote).
+    # state: out (between entries) or in (inside a quoted segment, which
+    # may continue on the next line).
     state=out
     for ((n = 0; n < ${#lines[@]}; n++)); do
         text=${lines[n]}
         if [[ $state == in ]]; then
             value+=$'\n'
+            i=0
         elif [[ -z $text || $text == '#'* ]]; then
             continue
         elif [[ $text =~ $re_assign ]]; then
@@ -832,30 +832,33 @@ _config_parse() { # _config_parse <file>
             text=${BASH_REMATCH[2]}
             value=""
             [[ $text == "'"* ]] || _config_refuse "$file" "$start" "the value is not single-quoted"
-            text=${text:1}
             state=in
+            i=1
         else
             _config_refuse "$file" "$n" "not a comment or a KEY='value' line"
         fi
+        # The text between quotes, in order: one more piece than the line
+        # has quotes (the quote appended keeps a trailing empty piece).
+        # Starting a value, i skips piece 0, the empty text before the
+        # opening quote.
+        IFS=\' read -r -a pieces <<<"$text'"
+        last=$((${#pieces[@]} - 1))
         while :; do
-            if [[ $state == in ]]; then
-                if [[ $text =~ $re_close ]]; then
-                    value+=${BASH_REMATCH[1]}
-                    text=${BASH_REMATCH[2]}
-                    state=after
-                else
-                    value+=$text
-                    break
-                fi
-            elif [[ -z $text ]]; then
+            # Inside a segment: its text runs to the next quote, or to the
+            # end of the line, and then continues on the next line.
+            value+=${pieces[i]}
+            ((i < last)) || break
+            # Past the closing quote: the end of the line ends the entry,
+            # and \'' is an escaped quote that opens the next segment.
+            i=$((i + 1))
+            if ((i == last)) && [[ -z ${pieces[i]} ]]; then
                 [[ -n ${CONFIG_VALUES[$key]+x} ]] || CONFIG_ORDER+=("$key")
                 CONFIG_VALUES[$key]=$value
                 state=out
                 break
-            elif [[ $text == "\\''"* ]]; then
+            elif ((i + 1 < last)) && [[ ${pieces[i]} == '\' && -z ${pieces[i + 1]} ]]; then
                 value+="'"
-                text=${text:3}
-                state=in
+                i=$((i + 2))
             else
                 _config_refuse "$file" "$start" "unexpected text after the value"
             fi
@@ -895,38 +898,69 @@ _config_read() { # _config_read <file> <public pattern>...
 
 # conf_get as config show gives it to module_config_files: the same checks
 # and parser, so the file is never run. Prints the stored value of <key>, or
-# nothing when the file or the key is absent. A refusal is written to fd 3,
-# which config show reads, and the call fails; the module's own stderr is
-# discarded, so the reason reaches the operator only through config show.
+# nothing when the file or the key is absent. On a refusal the call fails
+# and writes to fd 3, config show's refusal channel, only which check
+# failed: "name", or "file <name>". config show repeats that check itself,
+# so every message the operator sees is built by config show from what it
+# knows (the file, the line and the reason), never from anything a module
+# printed or a file holds.
 _config_safe_get() { # _config_safe_get <name> <key>
-    (
-        die() { printf 'refuse:%s\n' "$*" >&3; exit 1; }
-        local f
-        [[ $1 =~ $CONFIG_NAME_RE ]] || die "module_config_files read an invalid configuration name"
-        f=$(conf_file "$1")
-        [[ -e $f || -L $f ]] || exit 0
+    local f
+    if [[ ! ${1:-} =~ $CONFIG_NAME_RE ]]; then
+        printf 'name\n' >&3
+        return 1
+    fi
+    f=$(conf_file "$1")
+    [[ -e $f || -L $f ]] || return 0
+    if (
         _config_check_path file "$f"
         _config_parse "$f"
         [[ -z ${2:-} ]] || printf '%s' "${CONFIG_VALUES[$2]-}"
-    )
+    ) 2>/dev/null; then
+        return 0
+    fi
+    printf 'file %s\n' "$1" >&3
+    return 1
 }
 
-# Runs <module>'s module_config_files with conf_get replaced by
+# Runs <module>'s module_config_files, setting CONFIG_LISTED to what it
+# printed and CONFIG_REFUSAL to the first line on the refusal channel, and
+# returns its status. Its stderr is discarded. conf_get is replaced by
 # _config_safe_get and conf_load refused, both readonly so nothing the module
-# sources later can put the originals back. Its stdout carries the names and
-# any refusal lines; its stderr is discarded.
+# sources later can put the originals back.
+#
+# The refusal channel is a file of its own, never the module's stdout, so no
+# value a module prints can pose as a refusal. It is opened for writing and
+# for reading and removed at once, so nothing is left behind on any path;
+# only the module's fd 3 points at it.
+CONFIG_LISTED=""
+CONFIG_REFUSAL=""
 _config_module_files() { # _config_module_files <module>
-    (
+    local chan w r rc=0
+    CONFIG_LISTED=""
+    CONFIG_REFUSAL=""
+    chan=$(mktemp) || die "cannot create a temporary file for module $1"
+    if ! exec {w}>"$chan" {r}<"$chan"; then
+        rm -f -- "$chan"
+        die "cannot open a temporary file for module $1"
+    fi
+    rm -f -- "$chan"
+    CONFIG_LISTED=$(
+        exec 3>&"$w" {w}>&- {r}<&- 2>/dev/null
         # shellcheck source=/dev/null
         source "$MODULE_DIR/$1/module.sh"
         conf_get() { _config_safe_get "$@"; }
         conf_load() {
-            printf 'refuse:%s\n' "module_config_files may read configuration only with conf_get, not conf_load" >&3
+            printf 'load\n' >&3
             return 1
         }
         readonly -f conf_get conf_load
         module_config_files
-    ) 3>&1 2>/dev/null
+    ) || rc=$?
+    exec {w}>&-
+    IFS= read -r -u "$r" CONFIG_REFUSAL || true
+    exec {r}<&-
+    return "$rc"
 }
 
 # True when <key> matches one of the module's public patterns.
@@ -942,7 +976,7 @@ _config_public() { # _config_public <key> <pattern>...
 }
 
 cmd_config() { # cmd_config show <module>
-    local sub=${1:-} mod=${2:-} name out f i key value display line text="" rc
+    local sub=${1:-} mod=${2:-} name f i key value display line text="" rc
     local -a s=() names=() files=() patterns=() stream=()
     case $sub in
         show) ;;
@@ -974,19 +1008,30 @@ cmd_config() { # cmd_config show <module>
         if [[ -e $f || -L $f ]]; then _config_check_path file "$f"; fi
         if module_has_function "$mod" module_config_files; then
             rc=0
-            out=$(_config_module_files "$mod") || rc=$?
-            # A refusal from the replaced conf_get wins over anything else.
-            while IFS= read -r name; do
-                [[ $name != refuse:* ]] || die "${name#refuse:} (read by module $mod)"
-            done <<<"$out"
-            [[ $rc -eq 0 ]] || die "module $mod failed to list its configuration files"
+            _config_module_files "$mod" || rc=$?
+            # A refusal wins over anything else. The channel says only which
+            # check failed; config show repeats a file's checks, which die
+            # with their own message naming the file, line and reason.
+            case $CONFIG_REFUSAL in
+                load) die "module_config_files may read configuration only with conf_get, not conf_load (module $mod)" ;;
+                name) die "module $mod read an invalid configuration name in module_config_files (each must match $CONFIG_NAME_RE)" ;;
+                "file "*)
+                    name=${CONFIG_REFUSAL#file }
+                    if [[ $name =~ $CONFIG_NAME_RE ]]; then
+                        f=$(conf_file "$name")
+                        _config_check_path file "$f"
+                        _config_parse "$f"
+                    fi
+                    ;;
+            esac
+            [[ -z $CONFIG_REFUSAL && $rc -eq 0 ]] || die "module $mod failed to list its configuration files"
             while IFS= read -r name; do
                 [[ -n $name ]] || continue
                 # Not echoed: a name built from configuration could carry a value.
                 [[ $name =~ $CONFIG_NAME_RE ]] \
                     || die "module $mod listed an invalid configuration name (each must match $CONFIG_NAME_RE)"
                 cli_in "$name" "${names[@]}" || names+=("$name")
-            done <<<"$out"
+            done <<<"$CONFIG_LISTED"
         fi
         for name in "${names[@]}"; do
             f=$(conf_file "$name")

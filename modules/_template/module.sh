@@ -26,8 +26,9 @@
 #                       never runs the file: a $ or " inside the quotes is
 #                       shown literally, a line outside that form refuses the
 #                       file, and public values go through the usual cleanup
-#                       (credential URLs redacted, newlines joined, control
-#                       characters replaced).
+#                       (credential URLs redacted, tabs and newlines
+#                       flattened); text output shows any other control
+#                       character as ?, --json keeps it JSON-escaped.
 #
 #   Functions:
 #     module_install      interactive install / reconfigure
