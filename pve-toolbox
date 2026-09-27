@@ -397,7 +397,9 @@ MODULE_STATUS_LOADED=0
 # before removing the directory, so none can write into it afterwards.
 # Killing them instead would orphan a worker's mv, which could then rename a
 # result into the directory while it is being removed.
-_load_statuses_cleanup() { # _load_statuses_cleanup <dir>
+_load_statuses_cleanup() { # _load_statuses_cleanup <dir> <pid that set the trap>
+    # A worker inherits this trap if a signal lands between fork and the trap reset.
+    [[ $BASHPID == "$2" ]] || return 0
     wait 2>/dev/null || true
     rm -rf -- "$1"
 }
@@ -418,7 +420,7 @@ load_statuses() {
     dir=$(mktemp -d) || die "could not create a temporary directory"
     printf -v q '%q' "$dir"
     # shellcheck disable=SC2064 # expand $q now; the trap outlives this call
-    trap "_load_statuses_cleanup $q" EXIT
+    trap "_load_statuses_cleanup $q $BASHPID" EXIT
     for m in "${MODULES[@]}"; do
         (
             st=$(run_module "$m" module_status 2>/dev/null) || true

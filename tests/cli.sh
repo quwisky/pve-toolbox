@@ -669,6 +669,51 @@ sleep 3.5
     || fail "a status worker wrote after an interrupted list removed its directory: $(ls -A "$sig_tmp")"
 pass "an interrupted list removes its status directory"
 
+# The same with more modules than the 8 workers run at once, so the launcher
+# is still forking workers when the interrupt arrives. A worker that inherits
+# the launcher's EXIT trap must not remove the directory under its siblings.
+# A few short runs at different moments; each must exit 130, leave nothing
+# behind and print no error about a result file that vanished.
+many_root=$(tmp)
+mkdir -p "$many_root/lib"
+cp "$ROOT"/lib/*.sh "$many_root/lib/"
+cp "$ROOT/VERSION" "$many_root/VERSION"
+cp "$ROOT/pve-toolbox" "$many_root/pve-toolbox"
+chmod 0755 "$many_root/pve-toolbox"
+for n in $(seq -w 1 16); do
+    mkdir -p "$many_root/modules/m$n"
+    printf '%s\n' \
+        "MODULE_NAME=\"m$n\"" "MODULE_TITLE=\"M$n\"" 'MODULE_DESC="fixture"' \
+        'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+        "module_status() { sleep 0.$(( 10#$n % 5 + 2 )); printf 'installed $n'; }" \
+        > "$many_root/modules/m$n/module.sh"
+done
+for delay in 0 0.1 0.2 0.3; do
+    many_tmp=$(tmp)
+    many_rc=$(
+        set -m
+        TMPDIR="$many_tmp" PVE_TOOLBOX_ROOT="$many_root" \
+            launch_bin "$many_root/pve-toolbox" list >/dev/null 2>"$many_tmp.err" &
+        pid=$!
+        for _ in $(seq 250); do
+            [[ -z $(ls -A "$many_tmp") ]] || break
+            sleep 0.02
+        done
+        [[ -n $(ls -A "$many_tmp") ]] || { kill -- "-$pid" 2>/dev/null; echo "no-dir"; exit 0; }
+        sleep "$delay"
+        kill -INT -- "-$pid"
+        rc=0; wait "$pid" || rc=$?
+        echo "$rc"
+    )
+    [[ $many_rc != no-dir ]] || fail "list over 16 modules never created its status directory"
+    [[ $many_rc -eq 130 ]] || fail "list over 16 modules interrupted after ${delay}s exited $many_rc, want 130"
+    [[ -z $(ls -A "$many_tmp") ]] \
+        || fail "list over 16 modules interrupted after ${delay}s left its status directory: $(ls -AR "$many_tmp")"
+    ! grep -qE 'cannot stat|No such file|cannot remove' "$many_tmp.err" \
+        || fail "list over 16 modules interrupted after ${delay}s lost a result file: $(cat "$many_tmp.err")"
+done
+pass "an interrupted list over more modules than run at once removes its directory cleanly"
+
 # --- list --json ------------------------------------------------------------
 
 json_out=$(status_launch list --json) || fail "list --json failed against the parallel-status fixture"
