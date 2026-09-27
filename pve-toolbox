@@ -392,16 +392,13 @@ declare -gA MODULE_STATUS=()
 MODULE_STATUS_LOADED=0
 
 # EXIT trap while load_statuses runs, so an interrupt or a die leaves no
-# temporary directory behind. Status workers still running (only after an
-# interrupt: they ignore SIGINT, as background jobs of a script do) are
-# stopped first, so none can write into the directory once it is removed.
+# temporary directory behind. It waits for any status workers still running
+# (an interrupt reaches their module_status too, so they finish promptly)
+# before removing the directory, so none can write into it afterwards.
+# Killing them instead would orphan a worker's mv, which could then rename a
+# result into the directory while it is being removed.
 _load_statuses_cleanup() { # _load_statuses_cleanup <dir>
-    local -a pids=()
-    mapfile -t pids < <(jobs -pr)
-    if [[ ${#pids[@]} -gt 0 ]]; then
-        kill -- "${pids[@]}" 2>/dev/null || true
-        wait 2>/dev/null || true
-    fi
+    wait 2>/dev/null || true
     rm -rf -- "$1"
 }
 
@@ -417,10 +414,11 @@ _load_statuses_cleanup() { # _load_statuses_cleanup <dir>
 load_statuses() {
     [[ $MODULE_STATUS_LOADED -eq 1 ]] && return 0
     discover
-    local dir i=0 running=0 m st
+    local dir q i=0 running=0 m st
     dir=$(mktemp -d) || die "could not create a temporary directory"
-    # shellcheck disable=SC2064 # expand $dir now; the trap outlives this call
-    trap "_load_statuses_cleanup $(printf '%q' "$dir")" EXIT
+    printf -v q '%q' "$dir"
+    # shellcheck disable=SC2064 # expand $q now; the trap outlives this call
+    trap "_load_statuses_cleanup $q" EXIT
     for m in "${MODULES[@]}"; do
         (
             st=$(run_module "$m" module_status 2>/dev/null) || true
