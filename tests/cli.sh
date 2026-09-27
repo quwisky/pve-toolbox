@@ -717,3 +717,31 @@ jq -e . <<<"$quirky_json" >/dev/null \
     || fail "list --json did not read the quirky module as installed: $quirky_json"
 pass "list --json stays valid JSON for quotes, backslashes, control characters, and empty tags"
 
+# Tags separated by a tab or by more than one space are split the way
+# module_tags splits them, both in the JSON array and when filtering by tag.
+mkdir -p "$json_meta_root/modules/spacey"
+cat > "$json_meta_root/modules/spacey/module.sh" <<'MODULE_EOF'
+MODULE_NAME="spacey"
+MODULE_TITLE="Spacey"
+MODULE_DESC="odd tag separators"
+MODULE_TAGS=$'one\ttwo  three '
+MODULE_HOST_ONLY=0
+module_status() { return 1; }
+MODULE_EOF
+spacey_json=$(PVE_TOOLBOX_ROOT="$json_meta_root" \
+    launch_bin "$json_meta_root/pve-toolbox" list --json) \
+    || fail "list --json failed for tags with tabs and double spaces"
+jq -e '.modules[] | select(.name == "spacey") | .tags == ["one","two","three"]' \
+    <<<"$spacey_json" >/dev/null \
+    || fail "list --json did not split tags on tabs and runs of spaces: $spacey_json"
+spacey_json=$(PVE_TOOLBOX_ROOT="$json_meta_root" \
+    launch_bin "$json_meta_root/pve-toolbox" list --json two) \
+    || fail "list --json <tag> failed for a tab-separated tag"
+jq -e '[.modules[].name] == ["spacey"]' <<<"$spacey_json" >/dev/null \
+    || fail "list --json <tag> did not match a tab-separated tag: $spacey_json"
+spacey_out=$(PVE_TOOLBOX_ROOT="$json_meta_root" \
+    launch_bin "$json_meta_root/pve-toolbox" list two) \
+    || fail "list <tag> failed for a tab-separated tag"
+[[ $(grep -oE '^(quirky|spacey)' <<<"$spacey_out") == spacey ]] \
+    || fail "list <tag> did not match a tab-separated tag: $spacey_out"
+pass "list and list --json split tags on any whitespace, as module_tags does"

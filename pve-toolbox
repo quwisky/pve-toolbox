@@ -571,6 +571,16 @@ cmd_lxc_update() {
     bash "$MODULE_DIR/lxc-update/run.sh" "$@"
 }
 
+# module_has_tag <module> <tag>: the module carries <tag>. Tags split on any
+# whitespace, as module_tags splits them.
+module_has_tag() {
+    local t
+    local -a tags
+    read -r -a tags <<<"$(meta "$1" MODULE_TAGS)"
+    for t in "${tags[@]}"; do [[ $t != "$2" ]] || return 0; done
+    return 1
+}
+
 # Every tag any module carries, sorted, once each.
 module_tags() {
     local m
@@ -600,7 +610,7 @@ cmd_list() {
     if [[ $OUTPUT_JSON -eq 1 ]]; then
         local json='[]' item st
         for m in "${MODULES[@]}"; do
-            [[ -n $tag && " $(meta "$m" MODULE_TAGS) " != *" $tag "* ]] && continue
+            [[ -n $tag ]] && ! module_has_tag "$m" "$tag" && continue
             st=$(status_line "$m")
             item=$(jq -cn --arg name "$m" \
                 --arg title "$(report_clean_text "$(meta "$m" MODULE_TITLE)")" \
@@ -609,7 +619,7 @@ cmd_list() {
                 --arg raw "$st" \
                 --arg status "$(report_clean_text "$st")" \
                 '{name:$name,title:$title,description:$description,
-                  tags:($tags|split(" ")|map(select(length>0))),
+                  tags:([$tags|splits("\\s+")]|map(select(length>0))),
                   installed:($raw != "not installed"),status:$status}')
             json=$(jq -cn --argjson a "$json" --argjson i "$item" '$a + [$i]')
         done
@@ -617,7 +627,7 @@ cmd_list() {
         return 0
     fi
     for m in "${MODULES[@]}"; do
-        [[ -n $tag && " $(meta "$m" MODULE_TAGS) " != *" $tag "* ]] && continue
+        [[ -n $tag ]] && ! module_has_tag "$m" "$tag" && continue
         printf '%s%-24s%s %s\n' "$c_bold" "$m" "$c_reset" "$(meta "$m" MODULE_DESC)"
         printf '  %sstatus: %s | tags: %s%s\n' \
             "$c_dim" "$(status_line "$m")" "$(meta "$m" MODULE_TAGS)" "$c_reset"
