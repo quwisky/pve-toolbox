@@ -385,11 +385,16 @@ module_has_function() { # module_has_function <module> <function>
 }
 
 # One process-lifetime cache of every module's status line, filled once per
-# command, serially, by load_statuses: each module's module_status runs
-# exactly once. Never invalidated and never refreshed mid-process: each
-# launcher run reads a consistent snapshot. Process-scoped: the menu and the
-# ui never call load_statuses, so they keep re-reading status live, one
-# module at a time.
+# command, serially, by load_statuses, and used only where the same module
+# is asked about more than once in a command: _complete installed, and the
+# no-module-names form of update/check/status, which each check
+# is_installed on every module and then act on the installed ones. list
+# never loads it: it prints one module at a time and a tag filter is applied
+# before status is computed, so caching every module up front would compute
+# status for modules list is about to discard. Never invalidated and never
+# refreshed mid-process: each launcher run reads a consistent snapshot. The
+# menu and the ui never load it either, so they keep re-reading status live,
+# one module at a time.
 declare -gA MODULE_STATUS=()
 MODULE_STATUS_LOADED=0
 
@@ -535,12 +540,20 @@ cmd_lxc_update() {
     bash "$MODULE_DIR/lxc-update/run.sh" "$@"
 }
 
-# module_has_tag <module> <tag>: the module carries <tag>. Tags split on any
-# whitespace, as module_tags splits them.
+# module_tags_of <module> -> fills the caller's local 'tags' array with
+# <module>'s tags, split on any run of whitespace, first line of MODULE_TAGS
+# only (bash's own 'read -a' record/field splitting). The one definition of
+# what a module's tags are: module_has_tag, module_tags, and list --json's
+# tags array all go through it, so they can never disagree.
+module_tags_of() {
+    read -r -a tags <<<"$(meta "$1" MODULE_TAGS)"
+}
+
+# module_has_tag <module> <tag>: the module carries <tag>.
 module_has_tag() {
     local t
     local -a tags
-    read -r -a tags <<<"$(meta "$1" MODULE_TAGS)"
+    module_tags_of "$1"
     for t in "${tags[@]}"; do [[ $t != "$2" ]] || return 0; done
     return 1
 }
@@ -551,7 +564,7 @@ module_tags() {
     local -a tags
     discover
     for m in "${MODULES[@]}"; do
-        read -r -a tags <<<"$(meta "$m" MODULE_TAGS)"
+        module_tags_of "$m"
         if [[ ${#tags[@]} -gt 0 ]]; then
             printf '%s\n' "${tags[@]}"
         fi
@@ -570,21 +583,27 @@ cmd_list() {
             cli_usage_error "unknown tag: $tag" list "${s[@]}"
         fi
     fi
-    load_statuses
+    # Neither branch below loads the MODULE_STATUS cache: each shown module's
+    # status is computed once, right where it is printed. A tag filter is
+    # applied first (the 'continue'), so a module the filter discards never
+    # has its module_status run at all, and plain 'list' still streams a
+    # module at a time instead of waiting on every module up front.
     if [[ $OUTPUT_JSON -eq 1 ]]; then
         local json='[]' item st
+        local -a tags
         for m in "${MODULES[@]}"; do
             [[ -n $tag ]] && ! module_has_tag "$m" "$tag" && continue
             st=$(status_line "$m")
+            module_tags_of "$m"
             item=$(jq -cn --arg name "$m" \
                 --arg title "$(report_clean_text "$(meta "$m" MODULE_TITLE)")" \
                 --arg description "$(report_clean_text "$(meta "$m" MODULE_DESC)")" \
-                --arg tags "$(meta "$m" MODULE_TAGS)" \
                 --arg raw "$st" \
                 --arg status "$(report_clean_text "$st")" \
-                '{name:$name,title:$title,description:$description,
-                  tags:([$tags|splits("\\s+")]|map(select(length>0))),
-                  installed:($raw != "not installed"),status:$status}')
+                --args '{name:$name,title:$title,description:$description,
+                  tags:$ARGS.positional,
+                  installed:($raw != "not installed"),status:$status}' \
+                "${tags[@]}")
             json=$(jq -cn --argjson a "$json" --argjson i "$item" '$a + [$i]')
         done
         jq -n --argjson modules "$json" '{schema_version:1,command:"list",modules:$modules}'

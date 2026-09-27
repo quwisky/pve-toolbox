@@ -520,12 +520,14 @@ rc=0; err=$(PVE_TOOLBOX_ROOT="$no_template_root" launch_bin "$no_template_root/p
 [[ $err == *"man page template missing"* ]] || fail "_man with a missing template did not say why: $err"
 pass "_man fails closed when its template is missing"
 
-# --- module status cache ---------------------------------------------------
+# --- list module status (no cache) -----------------------------------------
 
-# load_statuses fills the process-lifetime MODULE_STATUS cache once per
-# command, one module_status call at a time, in discovery order. a-one,
-# b-two and d-four are installed; c-three exits non-zero with no output and
-# must read as not installed, with an installed module on either side of it.
+# cmd_list never loads the MODULE_STATUS cache: each shown module's status is
+# computed once, right where it is printed, and a module the tag filter
+# discards never has its module_status run at all. a-one, b-two and d-four
+# are installed; c-three carries the extra tag "solo" and exits non-zero with
+# no output, so it must read as not installed, with an installed module on
+# either side of it.
 status_root=$(tmp)
 mkdir -p "$status_root/lib" \
     "$status_root/modules/a-one" "$status_root/modules/b-two" \
@@ -536,27 +538,33 @@ cp "$ROOT/pve-toolbox" "$status_root/pve-toolbox"
 chmod 0755 "$status_root/pve-toolbox"
 # Each fixture's module_status appends its own name to $STATUS_CALLS (a file
 # outside the checkout, so callers that do not set it are unaffected) before
-# reporting, so a test can count how many times load_statuses actually calls
-# it.
+# reporting, so a test can count how many times it actually ran. Each also
+# has its own module_status_long, distinct from module_status, so the
+# status/check status_long fallback (which calls module_status when a module
+# has no dedicated long form) never adds a module_status call of its own.
 printf '%s\n' \
     'MODULE_NAME="a-one"' 'MODULE_TITLE="A one"' 'MODULE_DESC="fixture a"' \
     'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
     'module_status() { printf "a-one\n" >> "${STATUS_CALLS:-/dev/null}"; printf "installed a"; }' \
+    'module_status_long() { printf "installed a (long)"; }' \
     > "$status_root/modules/a-one/module.sh"
 printf '%s\n' \
     'MODULE_NAME="b-two"' 'MODULE_TITLE="B two"' 'MODULE_DESC="fixture b"' \
     'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
     'module_status() { printf "b-two\n" >> "${STATUS_CALLS:-/dev/null}"; printf "installed b"; }' \
+    'module_status_long() { printf "installed b (long)"; }' \
     > "$status_root/modules/b-two/module.sh"
 printf '%s\n' \
     'MODULE_NAME="c-three"' 'MODULE_TITLE="C three"' 'MODULE_DESC="fixture c"' \
     'MODULE_TAGS="fixture solo"' 'MODULE_HOST_ONLY=0' \
     'module_status() { printf "c-three\n" >> "${STATUS_CALLS:-/dev/null}"; exit 3; }' \
+    'module_status_long() { printf "c-three (long)"; }' \
     > "$status_root/modules/c-three/module.sh"
 printf '%s\n' \
     'MODULE_NAME="d-four"' 'MODULE_TITLE="D four"' 'MODULE_DESC="fixture d"' \
     'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
     'module_status() { printf "d-four\n" >> "${STATUS_CALLS:-/dev/null}"; printf "installed d"; }' \
+    'module_status_long() { printf "installed d (long)"; }' \
     > "$status_root/modules/d-four/module.sh"
 
 status_launch() { # status_launch [args...] -> the fixture launcher above
@@ -577,10 +585,11 @@ installed_out=$(status_launch _complete installed) || fail "_complete installed 
     || fail "_complete installed did not list a-one, b-two, d-four in order: $installed_out"
 pass "_complete installed lists installed modules in discovery order"
 
-# The cached results are the results a one-at-a-time run gives: each fixture
-# module's module_status is run alone, in its own shell, and read the way
-# status_line reads it (no output means not installed).
-cache_json=$(status_launch list --json) || fail "list --json failed against the status fixture"
+# list --json's status for each fixture module matches calling that module's
+# module_status directly, in its own shell (no output means not installed).
+# list computes status itself rather than reading a cache, so this checks
+# that computation directly; it is not a cache-safety test.
+direct_json=$(status_launch list --json) || fail "list --json failed against the status fixture"
 for m in a-one b-two c-three d-four; do
     want=$(bash -c 'source "$1"; module_status' _ "$status_root/modules/$m/module.sh" 2>/dev/null) || true
     want=${want:-not installed}
@@ -588,14 +597,13 @@ for m in a-one b-two c-three d-four; do
     [[ $want != "not installed" ]] || want_installed=false
     jq -e --arg m "$m" --arg st "$want" --argjson inst "$want_installed" \
         '.modules[] | select(.name == $m) | .status == $st and .installed == $inst' \
-        <<<"$cache_json" >/dev/null \
-        || fail "list --json status of $m differs from a one-at-a-time run (want '$want', installed $want_installed): $cache_json"
+        <<<"$direct_json" >/dev/null \
+        || fail "list --json status of $m differs from a direct module_status call (want '$want', installed $want_installed): $direct_json"
 done
-pass "cached module status matches a one-at-a-time run over the fixture"
+pass "list --json's status matches a direct module_status call for each fixture module"
 
-# load_statuses runs each module's module_status exactly once per command: a
-# counter file gets exactly one line per module for 'list' and, separately,
-# for 'list --json'.
+# Each shown module's status is computed exactly once: a counter file gets
+# exactly one line per module for 'list' and, separately, for 'list --json'.
 calls_dir=$(tmp)
 calls_file="$calls_dir/calls"
 : > "$calls_file"
@@ -615,7 +623,50 @@ for m in a-one b-two c-three d-four; do
     [[ $got -eq 1 ]] \
         || fail "list --json ran $m's module_status $got time(s), want exactly once: $(cat "$calls_file")"
 done
-pass "load_statuses runs each module's module_status exactly once per command"
+pass "list and list --json compute each shown module's status exactly once"
+
+# A tag filter discards a module before its status is ever computed: c-three
+# is the only fixture module tagged 'solo', so filtering by it must run only
+# c-three's module_status, never a-one's, b-two's, or d-four's.
+: > "$calls_file"
+STATUS_CALLS="$calls_file" status_launch list solo >/dev/null \
+    || fail "list solo failed while counting module_status calls"
+[[ $(grep -cx c-three "$calls_file") -eq 1 ]] \
+    || fail "list solo did not run c-three's module_status exactly once: $(cat "$calls_file")"
+for m in a-one b-two d-four; do
+    [[ $(grep -cx "$m" "$calls_file") -eq 0 ]] \
+        || fail "list solo ran $m's module_status although it does not carry solo: $(cat "$calls_file")"
+done
+
+: > "$calls_file"
+STATUS_CALLS="$calls_file" status_launch list --json solo >/dev/null \
+    || fail "list --json solo failed while counting module_status calls"
+[[ $(grep -cx c-three "$calls_file") -eq 1 ]] \
+    || fail "list --json solo did not run c-three's module_status exactly once: $(cat "$calls_file")"
+for m in a-one b-two d-four; do
+    [[ $(grep -cx "$m" "$calls_file") -eq 0 ]] \
+        || fail "list --json solo ran $m's module_status although it does not carry solo: $(cat "$calls_file")"
+done
+pass "list and list --json never compute a tag-filtered-out module's status"
+
+# --- module status cache (status/check/update with no module names) --------
+
+# load_statuses still matters for the no-module-names form of status/check/
+# update and for _complete installed: those call is_installed on every
+# module at least twice in one command (once to build the implicit module
+# list, once more per module while acting on or reporting it). With the
+# cache, an installed module's module_status runs exactly once for the whole
+# command; each fixture's own module_status_long keeps the status report's
+# fallback from calling module_status a second time on top of that.
+: > "$calls_file"
+STATUS_CALLS="$calls_file" status_launch status --json >/dev/null \
+    || fail "status --json (no names) failed while counting module_status calls"
+for m in a-one b-two d-four; do
+    got=$(grep -cx "$m" "$calls_file")
+    [[ $got -eq 1 ]] \
+        || fail "status --json (no names) ran $m's module_status $got time(s), want exactly once: $(cat "$calls_file")"
+done
+pass "load_statuses caches status for the no-names form of status --json"
 
 # --- list --json ------------------------------------------------------------
 
@@ -709,3 +760,38 @@ spacey_out=$(PVE_TOOLBOX_ROOT="$json_meta_root" \
 [[ $(grep -oE '^(quirky|spacey)' <<<"$spacey_out") == spacey ]] \
     || fail "list <tag> did not match a tab-separated tag: $spacey_out"
 pass "list and list --json split tags on any whitespace, as module_tags does"
+
+# list --json builds its tags array from the same bash split module_has_tag
+# and module_tags use (module_tags_of), not a separate jq regex: a tag string
+# with an embedded newline is split the same way by both, even though that
+# way only keeps the first line. MODULE_TAGS=$'x\ny  z' means only "x" is a
+# tag; "y" and "z" (after the newline) are not, in the JSON array or in what
+# 'list <tag>' accepts.
+mkdir -p "$json_meta_root/modules/newliney"
+cat > "$json_meta_root/modules/newliney/module.sh" <<'MODULE_EOF'
+MODULE_NAME="newliney"
+MODULE_TITLE="Newliney"
+MODULE_DESC="a tag string with an embedded newline"
+MODULE_TAGS=$'x\ny  z'
+MODULE_HOST_ONLY=0
+module_status() { return 1; }
+MODULE_EOF
+newliney_json=$(PVE_TOOLBOX_ROOT="$json_meta_root" \
+    launch_bin "$json_meta_root/pve-toolbox" list --json) \
+    || fail "list --json failed for a tag string with an embedded newline"
+jq -e '.modules[] | select(.name == "newliney") | .tags == ["x"]' \
+    <<<"$newliney_json" >/dev/null \
+    || fail "list --json tags for a newline-separated tag string were not just [\"x\"]: $newliney_json"
+newliney_out=$(PVE_TOOLBOX_ROOT="$json_meta_root" \
+    launch_bin "$json_meta_root/pve-toolbox" list x) \
+    || fail "list x failed for a tag before the embedded newline"
+[[ $(grep -oE '^newliney' <<<"$newliney_out") == newliney ]] \
+    || fail "list x did not match the tag before the embedded newline: $newliney_out"
+for cmd in "list y" "list --json y"; do
+    rc=0
+    # shellcheck disable=SC2086 # $cmd is a fixed two-word command above
+    PVE_TOOLBOX_ROOT="$json_meta_root" launch_bin "$json_meta_root/pve-toolbox" $cmd >/dev/null 2>&1 || rc=$?
+    [[ $rc -eq 64 ]] \
+        || fail "'$cmd' exited $rc, want 64: y is after the embedded newline and must not be a known tag"
+done
+pass "list --json builds tags from the same split module_has_tag uses, embedded newline included"
