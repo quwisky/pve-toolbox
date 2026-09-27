@@ -83,24 +83,25 @@ declare `MODULE_HOST_ONLY=1` and warn if they detect an LXC.
 ## Commands
 
 ```
-pve-toolbox                    interactive menu
-pve-toolbox ui                 full-screen menu (needs whiptail)
-pve-toolbox list [tag]         list modules and their status
-pve-toolbox install <mod>...   install specific modules
-pve-toolbox update [mod]...    update (all installed if none given)
-pve-toolbox check [mod]...     report available updates, change nothing
-pve-toolbox status [mod]       detailed status
-pve-toolbox doctor             read-only host and module health audit
+pve-toolbox                      interactive menu
+pve-toolbox ui                   full-screen menu (needs whiptail)
+pve-toolbox list [--json] [tag]  list modules and their status
+pve-toolbox install <mod>...     install specific modules
+pve-toolbox update [mod]...      update (all installed if none given)
+pve-toolbox check [mod]...       report available updates, change nothing
+pve-toolbox status [mod]         detailed status
+pve-toolbox doctor               read-only host and module health audit
 pve-toolbox uninstall <mod>...
-pve-toolbox self-update        git pull this checkout (git installs only)
-pve-toolbox help [command]     list commands, or one command's usage and flags
-pve-toolbox --version          print the installed version
+pve-toolbox self-update          git pull this checkout (git installs only)
+pve-toolbox help [command]       list commands, or one command's usage and flags
+pve-toolbox --version            print the installed version
 ```
 
 Flags: `-y` non-interactive (modules read their env vars instead of
 prompting), `-f` force, `--json` versioned output, `--quiet` exit-status-only
 output, `--color=auto|always|never` colour output, `-V` version, `-h` help.
-JSON and quiet output are available for `status`, `check`, and `doctor`.
+JSON output is available for `status`, `check`, `doctor`, and `list`; quiet
+output is available for `status`, `check`, and `doctor`.
 
 ## Help
 

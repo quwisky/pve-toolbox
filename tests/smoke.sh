@@ -118,6 +118,13 @@ got=$(complete_words 3 ./pve-toolbox list storage "")
 [[ -z $got ]] || fail "list takes one tag, got: $got"
 pass "bash offers tags for list, once"
 
+# --json is accepted anywhere on the line, so it does not stop tag
+# completion for list.
+got=$(complete_words 3 ./pve-toolbox list --json "")
+has "$got" storage || fail "list --json offered no tags, got: $got"
+has "$got" zfs     || fail "list --json dropped a tag, got: $got"
+pass "bash offers tags after list --json"
+
 # Flags are accepted anywhere, so the command is the first non-flag word.
 got=$(complete_words 3 ./pve-toolbox -y install "")
 has "$got" zfs-scrub || fail "a flag before the command broke it, got: $got"

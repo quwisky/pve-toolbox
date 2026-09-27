@@ -168,7 +168,7 @@ declare -A CLI_SUMMARY=(
 declare -A CLI_USAGE=(
     [menu]="menu"
     [ui]="ui"
-    [list]="list [tag]"
+    [list]="list [--json] [tag]"
     [install]="install <module>..."
     [update]="update [module]..."
     [check]="check [--json|--quiet] [module]..."
@@ -181,6 +181,7 @@ declare -A CLI_USAGE=(
     [help]="help [command]"
 )
 declare -A CLI_FLAGS=(
+    [list]="--json"
     [check]="--json --quiet"
     [status]="--json --quiet"
     [doctor]="--json --quiet"
@@ -198,7 +199,7 @@ declare -A CLI_DESC=(
     [link]="Packaged installs refuse this command."
 )
 declare -A CLI_EXAMPLES=(
-    [list]=$'pve-toolbox list\npve-toolbox list storage'
+    [list]=$'pve-toolbox list\npve-toolbox list storage\npve-toolbox list --json'
     [install]=$'pve-toolbox install config-backup\npve-toolbox -y install zfs-scrub'
     [status]=$'pve-toolbox status\npve-toolbox status --json zfs-scrub'
     [check]='pve-toolbox check --quiet'
@@ -236,7 +237,7 @@ cli_help_overview() {
     for c in "${CLI_COMMANDS[@]}"; do printf '  %-12s %s\n' "$c" "${CLI_SUMMARY[$c]}"; done
     printf '\nOptions:\n'
     for spec in "${CLI_GLOBAL_FLAGS[@]}"; do cli_print_option "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
-    cli_print_option "--json, --quiet" "machine-readable output (status, check, doctor); see 'pve-toolbox help status'"
+    cli_print_option "--json, --quiet" "machine-readable output (status, check, doctor); --json also for list; see 'pve-toolbox help status'"
     printf "\nRun 'pve-toolbox help <command>' for details.\n"
 }
 
@@ -383,7 +384,38 @@ module_has_function() { # module_has_function <module> <function>
     )
 }
 
+# One process-lifetime cache of every module's status line, filled once per
+# command, serially, by load_statuses, and used only where the same module
+# is asked about more than once in a command: _complete installed, and the
+# no-module-names form of update/check/status, which each check
+# is_installed on every module and then act on the installed ones. list
+# never loads it: it prints one module at a time and a tag filter is applied
+# before status is computed, so caching every module up front would compute
+# status for modules list is about to discard. Never invalidated and never
+# refreshed mid-process: each launcher run reads a consistent snapshot. The
+# menu and the ui never load it either, so they keep re-reading status live,
+# one module at a time.
+declare -gA MODULE_STATUS=()
+MODULE_STATUS_LOADED=0
+
+# Fill MODULE_STATUS for every discovered module, one module_status call at a
+# time. Idempotent: a second call is a no-op.
+load_statuses() {
+    [[ $MODULE_STATUS_LOADED -eq 1 ]] && return 0
+    discover
+    local m st
+    for m in "${MODULES[@]}"; do
+        st=$(run_module "$m" module_status 2>/dev/null) || true
+        MODULE_STATUS[$m]=${st:-not installed}
+    done
+    MODULE_STATUS_LOADED=1
+}
+
 status_line() { # status_line <module> -> short status, "not installed" if it is not
+    if [[ $MODULE_STATUS_LOADED -eq 1 && -n ${MODULE_STATUS[$1]+x} ]]; then
+        printf '%s' "${MODULE_STATUS[$1]}"
+        return 0
+    fi
     local st
     st=$(run_module "$1" module_status 2>/dev/null) || true
     printf '%s' "${st:-not installed}"
@@ -508,13 +540,31 @@ cmd_lxc_update() {
     bash "$MODULE_DIR/lxc-update/run.sh" "$@"
 }
 
+# module_tags_of <module> -> fills the caller's local 'tags' array with
+# <module>'s tags, split on any run of whitespace, first line of MODULE_TAGS
+# only (bash's own 'read -a' record/field splitting). The one definition of
+# what a module's tags are: module_has_tag, module_tags, and list --json's
+# tags array all go through it, so they can never disagree.
+module_tags_of() {
+    read -r -a tags <<<"$(meta "$1" MODULE_TAGS)"
+}
+
+# module_has_tag <module> <tag>: the module carries <tag>.
+module_has_tag() {
+    local t
+    local -a tags
+    module_tags_of "$1"
+    for t in "${tags[@]}"; do [[ $t != "$2" ]] || return 0; done
+    return 1
+}
+
 # Every tag any module carries, sorted, once each.
 module_tags() {
     local m
     local -a tags
     discover
     for m in "${MODULES[@]}"; do
-        read -r -a tags <<<"$(meta "$m" MODULE_TAGS)"
+        module_tags_of "$m"
         if [[ ${#tags[@]} -gt 0 ]]; then
             printf '%s\n' "${tags[@]}"
         fi
@@ -533,8 +583,34 @@ cmd_list() {
             cli_usage_error "unknown tag: $tag" list "${s[@]}"
         fi
     fi
+    # Neither branch below loads the MODULE_STATUS cache: each shown module's
+    # status is computed once, right where it is printed. A tag filter is
+    # applied first (the 'continue'), so a module the filter discards never
+    # has its module_status run at all, and plain 'list' still streams a
+    # module at a time instead of waiting on every module up front.
+    if [[ $OUTPUT_JSON -eq 1 ]]; then
+        local json='[]' item st
+        local -a tags
+        for m in "${MODULES[@]}"; do
+            [[ -n $tag ]] && ! module_has_tag "$m" "$tag" && continue
+            st=$(status_line "$m")
+            module_tags_of "$m"
+            item=$(jq -cn --arg name "$m" \
+                --arg title "$(report_clean_text "$(meta "$m" MODULE_TITLE)")" \
+                --arg description "$(report_clean_text "$(meta "$m" MODULE_DESC)")" \
+                --arg raw "$st" \
+                --arg status "$(report_clean_text "$st")" \
+                --args '{name:$name,title:$title,description:$description,
+                  tags:$ARGS.positional,
+                  installed:($raw != "not installed"),status:$status}' \
+                "${tags[@]}")
+            json=$(jq -cn --argjson a "$json" --argjson i "$item" '$a + [$i]')
+        done
+        jq -n --argjson modules "$json" '{schema_version:1,command:"list",modules:$modules}'
+        return 0
+    fi
     for m in "${MODULES[@]}"; do
-        [[ -n $tag && " $(meta "$m" MODULE_TAGS) " != *" $tag "* ]] && continue
+        [[ -n $tag ]] && ! module_has_tag "$m" "$tag" && continue
         printf '%s%-24s%s %s\n' "$c_bold" "$m" "$c_reset" "$(meta "$m" MODULE_DESC)"
         printf '  %sstatus: %s | tags: %s%s\n' \
             "$c_dim" "$(status_line "$m")" "$(meta "$m" MODULE_TAGS)" "$c_reset"
@@ -550,6 +626,7 @@ cmd_each() { # cmd_each <function> [--check] <modules...>
     local list=("$@") m
     [[ $fn != module_update || ${#list[@]} == 0 ]] || TOOLBOX_UPDATE_EXPLICIT=1
     if [[ ${#list[@]} -eq 0 ]]; then
+        load_statuses
         for m in "${MODULES[@]}"; do
             is_installed "$m" || continue
             list+=("$m")
@@ -591,6 +668,7 @@ cmd_module_report() { # cmd_module_report <status|check> <function> [--check] <m
     report_reset "$command"
     discover
     if [[ $explicit -eq 0 ]]; then
+        load_statuses
         for m in "${MODULES[@]}"; do
             is_installed "$m" || continue
             list+=("$m")
@@ -861,7 +939,7 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags|flags <cmd>|fla
         modules)
             discover; printf '%s\n' "${MODULES[@]}" ;;
         installed)
-            discover
+            load_statuses
             # An if, not an &&: with nothing installed the last iteration
             # would otherwise decide the exit status.
             for m in "${MODULES[@]}"; do

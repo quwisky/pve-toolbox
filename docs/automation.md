@@ -1,20 +1,23 @@
 # Automation output
 
 `status`, `check`, and `doctor` support versioned JSON and output-free status
-checks:
+checks. `list` also supports `--json`, for a machine-readable module
+inventory, but does not accept `--quiet`:
 
 ```bash
 pve-toolbox status --json
 pve-toolbox check --json
 pve-toolbox doctor --json
+pve-toolbox list --json
 
 pve-toolbox check --quiet
 ```
 
 The options are deliberately limited to read-only commands. `--json` and
-`--quiet` cannot be combined because quiet mode promises that no report is
-written. Both also force colour off (`--color=never`) regardless of `--color`
-or `NO_COLOR`, since this output has to stay parseable.
+`--quiet` cannot be combined on a command that accepts both, because quiet
+mode promises that no report is written. Both also force colour off
+(`--color=never`) regardless of `--color` or `NO_COLOR`, since this output has
+to stay parseable.
 
 ## Colour
 
@@ -69,8 +72,9 @@ run 'pve-toolbox help' for usage
 
 This covers an unknown command, a flag the given command does not accept, an
 unknown module or module tag, and an unknown top-level flag. An unknown tag to
-`list` (for example `pve-toolbox list nope`) is a usage error too; earlier
-releases printed nothing for a tag no module carries.
+`list` (for example `pve-toolbox list nope`, or `pve-toolbox list --json nope`)
+is a usage error too; earlier releases printed nothing for a tag no module
+carries.
 
 Quiet mode prints nothing. Capture its status explicitly so Bash strict mode
 does not treat an expected warning as an unhandled failure:
@@ -120,6 +124,39 @@ sort them.
 An individual module failure is represented as a failed result inside valid
 JSON. It does not truncate the document or prevent later modules from being
 checked.
+
+## `list --json`
+
+`list --json` prints the module inventory rather than a result report, so its
+document is shaped differently from `status`, `check`, and `doctor` above,
+though it carries the same `schema_version` and `command`:
+
+```json
+{
+  "schema_version": 1,
+  "command": "list",
+  "modules": [
+    {
+      "name": "zfs-scrub",
+      "title": "ZFS scrub + Discord",
+      "description": "scheduled scrub per pool, Discord message on start and on result",
+      "tags": ["storage", "zfs", "monitoring", "notify"],
+      "installed": true,
+      "status": "pools:2  [rpool tank]"
+    }
+  ]
+}
+```
+
+`modules` retains module discovery order, filtered by the optional tag
+argument exactly like the plain `list [tag]` output. `name` is the module's
+directory name, the same identifier every other command takes. `tags` is
+always an array, empty when the module declares none. `installed` reflects
+`module_status`: `false` only when that line is exactly `not installed`.
+`title`, `description`, and `status` pass through the same cleanup as the
+result reports above (see [Redaction](#redaction)) before they are rendered,
+so a module string containing a credential-shaped value, a tab, or a newline
+still comes out as valid JSON. `list --json` does not accept `--quiet`.
 
 ## Redaction
 
