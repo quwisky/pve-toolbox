@@ -149,13 +149,17 @@ for target in \
 do
     [[ -f $target ]] || fail "package omitted ${target#"$WORK/root"}"
 done
-man_page=$(gzip -dc "$WORK/root/usr/share/man/man1/pve-toolbox.1.gz")
+man_page=$(gzip -dc "$WORK/root/usr/share/man/man1/pve-toolbox.1.gz") \
+    || fail "could not decompress the packaged man page"
 [[ $man_page == *".B help"* ]] || fail "packaged man page is missing the help command"
 [[ $man_page == *"NO_COLOR"* ]] || fail "packaged man page is missing NO_COLOR"
 for placeholder in @COMMANDS@ @OPTIONS@ @DATE@; do
-    count=$(grep -Fc -- "$placeholder" <<<"$man_page")
-    [[ $count == 0 ]] \
-        || fail "packaged man page still contains the $placeholder placeholder"
+    # grep -c would print 0 and still exit 1 on no match, which set -e
+    # would treat as this line failing; test presence with -q under `if`
+    # instead, where a non-matching (exit 1) result is the success case.
+    if grep -Fq -- "$placeholder" <<<"$man_page"; then
+        fail "packaged man page still contains the $placeholder placeholder"
+    fi
 done
 pass "packaged man page is generated at build time"
 cmp -s "$ROOT/pve-toolbox" "$WORK/root/usr/bin/pve-toolbox" \
