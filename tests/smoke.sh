@@ -69,7 +69,7 @@ has_not() { [[ " $1 " != *" $2 "* ]]; }
 
 # Commands, and every verb the launcher dispatches.
 got=$(complete_words 1 ./pve-toolbox "")
-for verb in menu ui list install update check status doctor uninstall link self-update; do
+for verb in menu ui list install update check status doctor config uninstall link self-update; do
     has "$got" "$verb" || fail "commands missing $verb, got: $got"
 done
 pass "bash offers every command"
@@ -150,6 +150,25 @@ got=$(complete_words 2 ./pve-toolbox lxc-update "-")
 has "$got" --dry-run || fail "lxc-update did not offer --dry-run, got: $got"
 has_not "$got" --yes || fail "lxc-update offered --yes, which its runner refuses, got: $got"
 pass "bash offers a command's own flags, not another command's"
+
+# config takes 'show', then exactly one module name; --json anywhere.
+got=$(complete_words 2 ./pve-toolbox config "")
+[[ $got == show ]] || fail "config should offer only show, got: $got"
+got=$(complete_words 3 ./pve-toolbox config show "")
+has "$got" zfs-scrub || fail "config show offered no modules, got: $got"
+has "$got" komodo-periphery || fail "config show dropped a module, got: $got"
+got=$(complete_words 3 ./pve-toolbox config show "zfs-s")
+[[ $got == zfs-scrub ]] || fail "config show zfs-s<TAB> should give zfs-scrub, got: $got"
+got=$(complete_words 4 ./pve-toolbox config show zfs-scrub "")
+[[ -z $got ]] || fail "config show takes one module, got: $got"
+got=$(complete_words 3 ./pve-toolbox config bogus "")
+[[ -z $got ]] || fail "config bogus offered modules, got: $got"
+got=$(complete_words 4 ./pve-toolbox config --json show "")
+has "$got" zfs-scrub || fail "config --json show offered no modules, got: $got"
+got=$(complete_words 2 ./pve-toolbox config "-")
+has "$got" --json || fail "config did not offer --json, got: $got"
+has_not "$got" --quiet || fail "config offered --quiet, which it does not accept, got: $got"
+pass "bash completes config show and one module"
 
 # help completes command names, the same list as the bare prompt.
 got=$(complete_words 2 ./pve-toolbox help "")

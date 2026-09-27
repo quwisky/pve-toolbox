@@ -15,6 +15,13 @@
 #                          module_update must guard TOOLBOX_UPDATE_EXPLICIT.
 #                          --check remains read-only regardless of selection.
 #     MODULE_HOST_ONLY  1 if it must run on the PVE host rather than an LXC
+#     MODULE_CONFIG_PUBLIC optional: the conf keys `pve-toolbox config show`
+#                       may print the value of, space separated; shell glob
+#                       patterns such as JOB_*_SRC work. Hidden by default:
+#                       every key not listed shows only whether it is set, so
+#                       leave out anything that could ever hold a secret -
+#                       a token, a webhook URL, a password, a remote URL that
+#                       can embed credentials, a key or token file path.
 #
 #   Functions:
 #     module_install      interactive install / reconfigure
@@ -28,6 +35,18 @@
 #     module_doctor       emit read-only health results with doctor_result
 #                         (optional; called only for installed modules)
 #     module_uninstall    remove what install created
+#     module_config_files optional: extra conf names `config show` displays
+#                         after <module>.conf, one per line, each matching
+#                         ^[a-z0-9][a-z0-9-]*$. Read-only: print names and
+#                         nothing else, and exit 0. For example:
+#                           module_config_files() {
+#                               local id
+#                               for id in $(conf_get "$MODULE_NAME" MY_IDS); do
+#                                   if [[ $id =~ ^[0-9]+$ ]]; then
+#                                       printf '%s-%s\n' "$MODULE_NAME" "$id"
+#                                   fi
+#                               done
+#                           }
 #
 # Everything in lib/common.sh is already sourced: info/ok/warn/die/step,
 # ask/ask_valid/ask_int/ask_choice/ask_schedule/ask_yn/ask_secret/confirm,
@@ -50,6 +69,9 @@ MODULE_TITLE="Template"
 MODULE_DESC="copy this directory to start a new module"
 MODULE_TAGS="example"
 MODULE_HOST_ONLY=0
+# KEEP_DAYS is a plain number, so config show may print it; SOME_TOKEN is
+# not listed, so it shows only as "(set, hidden)".
+MODULE_CONFIG_PUBLIC="KEEP_DAYS"
 
 module_install() {
     require_root
@@ -64,6 +86,7 @@ module_install() {
     dim "  you picked: $answer, keeping $keep days"
 
     conf_set  "$MODULE_NAME" SOME_TOKEN "$answer"        # 0600, secrets
+    conf_set  "$MODULE_NAME" KEEP_DAYS "$keep"           # 0600, public
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"  # 0644, facts
     ok "installed"
 }

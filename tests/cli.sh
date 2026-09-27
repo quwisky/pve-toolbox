@@ -13,7 +13,9 @@ WORK=$(mktemp -d)
 # world-readable copy that an unprivileged user must be able to traverse;
 # $WORK itself stays mode 0700, so that copy cannot live inside it.
 UNPRIV_ROOT=""
-trap 'rm -rf -- "$WORK" "$UNPRIV_ROOT"' EXIT
+# The same, for the config show "needs root" check's fixture copy.
+UNPRIV_CONF_ROOT=""
+trap 'rm -rf -- "$WORK" "$UNPRIV_ROOT" "$UNPRIV_CONF_ROOT"' EXIT
 
 pass() { printf 'ok  %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
@@ -97,7 +99,7 @@ pass "colour is decided before any argument-parsing usage error"
 # --- help ---------------------------------------------------------------------
 
 help=$(launch --help)
-for c in menu ui list install update check status doctor lxc-update uninstall link self-update help; do
+for c in menu ui list install update check status doctor config lxc-update uninstall link self-update help; do
     [[ $help == *"  $c "* ]] || fail "--help does not list $c"
 done
 [[ $help == *"pve-toolbox help <command>"* ]] || fail "--help lacks the per-command hint"
@@ -105,9 +107,11 @@ done
     || fail "--help no longer mentions --json/--quiet and where they apply"
 [[ $help == *"--json, --quiet"*"--json"*"also for list"* ]] \
     || fail "--help does not say --json also works for list: $help"
+[[ $help == *"--json, --quiet"*"--json"*"also for list and config"* ]] \
+    || fail "--help does not say --json also works for config: $help"
 [[ $help != *"set -euo"* && $help != *"#"* ]] || fail "--help leaked source text"
 [[ $(launch help) == "$help" ]] || fail "'help' and '--help' differ"
-for c in list install status lxc-update; do
+for c in list install status config lxc-update; do
     a=$(launch help "$c") || fail "help $c failed"
     b=$(launch "$c" --help) || fail "$c --help failed"
     [[ $a == "$b" ]] || fail "help $c and $c --help differ"
@@ -121,13 +125,22 @@ list_help=$(launch help list)
 [[ $list_help == *"pve-toolbox list --json"* ]] \
     || fail "help list lacks a --json example: $list_help"
 [[ $(launch help install) == *"Requires root"* ]] || fail "help install does not say it needs root"
+config_help=$(launch help config)
+[[ $config_help == *"Usage: pve-toolbox config show [--json] <module>"* ]] \
+    || fail "help config lacks its usage line: $config_help"
+[[ $config_help == *"Requires root"* ]] || fail "help config does not say it needs root: $config_help"
+[[ $config_help == *"--json"*"emit versioned, machine-readable JSON"* ]] \
+    || fail "help config does not document --json: $config_help"
+[[ $config_help == *"pve-toolbox config show zfs-scrub"* \
+    && $config_help == *"pve-toolbox config show --json config-backup"* ]] \
+    || fail "help config lacks its examples: $config_help"
 [[ $(launch help lxc-update) == *"--dry-run"* ]] || fail "help lxc-update lacks its flags"
 lxc_help=$(launch help lxc-update)
 lxc_root_count=$(grep -o "Requires root" <<<"$lxc_help" | wc -l)
 [[ $lxc_root_count -eq 1 ]] \
     || fail "help lxc-update should say 'Requires root' exactly once, got $lxc_root_count"
 # Wrapped description lines carry no trailing spaces, in any command's help.
-for c in "" menu ui list install update check status doctor lxc-update uninstall link self-update help; do
+for c in "" menu ui list install update check status doctor config lxc-update uninstall link self-update help; do
     ! launch help ${c:+"$c"} | grep -n ' $' \
         || fail "'help $c' has a line ending in a space"
 done
@@ -379,6 +392,14 @@ list_block=${man#*"$list_marker"}
 list_block=${list_block%%"$next_marker"*}
 [[ $list_block == *".RS"*".B $(mroff --json)"* ]] \
     || fail "man page's list entry lacks its own --json flag: $list_block"
+# config's entry carries its usage, its own --json and "Requires root.".
+config_marker=".B $(mroff 'config show [--json] <module>')"
+[[ $man == *"$config_marker"* ]] || fail "man page lacks config's usage"
+config_block=${man#*"$config_marker"}
+config_block=${config_block%%".TP"$'\n'".B $(mroff 'lxc-update')"*}
+[[ $config_block == *"Requires root."* ]] || fail "man page's config entry does not say Requires root.: $config_block"
+[[ $config_block == *".RS"*".B $(mroff --json)"* ]] \
+    || fail "man page's config entry lacks its own --json flag: $config_block"
 [[ $(SOURCE_DATE_EPOCH=1790000000 ./pve-toolbox _man) == "$man" ]] || fail "_man is not reproducible"
 if command -v groff >/dev/null 2>&1; then
     warn_out=$(printf '%s\n' "$man" | groff -man -ww -z 2>&1) || fail "groff failed: $warn_out"
@@ -795,3 +816,310 @@ for cmd in "list y" "list --json y"; do
         || fail "'$cmd' exited $rc, want 64: y is after the embedded newline and must not be a known tag"
 done
 pass "list --json builds tags from the same split module_has_tag uses, embedded newline included"
+
+# --- config show ----------------------------------------------------------------
+
+# A fixture root with modules whose configuration config show displays:
+#   e-conf    declares E_DIR and E_JOB_*_SRC public and lists an extra file
+#   f-none    keeps no configuration at all
+#   g-hidden  declares nothing public, so every key is hidden
+#   h-badname lists a configuration name that would escape the directory
+#   i-fails   fails while listing its extra files
+# Every planted secret contains SECRET, so one substring check covers them.
+conf_root=$(tmp)
+mkdir -p "$conf_root/lib" "$conf_root/modules"
+cp "$ROOT"/lib/*.sh "$conf_root/lib/"
+cp "$ROOT/VERSION" "$ROOT/pve-toolbox" "$conf_root/"
+chmod 0755 "$conf_root/pve-toolbox"
+conf_module() { # conf_module <name> <line>... -> writes a fixture module
+    mkdir -p "$conf_root/modules/$1"
+    local name=$1; shift
+    printf '%s\n' "MODULE_NAME=\"$name\"" "MODULE_TITLE=\"$name\"" \
+        'MODULE_DESC="config show fixture"' 'MODULE_TAGS="fixture"' \
+        'MODULE_HOST_ONLY=0' 'module_status() { printf installed; }' "$@" \
+        > "$conf_root/modules/$name/module.sh"
+}
+conf_module e-conf 'MODULE_CONFIG_PUBLIC="E_DIR E_JOB_*_SRC"' \
+    'module_config_files() { printf "%s\n" e-conf-extra; }'
+conf_module f-none
+conf_module g-hidden
+conf_module h-badname 'module_config_files() { printf "%s\n" "../escape"; }'
+conf_module i-fails 'module_config_files() { return 3; }'
+
+conf_launch() { # conf_launch <conf-dir> [args...] -> the fixture launcher
+    local dir=$1; shift
+    TOOLBOX_BIN_DIR=$(tmp) TOOLBOX_STATE_DIR=$(tmp) TOOLBOX_SYSTEMD_DIR=$(tmp) \
+    TOOLBOX_CONF_DIR=$dir PVE_TOOLBOX_ROOT="$conf_root" "$conf_root/pve-toolbox" "$@"
+}
+conf_write() { # conf_write <dir> <name> <line>... -> <dir>/<name>.conf, mode 0600
+    local dir=$1 name=$2; shift 2
+    ( umask 077; printf '%s\n' "$@" > "$dir/$name.conf" )
+    chmod 0600 "$dir/$name.conf"
+}
+# The planted configuration: a webhook and tokens that must stay hidden, a
+# public directory and job source, an empty key, a key written twice, and a
+# multi-line hidden value whose second line looks like a public key.
+conf_plant() { # conf_plant <dir>
+    conf_write "$1" e-conf \
+        '# managed by pve-toolbox / e-conf' \
+        "E_DIR='/srv/e'" \
+        "E_WEBHOOK='https://discord.com/api/webhooks/1/SECRETVALUE'" \
+        "E_DIR_TOKEN='tok-SECRET2'" \
+        "E_JOB_A_SRC='tank/a'" \
+        "E_EMPTY=''" \
+        "E_MULTI='first line" \
+        "E_JOB_B_SRC=SECRET4 inside a hidden value'" \
+        "E_DIR='/srv/e'"
+    conf_write "$1" e-conf-extra "E_DIR='/srv/x'" "E_KEY='SECRET3'"
+}
+no_secret() { # no_secret <what> <text>
+    [[ $2 != *SECRET* ]] || fail "$1 leaked a hidden value: $2"
+}
+expect_config_fail() { # expect_config_fail <what> <want-substring> <conf-dir> [args...]
+    local what=$1 want=$2 dir=$3 rc=0 out err errfile
+    shift 3
+    errfile=$(tmp)/stderr
+    out=$(conf_launch "$dir" "$@" 2>"$errfile") || rc=$?
+    err=$(<"$errfile")
+    [[ $rc -eq 1 ]] || fail "$what: exited $rc, want 1: $out $err"
+    [[ $err == *"$want"* ]] || fail "$what: the error did not say '$want': $err"
+    [[ -z $out ]] || fail "$what: printed configuration before refusing: $out"
+    no_secret "$what" "$out $err"
+}
+
+# Usage errors come before the root check, so they are the same for anyone.
+expect_conf_usage() { # expect_conf_usage <want-substring> <args...>
+    local want=$1 rc=0 out; shift
+    out=$(conf_launch "$(tmp)" "$@" 2>&1) || rc=$?
+    [[ $rc -eq 64 ]] || fail "'$*' exited $rc, want 64: $out"
+    [[ $out == *"$want"* ]] || fail "'$*' did not say '$want': $out"
+    [[ $out == *"run 'pve-toolbox help config' for usage"* ]] \
+        || fail "'$*' did not point at 'help config': $out"
+}
+expect_conf_usage "config needs a subcommand" config
+expect_conf_usage "did you mean: show" config shwo e-conf
+expect_conf_usage "config show needs a module name" config show
+expect_conf_usage "unknown module: nosuch" config show nosuch
+expect_conf_usage "did you mean: e-conf" config show e-cnf
+expect_conf_usage "unknown module: ../modules/e-conf" config show ../modules/e-conf
+expect_conf_usage "unknown module: _template" config show _template
+expect_conf_usage "takes one module name" config show e-conf f-none
+expect_conf_usage "--quiet is not supported by 'config'" config show --quiet e-conf
+pass "config show usage errors exit 64 with suggestions, before the root check"
+
+if [[ $EUID -ne 0 ]]; then
+    dir=$(tmp); conf_plant "$dir"
+    rc=0; out=$(conf_launch "$dir" config show e-conf 2>&1) || rc=$?
+    [[ $rc -eq 1 ]] || fail "config show as a normal user exited $rc, want 1: $out"
+    [[ $out == *"needs root"* ]] || fail "config show as a normal user did not say it needs root: $out"
+    no_secret "config show as a normal user" "$out"
+    rc=0; out=$(conf_launch "$dir" config show --json e-conf 2>&1) || rc=$?
+    [[ $rc -eq 1 && $out == *"needs root"* ]] \
+        || fail "config show --json as a normal user did not refuse (exit $rc): $out"
+    no_secret "config show --json as a normal user" "$out"
+    pass "config show needs root"
+    if [[ ${CLI_ROOT_TEST_REQUIRED:-0} -eq 1 ]]; then
+        fail "config show root cases required but the suite is not running as root"
+    fi
+    printf 'skip config show root cases (needs root)\n'
+else
+    # As root, the refusal is proven for an unprivileged user from a
+    # world-readable copy of the fixture, the same way _man is above.
+    if command -v setpriv >/dev/null 2>&1 \
+        && setpriv --reuid=65534 --regid=65534 --clear-groups true 2>/dev/null; then
+        UNPRIV_CONF_ROOT=$(mktemp -d)
+        cp -r "$conf_root/." "$UNPRIV_CONF_ROOT/"
+        chmod -R a+rX "$UNPRIV_CONF_ROOT"
+        dir=$(tmp); conf_plant "$dir"
+        rc=0
+        out=$(TOOLBOX_CONF_DIR="$dir" PVE_TOOLBOX_ROOT="$UNPRIV_CONF_ROOT" \
+            HOME=/nonexistent-pve-toolbox-home \
+            setpriv --reuid=65534 --regid=65534 --clear-groups \
+            "$UNPRIV_CONF_ROOT/pve-toolbox" config show e-conf 2>&1) || rc=$?
+        [[ $rc -eq 1 ]] || fail "config show as uid 65534 exited $rc, want 1: $out"
+        [[ $out == *"needs root"* ]] || fail "config show as uid 65534 did not say it needs root: $out"
+        no_secret "config show as uid 65534" "$out"
+        pass "config show needs root (checked as uid 65534)"
+    else
+        printf 'skip config show unprivileged check, cannot switch to uid 65534 (setpriv missing or the uid is unmapped in this namespace)\n'
+    fi
+
+    # --- what it shows
+    dir=$(tmp); conf_plant "$dir"
+    errfile=$(tmp)/stderr
+    out=$(conf_launch "$dir" config show e-conf 2>"$errfile") \
+        || fail "config show e-conf failed: $out $(<"$errfile")"
+    err=$(<"$errfile")
+    [[ -z $err ]] || fail "config show e-conf wrote to stderr: $err"
+    no_secret "config show" "$out"
+    for want in /srv/e tank/a /srv/x; do
+        [[ $out == *"$want"* ]] || fail "config show did not show public value $want: $out"
+    done
+    for key in E_WEBHOOK E_DIR_TOKEN E_MULTI E_KEY; do
+        grep -Eq "^  $key +\(set, hidden\)$" <<<"$out" \
+            || fail "config show did not show $key as (set, hidden): $out"
+    done
+    grep -Eq '^  E_EMPTY +\(not set\)$' <<<"$out" || fail "config show did not show E_EMPTY as (not set): $out"
+    grep -Eq '^  E_DIR +/srv/e$' <<<"$out" || fail "config show did not align E_DIR with its value: $out"
+    [[ $out != *E_JOB_B_SRC* ]] \
+        || fail "config show read a line inside a multi-line value as a key: $out"
+    # Keys in file order, once each; the main file before the extra one.
+    order=$(grep -oE '^  E_[A-Z_]+' <<<"$out" | tr -d ' ' | tr '\n' ' ')
+    [[ $order == "E_DIR E_WEBHOOK E_DIR_TOKEN E_JOB_A_SRC E_EMPTY E_MULTI E_DIR E_KEY " ]] \
+        || fail "config show keys not in file order, once per file: $order"
+    [[ $out == *e-conf*E_DIR*e-conf-extra*E_KEY* ]] \
+        || fail "config show did not head each file with its name: $out"
+    [[ $out != *"$ESC"* ]] || fail "config show wrote colour to a pipe: $out"
+    pass "config show displays public values and hides every other one"
+
+    json=$(conf_launch "$dir" config show --json e-conf 2>"$errfile") \
+        || fail "config show --json e-conf failed: $json $(<"$errfile")"
+    [[ -z $(<"$errfile") ]] || fail "config show --json wrote to stderr: $(<"$errfile")"
+    no_secret "config show --json" "$json"
+    [[ $json != *"$ESC"* ]] || fail "config show --json contained colour escapes: $json"
+    jq -e '.schema_version == 1 and .command == "config" and .module == "e-conf"' \
+        <<<"$json" >/dev/null || fail "config show --json envelope wrong: $json"
+    jq -e '[.files[].name] == ["e-conf","e-conf-extra"]' <<<"$json" >/dev/null \
+        || fail "config show --json files wrong: $json"
+    jq -e '.files[0].keys == [
+            {key:"E_DIR",set:true,hidden:false,value:"/srv/e"},
+            {key:"E_WEBHOOK",set:true,hidden:true},
+            {key:"E_DIR_TOKEN",set:true,hidden:true},
+            {key:"E_JOB_A_SRC",set:true,hidden:false,value:"tank/a"},
+            {key:"E_EMPTY",set:false,hidden:true},
+            {key:"E_MULTI",set:true,hidden:true}]' <<<"$json" >/dev/null \
+        || fail "config show --json keys of e-conf wrong: $json"
+    jq -e '.files[1].keys == [
+            {key:"E_DIR",set:true,hidden:false,value:"/srv/x"},
+            {key:"E_KEY",set:true,hidden:true}]' <<<"$json" >/dev/null \
+        || fail "config show --json keys of e-conf-extra wrong: $json"
+    jq -e '[.files[].keys[] | select(.hidden) | has("value")] | any | not' <<<"$json" >/dev/null \
+        || fail "config show --json gave a hidden key a value: $json"
+    pass "config show --json carries a value only for public keys"
+
+    # A module that declares nothing public shows every key hidden.
+    dir=$(tmp)
+    conf_write "$dir" g-hidden "G_PATH='/srv/SECRET-looking'" "G_EMPTY=''"
+    out=$(conf_launch "$dir" config show g-hidden) || fail "config show g-hidden failed: $out"
+    no_secret "config show g-hidden" "$out"
+    grep -Eq '^  G_PATH +\(set, hidden\)$' <<<"$out" || fail "an undeclared key was not hidden: $out"
+    grep -Eq '^  G_EMPTY +\(not set\)$' <<<"$out" || fail "an undeclared empty key was not (not set): $out"
+    json=$(conf_launch "$dir" config show --json g-hidden) || fail "config show --json g-hidden failed"
+    jq -e '[.files[].keys[] | has("value")] | any | not' <<<"$json" >/dev/null \
+        || fail "config show --json showed a value for a module declaring nothing public: $json"
+    pass "config show hides every key of a module that declares none public"
+
+    # Nothing saved: a message and exit 0, or an empty files array.
+    dir=$(tmp)
+    out=$(conf_launch "$dir" config show f-none) || fail "config show f-none failed: $out"
+    [[ $out == "no saved configuration for f-none" ]] || fail "config show f-none said: $out"
+    out=$(conf_launch "$dir/absent" config show f-none) \
+        || fail "config show with no configuration directory failed: $out"
+    [[ $out == "no saved configuration for f-none" ]] \
+        || fail "config show with no configuration directory said: $out"
+    json=$(conf_launch "$dir" config show --json f-none) || fail "config show --json f-none failed"
+    jq -e '.module == "f-none" and .files == []' <<<"$json" >/dev/null \
+        || fail "config show --json f-none did not give an empty files array: $json"
+    pass "config show reports a module with no saved configuration"
+
+    # Public values are still cleaned: credentials in a URL are redacted and
+    # control characters never reach the terminal or break the JSON.
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_DIR='https://user:SECRET6@host.example/x'" \
+        "E_JOB_A_SRC='tank/\"q\"'\$'\\e''[31mred\\x'"
+    out=$(conf_launch "$dir" config show e-conf) || fail "config show with odd public values failed: $out"
+    no_secret "config show of a URL with credentials" "$out"
+    [[ $out == *"[redacted]"* ]] || fail "config show did not redact a credential URL: $out"
+    [[ $out != *$'\e'* ]] || fail "config show printed a raw escape character: $out"
+    json=$(conf_launch "$dir" config show --json e-conf) || fail "config show --json with odd public values failed"
+    no_secret "config show --json of a URL with credentials" "$json"
+    [[ $json != *$'\e'* ]] || fail "config show --json printed a raw escape character: $json"
+    [[ $(jq -r '.files[0].keys[1].value' <<<"$json") == 'tank/"q"'$'\e''[31mred\x' ]] \
+        || fail "config show --json mangled a public value: $json"
+    pass "config show cleans public values"
+
+    # The file is sourced in a subshell: its own variables cannot redirect
+    # what is printed, and anything it writes is discarded.
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_WEBHOOK='SECRET7'" "key='E_WEBHOOK'" "f='E_WEBHOOK'" \
+        "value='SECRET8'" "name='E_WEBHOOK'" "E_DIR='/srv/e'" \
+        'echo "SECRET9 $E_WEBHOOK"' 'echo "SECRET10 $E_WEBHOOK" >&2'
+    rc=0; out=$(conf_launch "$dir" config show e-conf 2>&1) || rc=$?
+    [[ $rc -eq 0 ]] || fail "config show of a file with colliding names exited $rc: $out"
+    no_secret "config show of a file with colliding names" "$out"
+    grep -Eq '^  E_DIR +/srv/e$' <<<"$out" || fail "config show lost E_DIR next to colliding names: $out"
+    rc=0; out=$(conf_launch "$dir" config show --json e-conf 2>&1) || rc=$?
+    [[ $rc -eq 0 ]] || fail "config show --json of a file with colliding names exited $rc: $out"
+    no_secret "config show --json of a file with colliding names" "$out"
+    # Nor by assigning the reader's own reserved names, as a key or mid-line:
+    # making every key public that way fails the read instead.
+    for line in "_cfgscan_x='1'" ": ; _cfgscan_patterns=('*')" ": ; _cfgscan_live=(E_WEBHOOK)"; do
+        dir=$(tmp)
+        conf_write "$dir" e-conf "E_WEBHOOK='SECRET13'" "E_DIR='/srv/e'" "$line"
+        expect_config_fail "a file assigning $line" "$dir/e-conf.conf" "$dir" config show e-conf
+    done
+    pass "config show is not redirected by the file's own variables or output"
+
+    # --- what it refuses (P4-2): each names the file, exits 1 and prints
+    # nothing from any file, including the ones that were fine.
+    dir=$(tmp); conf_plant "$dir"
+    mv "$dir/e-conf.conf" "$dir/real.conf"
+    ln -s real.conf "$dir/e-conf.conf"
+    expect_config_fail "a symlinked configuration file" "$dir/e-conf.conf" "$dir" config show e-conf
+    expect_config_fail "a symlinked configuration file (json)" "symbolic link" "$dir" config show --json e-conf
+
+    dir=$(tmp); conf_plant "$dir"
+    mv "$dir/e-conf-extra.conf" "$dir/real.conf"
+    ln -s real.conf "$dir/e-conf-extra.conf"
+    expect_config_fail "a symlinked extra file" "$dir/e-conf-extra.conf" "$dir" config show e-conf
+
+    dir=$(tmp); conf_plant "$dir"
+    chmod 0620 "$dir/e-conf.conf"
+    expect_config_fail "a group-writable file" "$dir/e-conf.conf" "$dir" config show e-conf
+    expect_config_fail "a group-writable file (reason)" "writable by group or others" "$dir" config show e-conf
+    chmod 0602 "$dir/e-conf.conf"
+    expect_config_fail "a world-writable file" "$dir/e-conf.conf" "$dir" config show e-conf
+
+    dir=$(tmp); conf_plant "$dir"
+    mkfifo "$dir/e-conf-extra.conf.fifo"
+    rm -f "$dir/e-conf-extra.conf"
+    mv "$dir/e-conf-extra.conf.fifo" "$dir/e-conf-extra.conf"
+    expect_config_fail "a FIFO" "$dir/e-conf-extra.conf" "$dir" config show e-conf
+    expect_config_fail "a FIFO (reason)" "not a regular file" "$dir" config show e-conf
+
+    dir=$(tmp); conf_plant "$dir"
+    if chown 65534 "$dir/e-conf.conf" 2>/dev/null; then
+        expect_config_fail "a file owned by another user" "$dir/e-conf.conf" "$dir" config show e-conf
+        expect_config_fail "a file owned by another user (reason)" "not owned by root" "$dir" config show e-conf
+        chown 0 "$dir/e-conf.conf"
+        chown 65534 "$dir"
+        expect_config_fail "a directory owned by another user" "$dir" "$dir" config show e-conf
+    else
+        printf 'skip config show wrong-owner cases, cannot chown to uid 65534 (unmapped in this namespace)\n'
+    fi
+    # The owner check itself, wherever chown cannot run: a stat that reports
+    # another owner for the file (and root for everything else) is refused.
+    shim=$(tmp)
+    dir=$(tmp); conf_plant "$dir"
+    printf '%s\n' '#!/usr/bin/env bash' \
+        "[[ \${*: -1} == '$dir/e-conf.conf' ]] && { printf '65534 600\\n'; exit 0; }" \
+        "exec '$(command -v stat)' \"\$@\"" > "$shim/stat"
+    chmod 0755 "$shim/stat"
+    PATH="$shim:$PATH" expect_config_fail "a file stat reports as owned by another user" \
+        "$dir/e-conf.conf: not owned by root" "$dir" config show e-conf
+
+    real=$(tmp); conf_plant "$real"
+    link=$(tmp)/conf
+    ln -s "$real" "$link"
+    expect_config_fail "a symlinked configuration directory" "$link" "$link" config show e-conf
+    dir=$(tmp); conf_plant "$dir"; chmod 0770 "$dir"
+    expect_config_fail "a group-writable configuration directory" "$dir" "$dir" config show e-conf
+    notdir=$(tmp)/conf; printf 'x\n' > "$notdir"
+    expect_config_fail "a configuration directory that is a file" "not a directory" "$notdir" config show e-conf
+
+    dir=$(tmp); conf_write "$dir" h-badname "H_TOKEN='SECRET11'"
+    expect_config_fail "an invalid name from module_config_files" "../escape" "$dir" config show h-badname
+    dir=$(tmp); conf_write "$dir" i-fails "I_TOKEN='SECRET12'"
+    expect_config_fail "a failing module_config_files" "i-fails" "$dir" config show i-fails
+    pass "config show refuses unsafe configuration files and directories, naming them"
+fi

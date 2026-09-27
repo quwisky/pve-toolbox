@@ -16,6 +16,7 @@ MODULE_TITLE="My thing"      # short name for the menu
 MODULE_DESC="one line"       # shown by `pve-toolbox list`
 MODULE_TAGS="storage notify" # space separated, filters `list <tag>`
 MODULE_HOST_ONLY=1           # 1 if it must run on the host, not an LXC
+MODULE_CONFIG_PUBLIC="KEEP_DAYS JOB_*_SRC" # optional: config show may print these
 ```
 
 The launcher reads these through indirect expansion in `meta()`, which is why
@@ -31,6 +32,7 @@ each module carries a `# shellcheck disable=SC2034` above the block.
 | `module_status_long` | Detailed status. Optional, falls back to `module_status` |
 | `module_doctor` | Emit additional read-only health results. Optional and called only when installed |
 | `module_uninstall` | Remove what install created |
+| `module_config_files` | Optional. Print extra configuration names for `config show`, one per line. Read-only |
 
 `module_status` is called for every module on every menu draw, on every
 `ui` action, and by `uninstall` completion, so keep it cheap and make its first
@@ -97,6 +99,44 @@ and the file stays sourceable by a plain script:
 source /etc/pve-toolbox/my-thing.conf
 echo "$API_TOKEN"
 ```
+
+## Showing configuration
+
+`pve-toolbox config show <module>` (root only) lists every key in
+`/etc/pve-toolbox/<module>.conf`. It prints a value only for keys the module
+declares in `MODULE_CONFIG_PUBLIC`: space-separated names, or shell glob
+patterns such as `JOB_*_SRC`. Every other key shows only `(set, hidden)` or
+`(not set)`, and `--json` leaves out its `value` field.
+
+!!! danger "Keys are hidden by default: list only what can never hold a secret"
+
+    A key matched by `MODULE_CONFIG_PUBLIC` is printed to the terminal and into
+    JSON that may be pasted into a ticket. List numbers, schedules, dataset
+    names and plain directories. Never list a token, a webhook URL, a
+    password, a remote URL that can embed credentials, or the path of a key or
+    token file. A pattern matches every key it can: `JOB_*` would also match
+    `JOB_A_OPTS`. When in doubt, leave the key out; a module without
+    `MODULE_CONFIG_PUBLIC` shows every key hidden.
+
+A module that keeps more than one configuration file names the others in
+`module_config_files`, one name per line, each matching `^[a-z0-9][a-z0-9-]*$`
+and read from `/etc/pve-toolbox/<name>.conf`. It runs as root before those
+files are shown, so keep it read-only: read with `conf_get`, validate what you
+read, print names only, and return 0, because a non-zero exit makes `config show`
+fail.
+
+```bash
+module_config_files() {
+    local id
+    for id in $(conf_get "$MODULE_NAME" MY_IDS); do
+        if [[ $id =~ ^[0-9]+$ ]]; then printf '%s-%s\n' "$MODULE_NAME" "$id"; fi
+    done
+}
+```
+
+`config show` refuses the directory or any file that is a symbolic link, is
+not owned by root, or is writable by group or others, and prints nothing from
+any file when it does. Files written with `conf_set` already meet that.
 
 ## Module health checks
 

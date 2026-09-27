@@ -13,7 +13,7 @@ _pve_toolbox_candidates() { # _pve_toolbox_candidates <target> [args...]
 }
 
 _pve_toolbox() {
-    local cur prev prev2 i word cmd="" nargs=0 candidates used c
+    local cur prev prev2 i word cmd="" arg1="" nargs=0 candidates used c
     local out=()
 
     cur=${COMP_WORDS[COMP_CWORD]}
@@ -33,7 +33,12 @@ _pve_toolbox() {
             continue
         fi
         [[ $word == -* || $word == = ]] && continue
-        if [[ -z $cmd ]]; then cmd=$word; else nargs=$((nargs + 1)); fi
+        if [[ -z $cmd ]]; then
+            cmd=$word
+        else
+            nargs=$((nargs + 1))
+            [[ $nargs -gt 1 ]] || arg1=$word
+        fi
     done
 
     # --color's value is not read from the command table: it is the same
@@ -73,6 +78,13 @@ _pve_toolbox() {
                    candidates=$(_pve_toolbox_candidates tags) ;;
         install|update|check|status)
                    candidates=$(_pve_toolbox_candidates modules) ;;
+        config)    # config show <module>: 'show', then a single module name
+                   case $nargs in
+                       0) candidates=show ;;
+                       1) [[ $arg1 == show ]] || return
+                          candidates=$(_pve_toolbox_candidates modules) ;;
+                       *) return ;;
+                   esac ;;
         uninstall) candidates=$(_pve_toolbox_candidates installed) ;;
         *)         return ;;   # menu, doctor, link, self-update take nothing
     esac
