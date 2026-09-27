@@ -9,7 +9,11 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 ROOT=$PWD
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+# Set only by the root branch of the "_man needs no root" check below, for a
+# world-readable copy that an unprivileged user must be able to traverse;
+# $WORK itself stays mode 0700, so that copy cannot live inside it.
+UNPRIV_ROOT=""
+trap 'rm -rf -- "$WORK" "$UNPRIV_ROOT"' EXIT
 
 pass() { printf 'ok  %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
@@ -389,11 +393,37 @@ out=$(PVE_TOOLBOX_ROOT="$empty_root" launch_bin "$empty_root/pve-toolbox" _man 2
 [[ -n $out ]] || fail "_man produced nothing in a module-less checkout"
 pass "_man does not call discover"
 
-# _man needs no root: the whole test suite already runs unprivileged, so a
-# plain, successful call here is the proof.
-[[ $(id -u) -ne 0 ]] || fail "test suite must not run as root"
-launch _man >/dev/null || fail "_man failed as a normal user"
-pass "_man works as a normal user"
+# _man needs no root. Unprivileged, a plain, successful call is the proof.
+# The suite also runs as real root in CI, where "unprivileged" has to be
+# manufactured: run _man as uid/gid 65534 from a world-readable copy of just
+# what it needs (mirroring the module-less checkout built above), the same
+# way a packaged, non-root invocation would see it. If the switch itself is
+# impossible (e.g. user-namespace root, where 65534 is unmapped, or no
+# setpriv), skip with the reason instead of failing -- real root in CI has
+# the mapping and must take the real path.
+if [[ $(id -u) -ne 0 ]]; then
+    launch _man >/dev/null || fail "_man failed as a normal user"
+    pass "_man works as a normal user"
+elif command -v setpriv >/dev/null 2>&1 \
+    && setpriv --reuid=65534 --regid=65534 --clear-groups true 2>/dev/null; then
+    UNPRIV_ROOT=$(mktemp -d)
+    chmod 0755 "$UNPRIV_ROOT"
+    mkdir -p "$UNPRIV_ROOT/lib" "$UNPRIV_ROOT/modules" "$UNPRIV_ROOT/share/man"
+    cp "$ROOT"/lib/*.sh "$UNPRIV_ROOT/lib/"
+    cp "$ROOT/VERSION" "$UNPRIV_ROOT/VERSION"
+    cp "$ROOT/pve-toolbox" "$UNPRIV_ROOT/pve-toolbox"
+    cp "$ROOT/share/man/pve-toolbox.1.in" "$UNPRIV_ROOT/share/man/pve-toolbox.1.in"
+    chmod -R a+rX "$UNPRIV_ROOT"
+    out=$(PVE_TOOLBOX_ROOT="$UNPRIV_ROOT" HOME=/nonexistent-pve-toolbox-home \
+        setpriv --reuid=65534 --regid=65534 --clear-groups \
+        "$UNPRIV_ROOT/pve-toolbox" _man 2>&1) \
+        || fail "_man failed for an unprivileged user while the suite ran as root: $out"
+    [[ $out == .TH* ]] \
+        || fail "_man did not print a .TH line for an unprivileged user: $out"
+    pass "_man works as an unprivileged user while the suite runs as root"
+else
+    printf 'skip _man unprivileged check, cannot switch to uid 65534 (setpriv missing or the uid is unmapped in this namespace)\n'
+fi
 
 # _man is hidden: not offered by completion, not documented by help, but
 # still recognised (not "unknown command").
