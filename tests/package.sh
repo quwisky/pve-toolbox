@@ -151,8 +151,10 @@ do
 done
 man_page=$(gzip -dc "$WORK/root/usr/share/man/man1/pve-toolbox.1.gz") \
     || fail "could not decompress the packaged man page"
-[[ $man_page == *".B help"* ]] || fail "packaged man page is missing the help command"
 [[ $man_page == *"NO_COLOR"* ]] || fail "packaged man page is missing NO_COLOR"
+while IFS= read -r c; do
+    [[ $man_page == *".B ${c//-/\\-}"* ]] || fail "packaged man page is missing command $c"
+done < <("$ROOT/pve-toolbox" _complete commands)
 for placeholder in @COMMANDS@ @OPTIONS@ @DATE@; do
     # grep -c would print 0 and still exit 1 on no match, which set -e
     # would treat as this line failing; test presence with -q under `if`
