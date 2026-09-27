@@ -1,0 +1,42 @@
+.TH PVE-TOOLBOX 1 "@DATE@" "pve-toolbox" "User Commands"
+.SH NAME
+pve-toolbox \- modular administration toolbox for Proxmox VE hosts
+.SH SYNOPSIS
+.B pve-toolbox
+.RI [ options ]
+.RI [ command ]
+.RI [ module ...]
+.SH DESCRIPTION
+.B pve-toolbox
+discovers self-contained administration modules and provides interactive,
+full-screen, and command-line interfaces for installing, updating, checking,
+reporting, and removing them.
+.SH COMMANDS
+@COMMANDS@
+.SH OPTIONS
+@OPTIONS@
+.SH EXIT STATUS
+0 indicates success, 1 an operational failure, 2 a warning, 64 invalid input,
+69 a report whose meaningful checks are unsupported, and 130 a cancelled LXC
+package-update run.
+.SH ENVIRONMENT
+.TP
+.B NO_COLOR
+When set to a non-empty value, disables colour unless \-\-color=always is given.
+.TP
+.B TOOLBOX_COLOR
+Colour mode when \-\-color is not given: auto (default), always, or never;
+overrides NO_COLOR. auto colours a stream only when it is a terminal, unless
+NO_COLOR or TERM=dumb turn it off; always/never override both.
+.SH FILES
+.TP
+.I /etc/pve-toolbox/
+Runtime-generated module configuration and secrets.
+.TP
+.I /var/lib/pve-toolbox/
+Runtime-generated module state.
+.TP
+.I /usr/lib/pve-toolbox/
+Packaged libraries and modules.
+.SH SEE ALSO
+Project documentation: https://quwisky.github.io/pve-toolbox/

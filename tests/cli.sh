@@ -9,7 +9,11 @@ set -euo pipefail
 cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
 ROOT=$PWD
 WORK=$(mktemp -d)
-trap 'rm -rf "$WORK"' EXIT
+# Set only by the root branch of the "_man needs no root" check below, for a
+# world-readable copy that an unprivileged user must be able to traverse;
+# $WORK itself stays mode 0700, so that copy cannot live inside it.
+UNPRIV_ROOT=""
+trap 'rm -rf -- "$WORK" "$UNPRIV_ROOT"' EXIT
 
 pass() { printf 'ok  %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1" >&2; exit 1; }
@@ -121,6 +125,36 @@ done
 rc=0; launch help definitely-not >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 64 ]] || fail "help <unknown> exited $rc, want 64"
 pass "top-level and per-command help"
+
+# Long option/flag facts (--color=WHEN, --quiet) wrap inside the Options
+# block rather than running off the terminal: no options-block line exceeds
+# 78 columns (the same width CLI_DESC already folds at), and a continuation
+# line - one whose label column is blank - is indented to line up under
+# where the description text starts, 19 columns in.
+check_options_wrap() { # check_options_wrap <name> <help-text>
+    local name=$1 text=$2 line inopts=0
+    while IFS= read -r line; do
+        if [[ $inopts -eq 0 ]]; then
+            [[ $line == "Options:" ]] && inopts=1
+            continue
+        fi
+        [[ -n $line ]] || break
+        [[ ${#line} -le 78 ]] \
+            || fail "'$name' options block has a line over 78 columns (${#line}): $line"
+        if [[ ${line:2:1} == " " ]]; then
+            [[ ${line:0:19} == "$(printf '%19s' '')" && -n ${line:19} && ${line:19:1} != " " ]] \
+                || fail "'$name' continuation line is not indented to column 20: '$line'"
+        fi
+    done <<<"$text"
+}
+check_options_wrap "help status" "$(launch help status)"
+check_options_wrap "help lxc-update" "$lxc_help"
+check_options_wrap "help" "$help"
+[[ $(launch help status) == *"--color=WHEN"*$'\n'*"also disables it"* ]] \
+    || fail "help status's --color=WHEN description did not wrap onto a second line"
+[[ $(launch help status) == *"--quiet"*$'\n'*"This cannot be combined with --json"* ]] \
+    || fail "help status's --quiet description did not wrap onto a second line"
+pass "help wraps long option descriptions with a hanging indent, no line over 78 columns"
 
 # lxc-update's runner refuses --yes and --force, so neither its help nor its
 # completion offers them; every other global still applies. The launcher
@@ -303,3 +337,159 @@ for target in flags flag-help; do
     [[ $out == *"-y"* ]] || fail "'_complete $target bogus-command' dropped the globals: $out"
 done
 pass "_complete flags and flag-help survive an absent, empty, or unknown command"
+
+# --- man page -----------------------------------------------------------------
+
+# Roff-escapes a string the same way _man_escape does, so an expectation
+# containing a hyphen matches what the generator actually emits.
+mroff() { local s=$1; s=${s//\\/\\\\}; s=${s//-/\\-}; printf '%s' "$s"; }
+
+man=$(SOURCE_DATE_EPOCH=1790000000 ./pve-toolbox _man) || fail "_man failed"
+[[ $man == .TH\ PVE-TOOLBOX\ 1\ \"September\ 2026\"* ]] || fail "_man date not taken from SOURCE_DATE_EPOCH"
+[[ $man != *"@COMMANDS@"* && $man != *"@OPTIONS@"* && $man != *"@DATE@"* ]] || fail "_man left a placeholder"
+while IFS= read -r c; do
+    [[ $man == *".B $(mroff "$c")"* ]] || fail "man page lacks command $c"
+done < <(./pve-toolbox _complete commands)
+for f in --json --quiet --dry-run --allow-removals --notify --color; do
+    [[ $man == *"$(mroff "$f")"* ]] || fail "man page lacks flag $f"
+done
+[[ $(SOURCE_DATE_EPOCH=1790000000 ./pve-toolbox _man) == "$man" ]] || fail "_man is not reproducible"
+if command -v groff >/dev/null 2>&1; then
+    warn_out=$(printf '%s\n' "$man" | groff -man -ww -z 2>&1) || fail "groff failed: $warn_out"
+    [[ -z $warn_out ]] || fail "groff warnings: $warn_out"
+elif [[ ${PACKAGING_TEST_REQUIRED:-0} -eq 1 ]]; then
+    fail "groff is required to lint the man page"
+else
+    printf 'skip man page lint, no groff\n'
+fi
+pass "generated man page covers every command and flag"
+
+# _man_text's leading '.'/apostrophe guard, exercised directly rather than
+# only through whatever CLI_* strings happen to start with today. Extracted
+# straight from pve-toolbox (the range from _man_escape's definition through
+# _man_text's closing brace) so this tests the real function, not a copy.
+man_text_src=$(sed -n '/^_man_escape() {/,/^}/p' ./pve-toolbox)
+[[ -n $man_text_src ]] || fail "could not extract _man_escape/_man_text from pve-toolbox"
+out=$(eval "$man_text_src"; _man_text '.foo')
+[[ $out == '\&.foo' ]] || fail "_man_text did not guard a line starting with '.': $out"
+out=$(eval "$man_text_src"; _man_text "'foo")
+[[ $out == "\\&'foo" ]] || fail "_man_text did not guard a line starting with an apostrophe: $out"
+out=$(eval "$man_text_src"; _man_text 'plain text')
+[[ $out == 'plain text' ]] || fail "_man_text changed ordinary text: $out"
+out=$(eval "$man_text_src"; _man_text 'a-b')
+[[ $out == 'a\-b' ]] || fail "_man_text did not escape a hyphen: $out"
+pass "_man_text guards a leading '.' or apostrophe and leaves ordinary text alone"
+
+# _man must not call discover: a checkout with zero modules would make
+# discover die, so _man succeeding there proves it never ran.
+empty_root=$(tmp)
+mkdir -p "$empty_root/lib" "$empty_root/modules" "$empty_root/share/man"
+cp "$ROOT"/lib/*.sh "$empty_root/lib/"
+cp "$ROOT/VERSION" "$empty_root/VERSION"
+cp "$ROOT/pve-toolbox" "$empty_root/pve-toolbox"
+cp "$ROOT/share/man/pve-toolbox.1.in" "$empty_root/share/man/pve-toolbox.1.in"
+out=$(PVE_TOOLBOX_ROOT="$empty_root" launch_bin "$empty_root/pve-toolbox" _man 2>&1) \
+    || fail "_man died in a module-less checkout, so it must have called discover: $out"
+[[ -n $out ]] || fail "_man produced nothing in a module-less checkout"
+pass "_man does not call discover"
+
+# _man needs no root. Unprivileged, a plain, successful call is the proof.
+# The suite also runs as real root in CI, where "unprivileged" has to be
+# manufactured: run _man as uid/gid 65534 from a world-readable copy of just
+# what it needs (mirroring the module-less checkout built above), the same
+# way a packaged, non-root invocation would see it. If the switch itself is
+# impossible (e.g. user-namespace root, where 65534 is unmapped, or no
+# setpriv), skip with the reason instead of failing -- real root in CI has
+# the mapping and must take the real path.
+if [[ $(id -u) -ne 0 ]]; then
+    launch _man >/dev/null || fail "_man failed as a normal user"
+    pass "_man works as a normal user"
+elif command -v setpriv >/dev/null 2>&1 \
+    && setpriv --reuid=65534 --regid=65534 --clear-groups true 2>/dev/null; then
+    UNPRIV_ROOT=$(mktemp -d)
+    chmod 0755 "$UNPRIV_ROOT"
+    mkdir -p "$UNPRIV_ROOT/lib" "$UNPRIV_ROOT/modules" "$UNPRIV_ROOT/share/man"
+    cp "$ROOT"/lib/*.sh "$UNPRIV_ROOT/lib/"
+    cp "$ROOT/VERSION" "$UNPRIV_ROOT/VERSION"
+    cp "$ROOT/pve-toolbox" "$UNPRIV_ROOT/pve-toolbox"
+    cp "$ROOT/share/man/pve-toolbox.1.in" "$UNPRIV_ROOT/share/man/pve-toolbox.1.in"
+    chmod -R a+rX "$UNPRIV_ROOT"
+    out=$(PVE_TOOLBOX_ROOT="$UNPRIV_ROOT" HOME=/nonexistent-pve-toolbox-home \
+        setpriv --reuid=65534 --regid=65534 --clear-groups \
+        "$UNPRIV_ROOT/pve-toolbox" _man 2>&1) \
+        || fail "_man failed for an unprivileged user while the suite ran as root: $out"
+    [[ $out == .TH* ]] \
+        || fail "_man did not print a .TH line for an unprivileged user: $out"
+    pass "_man works as an unprivileged user while the suite runs as root"
+else
+    printf 'skip _man unprivileged check, cannot switch to uid 65534 (setpriv missing or the uid is unmapped in this namespace)\n'
+fi
+
+# _man is hidden: not offered by completion, not documented by help, but
+# still recognised (not "unknown command").
+got=" $(launch _complete commands | tr '\n' ' ') "
+[[ $got != *" _man "* ]] || fail "_man is offered by completion"
+out=$(launch help _man 2>&1 || true)
+[[ $out == *"'_man' is internal and has no help"* ]] || fail "help _man does not call it internal: $out"
+pass "_man is hidden from completion and help"
+
+# P2-2: commands that require root say so in the generated page, and
+# lxc-update names the globals its runner refuses.
+[[ $man == *"Requires root."* ]] || fail "man page never says Requires root."
+refused="The -y, --yes and -f, --force options are refused."
+[[ $man == *"$(mroff "$refused")"* ]] || fail "man page lacks the lxc-update refused-globals sentence"
+
+# P2-3: facts from the deleted static debian/pve-toolbox.1 must survive into
+# the generated page, even though the wording is free to change.
+[[ $man == *"refuse this command"* ]] || fail "man page dropped: packaged installs refuse 'link'"
+[[ $man == *"cluster"* && $man == *"storage"* && $man == *"installed"* ]] \
+    || fail "man page dropped doctor's audit scope (host, cluster, storage, installed modules)"
+[[ $man == *"Exit status 0 when healthy"* ]] || fail "man page dropped doctor's exit-status sentence"
+quiet_json="cannot be combined with $(mroff "--json")"
+[[ $man == *"$quiet_json"* ]] || fail "man page dropped: --quiet cannot combine with --json"
+color_force="$(mroff "--json") or $(mroff "--quiet") always force"
+[[ $man == *"$color_force"* ]] || fail "man page dropped: --json/--quiet always force colour off"
+
+# ENVIRONMENT: NO_COLOR and TOOLBOX_COLOR are both documented.
+[[ $man == *"NO_COLOR"* ]] || fail "man page lacks the ENVIRONMENT section's NO_COLOR"
+[[ $man == *".SH ENVIRONMENT"* ]] || fail "man page lacks an ENVIRONMENT section"
+[[ $man == *".B TOOLBOX_COLOR"$'\n'*"auto (default), always, or never"* ]] \
+    || fail "man page's TOOLBOX_COLOR entry is missing or lost its three values"
+[[ $man == *".B TOOLBOX_COLOR"* ]] && [[ $man == *"overrides NO_COLOR"* ]] \
+    || fail "man page's TOOLBOX_COLOR entry does not say it overrides NO_COLOR"
+pass "generated man page carries every fact from the deleted static page"
+
+# The TOOLBOX_COLOR entry keeps its operator-facing facts but drops the
+# internal-mechanics sentence about the launcher exporting it from --color.
+[[ $man != *"reaches the same decision"* ]] \
+    || fail "man page's TOOLBOX_COLOR entry still explains launcher internals"
+
+# The man-page summary reads as a capitalised sentence opener; 'help' keeps
+# the lowercase, mid-sentence form used in its own table.
+help_summary=$(launch help lxc-update | sed -n '3p')
+[[ $help_summary == "${help_summary,}" ]] \
+    || fail "test fixture assumption broken: lxc-update summary is already capitalised"
+cap_summary="$(mroff "${help_summary^}")"
+
+# The summary, CLI_DESC, "Requires root.", and the refused-globals sentence
+# are each separated by .sp, matching help's blank-line separation, instead
+# of running together as one paragraph.
+[[ $man == *"$cap_summary."$'\n'".sp"$'\n'* ]] \
+    || fail "man page does not capitalise the summary and separate it from CLI_DESC with .sp"
+[[ $man == *".sp"$'\n'"Requires root."* ]] \
+    || fail "man page does not separate Requires root. with .sp"
+[[ $man == *".sp"$'\n'"$(mroff "$refused")"* ]] \
+    || fail "man page does not separate the refused-globals sentence with .sp"
+pass "man page capitalises the summary and separates it, CLI_DESC, root, and refused-globals facts with .sp"
+
+# Missing template: fails closed rather than printing nothing. A fixture
+# root with everything but share/man/ exercises that path without disturbing
+# the real template used by every other assertion above.
+no_template_root=$(tmp)
+mkdir -p "$no_template_root/lib" "$no_template_root/modules"
+cp "$ROOT"/lib/*.sh "$no_template_root/lib/"
+cp "$ROOT/VERSION" "$ROOT/pve-toolbox" "$no_template_root/"
+rc=0; err=$(PVE_TOOLBOX_ROOT="$no_template_root" launch_bin "$no_template_root/pve-toolbox" _man 2>&1) || rc=$?
+[[ $rc -eq 1 ]] || fail "_man with a missing template exited $rc, want 1"
+[[ $err == *"man page template missing"* ]] || fail "_man with a missing template did not say why: $err"
+pass "_man fails closed when its template is missing"

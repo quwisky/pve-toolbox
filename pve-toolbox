@@ -131,21 +131,21 @@ cli_unknown_module() { # cli_unknown_module <name> -> exits 64 with suggestions
 # command here first. Data only: nothing runs while it is defined.
 
 CLI_COMMANDS=(menu ui list install update check status doctor lxc-update uninstall link self-update help)
-# Internal commands the completion scripts call. Never shown or suggested,
-# but not unknown either.
-CLI_HIDDEN=(_complete)
+# Internal commands the completion scripts (and the packaging build, for
+# _man) call. Never shown or suggested, but not unknown either.
+CLI_HIDDEN=(_complete _man)
 
 CLI_GLOBAL_FLAGS=("-y|--yes" "-f|--force" "--color=WHEN" "-V|--version" "-h|--help")
 declare -A CLI_GLOBAL_DESC=(
     ["-y|--yes"]="non-interactive: take configured values and defaults"
     ["-f|--force"]="force reinstall or redownload where a module supports it"
-    ["--color=WHEN"]="colour output: auto (default), always or never; NO_COLOR also disables it"
+    ["--color=WHEN"]="colour output: auto (default), always or never; NO_COLOR also disables it; --json or --quiet always force it off"
     ["-V|--version"]="print the installed version"
     ["-h|--help"]="show help; with a command, that command's help"
 )
 declare -A CLI_FLAG_DESC=(
     [--json]="emit versioned, machine-readable JSON"
-    [--quiet]="print nothing; return only the standardized exit status"
+    [--quiet]="print nothing; return only the standardized exit status. This cannot be combined with --json"
     [--dry-run]="preview using cached package indexes; change nothing"
     [--allow-removals]="allow package removals and cleanup"
     [--notify]="send a Discord report after the run"
@@ -153,7 +153,7 @@ declare -A CLI_FLAG_DESC=(
 declare -A CLI_SUMMARY=(
     [menu]="interactive menu (default when no command is given)"
     [ui]="full-screen menu (needs whiptail or dialog)"
-    [list]="list modules, optionally filtered by tag"
+    [list]="list modules and their status, optionally filtered by tag"
     [install]="install or reconfigure modules"
     [update]="update modules (all installed when none named)"
     [check]="report available updates, change nothing"
@@ -194,7 +194,8 @@ declare -A CLI_NO_GLOBALS=([lxc-update]="-y|--yes -f|--force")
 declare -A CLI_ROOT=([install]=1 [update]=1 [uninstall]=1 [lxc-update]=1 [link]=1)
 declare -A CLI_DESC=(
     [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Use --dry-run for a cached preview, --allow-removals to enable package removals and cleanup, and --notify for a Discord report. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades. Package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local systemd schedule. Scheduled runs update every eligible local container with the non-removing policy, never catch up after downtime, and can report every batch to Discord when explicitly enabled. Use 'pve-toolbox status lxc-update' to inspect timer health and recent results."
-    [doctor]="Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
+    [doctor]="The audit covers host, cluster, storage and installed modules. Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
+    [link]="Packaged installs refuse this command."
 )
 declare -A CLI_EXAMPLES=(
     [list]=$'pve-toolbox list\npve-toolbox list storage'
@@ -206,26 +207,48 @@ declare -A CLI_EXAMPLES=(
     [help]='pve-toolbox help status'
 )
 
+# fold -s breaks after the space, so strip what it leaves at line ends. One
+# place for that fix, shared by the free-text CLI_DESC paragraph below and by
+# cli_print_option, so a long fact never overruns the terminal in either.
+cli_fold() { # cli_fold <width> <text> -> wrapped, no trailing spaces
+    fold -s -w "$1" <<<"$2" | sed 's/ *$//'
+}
+
+# Prints one "  label           description" row, wrapping the description at
+# the same total width CLI_DESC uses (78 columns) and indenting continuation
+# lines to line up under the description column, so a long option fact wraps
+# instead of running off the terminal.
+cli_print_option() { # cli_print_option <label> <description>
+    local label=$1 desc=$2 indent=19 first=1 line
+    while IFS= read -r line; do
+        if ((first)); then
+            printf '  %-16s %s\n' "$label" "$line"
+            first=0
+        else
+            printf '%*s%s\n' "$indent" '' "$line"
+        fi
+    done < <(cli_fold $((78 - indent)) "$desc")
+}
+
 cli_help_overview() {
     local c spec
     printf 'Usage: pve-toolbox [options] [command] [arguments]\n\nCommands:\n'
     for c in "${CLI_COMMANDS[@]}"; do printf '  %-12s %s\n' "$c" "${CLI_SUMMARY[$c]}"; done
     printf '\nOptions:\n'
-    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do printf '  %-16s %s\n' "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
-    printf "  %-16s %s\n" "--json, --quiet" "machine-readable output (status, check, doctor); see 'pve-toolbox help status'"
+    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do cli_print_option "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
+    cli_print_option "--json, --quiet" "machine-readable output (status, check, doctor); see 'pve-toolbox help status'"
     printf "\nRun 'pve-toolbox help <command>' for details.\n"
 }
 
 cli_help_command() { # cli_help_command <command>
     local c=$1 f spec line
     printf 'Usage: pve-toolbox %s\n\n%s\n' "${CLI_USAGE[$c]}" "${CLI_SUMMARY[$c]}"
-    # fold -s breaks after the space, so strip what it leaves at line ends.
-    if [[ -n ${CLI_DESC[$c]:-} ]]; then printf '\n'; fold -s -w 78 <<<"${CLI_DESC[$c]}" | sed 's/ *$//'; fi
+    if [[ -n ${CLI_DESC[$c]:-} ]]; then printf '\n'; cli_fold 78 "${CLI_DESC[$c]}"; fi
     [[ -z ${CLI_ROOT[$c]:-} ]] || printf '\nRequires root.\n'
     printf '\nOptions:\n'
-    for f in ${CLI_FLAGS[$c]:-}; do printf '  %-16s %s\n' "$f" "${CLI_FLAG_DESC[$f]}"; done
+    for f in ${CLI_FLAGS[$c]:-}; do cli_print_option "$f" "${CLI_FLAG_DESC[$f]}"; done
     while IFS= read -r spec; do
-        printf '  %-16s %s\n' "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"
+        cli_print_option "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"
     done < <(cli_global_specs "$c")
     if [[ -n ${CLI_EXAMPLES[$c]:-} ]]; then
         printf '\nExamples:\n'
@@ -882,6 +905,96 @@ cmd_self_update() {
     ok "now at $(git -C "$TOOLBOX_ROOT" describe --always --dirty)"
 }
 
+# ------------------------------------------------------------------- _man --
+#
+# The man page is generated from the same command table 'help' reads, so a
+# command documented once cannot drift out of sync with its man page entry.
+# Runs at package build time (see share/man/pve-toolbox.1.in); never touches
+# modules, so it needs neither discovery nor root.
+
+# roff reads a leading '\' or '-' specially, so both are escaped in any text
+# taken from the command table.
+_man_escape() { local v=$1; v=${v//\\/\\\\}; v=${v//-/\\-}; printf '%s' "$v"; }
+
+# A roff line beginning with '.' reads as a request, and one beginning with
+# an apostrophe as a control line; a leading '\&' (a zero-width character)
+# defuses either without changing what is printed.
+_man_text() { # _man_text <raw> -> escaped, safe as a standalone roff line
+    local v; v=$(_man_escape "$1")
+    case $v in
+        .*|\'*) printf '\\&%s' "$v" ;;
+        *)      printf '%s' "$v" ;;
+    esac
+}
+
+# _man_join_and <item>... -> "a", "a and b", or "a, b and c"
+_man_join_and() {
+    local -a items=("$@")
+    local n=${#items[@]} head
+    case $n in
+        0) return 0 ;;
+        1) printf '%s' "${items[0]}" ;;
+        *) head=$(printf '%s, ' "${items[@]:0:n-1}")
+           printf '%s and %s' "${head%, }" "${items[n - 1]}" ;;
+    esac
+}
+
+# The global options a command's own runner refuses, as a sentence, e.g.
+# "The -y, --yes and -f, --force options are refused." Empty when the
+# command refuses none.
+_man_no_globals_sentence() { # _man_no_globals_sentence <command>
+    local c=$1 spec
+    local -a parts=()
+    [[ -n ${CLI_NO_GLOBALS[$c]:-} ]] || return 0
+    for spec in ${CLI_NO_GLOBALS[$c]}; do
+        parts+=("${spec//|/, }")
+    done
+    printf 'The %s options are refused.' "$(_man_join_and "${parts[@]}")"
+}
+
+cmd_man() {
+    local template="$TOOLBOX_ROOT/share/man/pve-toolbox.1.in" date c f spec commands options line
+    [[ -r $template ]] || die "man page template missing: $template"
+    if [[ -n ${SOURCE_DATE_EPOCH:-} ]]; then
+        date=$(LC_ALL=C date -u -d "@$SOURCE_DATE_EPOCH" '+%B %Y')
+    else
+        date=$(LC_ALL=C date -u -r "$template" '+%B %Y')
+    fi
+    commands=""
+    for c in "${CLI_COMMANDS[@]}"; do
+        # Capitalised so the man-page summary reads as a sentence opener;
+        # 'help' keeps the lowercase, mid-sentence form used in its table.
+        commands+=$'.TP\n'".B $(_man_escape "${CLI_USAGE[$c]}")"$'\n'"$(_man_text "${CLI_SUMMARY[$c]^}")."$'\n'
+        # Each optional fact below gets its own .sp, matching the blank-line
+        # separation cli_help_command uses between the same facts, so two
+        # sentences (e.g. a summary and a CLI_DESC that both open the same
+        # way) never read as one run-on paragraph.
+        if [[ -n ${CLI_DESC[$c]:-} ]]; then
+            commands+=$'.sp\n'"$(_man_text "${CLI_DESC[$c]}")"$'\n'
+        fi
+        if [[ -n ${CLI_ROOT[$c]:-} ]]; then
+            commands+=$'.sp\n'"$(_man_text "Requires root.")"$'\n'
+        fi
+        if [[ -n ${CLI_NO_GLOBALS[$c]:-} ]]; then
+            commands+=$'.sp\n'"$(_man_text "$(_man_no_globals_sentence "$c")")"$'\n'
+        fi
+        for f in ${CLI_FLAGS[$c]:-}; do
+            commands+=$'.RS\n.TP\n'".B $(_man_escape "$f")"$'\n'"$(_man_text "${CLI_FLAG_DESC[$f]}")"$'\n.RE\n'
+        done
+    done
+    options=""
+    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do
+        options+=$'.TP\n'".B $(_man_escape "${spec//|/, }")"$'\n'"$(_man_text "${CLI_GLOBAL_DESC[$spec]}")"$'\n'
+    done
+    while IFS= read -r line; do
+        case $line in
+            @COMMANDS@) printf '%s' "$commands" ;;
+            @OPTIONS@)  printf '%s' "$options" ;;
+            *)          printf '%s\n' "${line//@DATE@/$date}" ;;
+        esac
+    done < "$template"
+}
+
 # ------------------------------------------------------------------- main --
 
 # Colour has to be decided before anything below can fail, so every usage
@@ -989,6 +1102,7 @@ case $command_name in
     ui)          cmd_ui ;;
     link)        cmd_link ;;
     _complete)   cmd_complete "${ARGS[@]:1}" ;;
+    _man)        cmd_man ;;
     self-update) cmd_self_update ;;
     help)        if [[ ${#ARGS[@]} -eq 1 ]]; then
                      cli_help_overview

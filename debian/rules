@@ -7,7 +7,22 @@ PACKAGE_VERSION := $(shell dpkg-parsechangelog -S Version)
 %:
 	dh $@
 
+# PVE_TOOLBOX_ROOT would redirect the launcher at an installed tree; unset it
+# so _man always reads share/man/pve-toolbox.1.in from this checkout, even if
+# it leaked into the build environment. Render to a temp file outside the
+# source tree first and move it into place only on success (mktemp files are
+# 0600, so fix the mode before installing it), so a failing `_man` (caught by
+# the `&&` chain, not swallowed by a later command) aborts the build without
+# ever shipping a partial debian/pve-toolbox.1 or leaving one behind for a
+# later rebuild to pick up; debian/clean also covers the successful-build
+# case as a second line of defence. The EXIT trap removes the temp file on
+# every path, including a failing chmod/mv, not only a failing _man.
 override_dh_auto_build:
+	tmp=$$(mktemp) && \
+	trap 'rm -f "$$tmp"' EXIT && \
+	env -u PVE_TOOLBOX_ROOT ./pve-toolbox _man > "$$tmp" && \
+	chmod 0644 "$$tmp" && \
+	mv "$$tmp" debian/pve-toolbox.1
 
 # The release and CI workflows run the repository test suite before package
 # construction. Running it through dh_auto_test would make tests/package.sh
