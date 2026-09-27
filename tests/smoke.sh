@@ -124,12 +124,73 @@ has "$got" zfs-scrub || fail "a flag before the command broke it, got: $got"
 pass "bash finds the command past a flag"
 
 got=$(complete_words 1 ./pve-toolbox "-")
-for flag in -y --yes -f --force --json --quiet -V --version -h --help; do
+for flag in -y --yes -f --force --color= -V --version -h --help; do
     has "$got" "$flag" || fail "flags missing $flag, got: $got"
 done
+has_not "$got" --json || fail "--json offered with no command chosen, got: $got"
 got=$(complete_words 1 ./pve-toolbox "--f")
 [[ $got == --force ]] || fail "prefix --f<TAB> should give --force, got: $got"
 pass "bash offers flags"
+
+# Flags are read from the command table: a command's own flags join the
+# globals, and a command without any offers only the globals.
+got=$(complete_words 2 ./pve-toolbox status "-")
+has "$got" --json  || fail "status did not offer --json, got: $got"
+has "$got" --quiet || fail "status did not offer --quiet, got: $got"
+got=$(complete_words 2 ./pve-toolbox install "-")
+has_not "$got" --json || fail "install offered --json, which it does not accept, got: $got"
+got=$(complete_words 2 ./pve-toolbox lxc-update "-")
+has "$got" --dry-run || fail "lxc-update did not offer --dry-run, got: $got"
+has_not "$got" --yes || fail "lxc-update offered --yes, which its runner refuses, got: $got"
+pass "bash offers a command's own flags, not another command's"
+
+# help completes command names, the same list as the bare prompt.
+got=$(complete_words 2 ./pve-toolbox help "")
+has "$got" status || fail "help offered no command names, got: $got"
+pass "bash completes command names after help"
+
+# --color's value is the same three words for every command. Bash splits
+# words on '=' (it is in COMP_WORDBREAKS), so a real shell hands the
+# completion '--color', '=' and the value typed so far as three words, and
+# replaces only the text after the '='.
+got=$(complete_words 2 ./pve-toolbox --color "=")
+for value in auto always never; do
+    has "$got" "$value" || fail "--color= missing $value, got: $got"
+done
+got=$(complete_words 3 ./pve-toolbox --color "=" al)
+[[ $got == always ]] || fail "--color=al<TAB> should give always, got: $got"
+got=$(complete_words 4 ./pve-toolbox list --color "=" "")
+for value in auto always never; do
+    has "$got" "$value" || fail "list --color= missing $value, got: $got"
+done
+# A shell without '=' in COMP_WORDBREAKS passes the word whole.
+got=$(complete_words 1 ./pve-toolbox "--color=al")
+[[ $got == --color=always ]] || fail "joined --color=al<TAB> should give --color=always, got: $got"
+pass "bash offers --color's values"
+
+# The '=' and the value after '--color' are neither the command nor one of
+# its arguments.
+got=$(complete_words 4 ./pve-toolbox --color "=" never inst)
+[[ $got == install ]] || fail "--color=never inst<TAB> should give install, got: $got"
+got=$(complete_words 5 ./pve-toolbox list --color "=" never st)
+[[ $got == storage ]] || fail "list --color=never st<TAB> should give storage, got: $got"
+got=$(complete_words 3 ./pve-toolbox --color=never install zfs-s)
+[[ $got == zfs-scrub ]] || fail "joined --color=never broke module completion, got: $got"
+pass "bash finds the command past --color=WHEN"
+
+# A lone match that ends in '=' wants its value next, not a space: compopt
+# only works inside a real completion, so record what it is asked to do.
+compopt() { printf '%s\n' "$*" >>"$WORK/compopt"; }
+: >"$WORK/compopt"
+got=$(complete_words 1 ./pve-toolbox "--co")
+[[ $got == --color= ]] || fail "--co<TAB> should give --color=, got: $got"
+[[ $(<"$WORK/compopt") == "-o nospace" ]] \
+    || fail "--co<TAB> did not suppress the trailing space: $(<"$WORK/compopt")"
+: >"$WORK/compopt"
+got=$(complete_words 1 ./pve-toolbox "--f")
+[[ -z $(<"$WORK/compopt") ]] || fail "--f<TAB> suppressed the trailing space"
+unset -f compopt
+pass "bash leaves no space after --color="
 
 # menu, ui, link and self-update take nothing, and neither does a typo.
 for verb in menu ui doctor link self-update definitely-not-a-command; do
@@ -140,13 +201,13 @@ pass "bash offers nothing where nothing is taken"
 
 # --- usage -------------------------------------------------------------------
 
-# usage() read a hardcoded line range of the header comment, so growing that
-# header spilled `set -euo pipefail` and the code under it into --help.
+# --help is generated from the command table, not read off the header
+# comment, so it cannot spill shell code or comment markers into its output.
 help=$(launch ./pve-toolbox --help)
-[[ $help == *"pve-toolbox list [tag]"* ]] || fail "--help lost the command list"
-[[ $help == *"Flags:"* ]]                 || fail "--help lost the flags line"
-[[ $help != *"set -euo"* ]]               || fail "--help leaked shell code"
-[[ $help != *"#"* ]]                      || fail "--help leaked a comment marker"
+[[ $help == *"Commands:"* ]] || fail "--help lost the command list"
+[[ $help == *"Options:"* ]]  || fail "--help lost the options list"
+[[ $help != *"set -euo"* ]]  || fail "--help leaked shell code"
+[[ $help != *"#"* ]]         || fail "--help leaked a comment marker"
 pass "usage stops at the end of the header"
 
 # The package launcher lives separately from its modules and libraries. An

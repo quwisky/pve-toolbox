@@ -25,18 +25,40 @@ source "${BASH_SOURCE[0]%/*}/discord.sh"
 
 # ---------------------------------------------------------------- output --
 
-if [[ -t 1 ]]; then
-    c_reset=$'\e[0m'; c_bold=$'\e[1m'; c_dim=$'\e[2m'
-    c_red=$'\e[31m'; c_green=$'\e[32m'; c_yellow=$'\e[33m'; c_blue=$'\e[34m'
-else
-    c_reset=""; c_bold=""; c_dim=""
-    c_red=""; c_green=""; c_yellow=""; c_blue=""
-fi
+# Colour is decided once per stream. TOOLBOX_COLOR (auto|always|never) is set
+# by the launcher from --color and exported, so runners that re-source this
+# file decide the same way. NO_COLOR (https://no-color.org) and TERM=dumb
+# turn auto off; --color=always overrides both.
+_toolbox_color_on() { # _toolbox_color_on <fd>
+    case ${TOOLBOX_COLOR:-auto} in
+        always) return 0 ;;
+        never)  return 1 ;;
+    esac
+    [[ -z ${NO_COLOR:-} && ${TERM:-} != dumb ]] || return 1
+    [[ -t $1 ]]
+}
+
+# shellcheck disable=SC2034 # c_* and e_* are consumed by modules and pve-toolbox.
+toolbox_color_setup() {
+    if _toolbox_color_on 1; then
+        c_reset=$'\e[0m'; c_bold=$'\e[1m'; c_dim=$'\e[2m'
+        c_red=$'\e[31m'; c_green=$'\e[32m'; c_yellow=$'\e[33m'; c_blue=$'\e[34m'
+    else
+        c_reset=""; c_bold=""; c_dim=""
+        c_red=""; c_green=""; c_yellow=""; c_blue=""
+    fi
+    if _toolbox_color_on 2; then
+        e_reset=$'\e[0m'; e_bold=$'\e[1m'; e_red=$'\e[31m'; e_yellow=$'\e[33m'
+    else
+        e_reset=""; e_bold=""; e_red=""; e_yellow=""
+    fi
+}
+toolbox_color_setup
 
 info() { printf '%s==>%s %s\n' "$c_blue$c_bold" "$c_reset" "$*"; }
 ok()   { printf '%s  ok%s %s\n' "$c_green" "$c_reset" "$*"; }
 warn() { printf '%s  !!%s %s\n' "$c_yellow" "$c_reset" "$*"; }
-die()  { printf '%s error:%s %s\n' "$c_red$c_bold" "$c_reset" "$*" >&2; exit 1; }
+die()  { printf '%s error:%s %s\n' "$e_red$e_bold" "$e_reset" "$*" >&2; exit 1; }
 step() { printf '\n%s%s%s\n' "$c_bold" "$*" "$c_reset"; }
 dim()  { printf '%s%s%s\n' "$c_dim" "$*" "$c_reset"; }
 

@@ -8,8 +8,8 @@
 # launcher is invoked as $words[1], so completing ./pve-toolbox in a
 # checkout asks that checkout rather than whatever is on PATH.
 
-_pve-toolbox_candidates() { # _pve-toolbox_candidates <target>
-    ${words[1]} _complete $1 2>/dev/null
+_pve-toolbox_candidates() { # _pve-toolbox_candidates <target> [args...]
+    "${words[1]}" _complete "$@" 2>/dev/null
 }
 
 _pve-toolbox() {
@@ -25,27 +25,27 @@ _pve-toolbox() {
         if [[ -z $cmd ]]; then cmd=$words[i]; else (( nargs++ )); fi
     done
 
+    # --color's value is not read from the command table: it is the same
+    # three words for every command, checked before the generic flag branch
+    # since --color=* also matches -*.
+    if [[ $words[CURRENT] == --color=* ]]; then
+        local -a colors
+        colors=(--color=auto --color=always --color=never)
+        compadd -a colors
+        return
+    fi
     if [[ $words[CURRENT] == -* ]]; then
-        if [[ $cmd == lxc-update ]]; then
-            _values 'LXC update flag' \
-                '--dry-run[simulate using cached indexes without guest changes]' \
-                '--allow-removals[allow package removals and cleanup]' \
-                '--notify[send a Discord summary after execution]' \
-                '--help[show usage]'
-            return
-        fi
-        _values 'flag' \
-            '(-y --yes)'{-y,--yes}'[non-interactive, take defaults]' \
-            '(-f --force)'{-f,--force}'[reinstall or redownload even if current]' \
-            '--json[emit versioned JSON for status, check, or doctor]' \
-            '--quiet[emit no report; return only the standardized status]' \
-            '(-V --version)'{-V,--version}'[show installed version]' \
-            '(-h --help)'{-h,--help}'[show usage]'
+        local -a flagspecs
+        flagspecs=( ${(f)"$(_pve-toolbox_candidates flag-help $cmd)"} )
+        _describe 'flag' flagspecs
         return
     fi
 
     case $cmd in
         "")        cands=( ${(f)"$(_pve-toolbox_candidates commands)"} ) ;;
+        help)      # takes a single optional command name
+                   (( nargs )) && return 1
+                   cands=( ${(f)"$(_pve-toolbox_candidates commands)"} ) ;;
         list)      # takes a single optional tag
                    (( nargs )) && return 1
                    cands=( ${(f)"$(_pve-toolbox_candidates tags)"} ) ;;

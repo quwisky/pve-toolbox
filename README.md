@@ -95,13 +95,18 @@ pve-toolbox doctor             read-only host and module health audit
 pve-toolbox lxc-update [ID]...  update local running Debian/Ubuntu containers
 pve-toolbox uninstall <mod>...
 pve-toolbox self-update        git pull this checkout (git installs only)
+pve-toolbox help [command]     list commands, or one command's usage and flags
 pve-toolbox --version          print the installed version
 ```
 
+`pve-toolbox help` and `pve-toolbox <command> --help` print the same thing.
+An unknown command, flag, module, or tag exits `64` and, on stderr, suggests
+what was probably meant.
+
 Flags: `-y` non-interactive (modules read their env vars instead of prompting),
 `-f` force, `--json` versioned output, `--quiet` exit-status-only output,
-`-V` version, `-h` help. JSON and quiet output apply to `status`, `check`, and
-`doctor`.
+`--color=auto|always|never` colour output, `-V` version, `-h` help. JSON and
+quiet output apply to `status`, `check`, and `doctor`.
 
 Use `pve-toolbox lxc-update --dry-run` as root on PVE 9 to preview container
 package updates. Execution requires a terminal and confirmation; `--allow-removals`

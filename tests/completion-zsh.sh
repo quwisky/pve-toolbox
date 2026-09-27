@@ -6,9 +6,10 @@
 # zsh, so neither `bash -n` nor the linter can read it, and the bash completion
 # tests in smoke.sh say nothing about it. The two are meant to offer the same
 # candidates, so the cases here mirror those - except prefix filtering, which
-# zsh does itself rather than the script, and flags, which go through _values
-# rather than compadd. Both are covered on the bash side, where compgen and
-# COMPREPLY make them observable.
+# zsh does itself rather than the script. Flags go through _describe rather
+# than compadd directly; the sandbox has no compsys function files to
+# autoload it from, so _describe is stubbed below just enough to make its
+# candidates observable, the same way compadd is.
 #
 # Needs zsh, and skips without it. CI sets ZSH_TEST_REQUIRED=1 where zsh is
 # installed, so a missing dependency there fails rather than passing quietly.
@@ -40,6 +41,16 @@ compadd() {
     # The real compadd takes -a <arrayname>; print what that array holds.
     local -a a; a=(${(P)2})
     print -r -- "${a[*]}"
+}
+
+# The sandbox has no compsys function files to autoload, so _describe itself
+# is stubbed too: enough to expose the flag names it was handed for `has` to
+# check, same as the real one, which also ends up calling compadd.
+_describe() {
+    local -a specs; specs=(${(P)2})
+    local -a names s
+    for s in $specs; do names+=(${s%%:*}); done
+    compadd -a names
 }
 
 # offers <cword> <word>... -> the candidates, space separated
@@ -97,4 +108,29 @@ for verb in menu ui doctor link self-update definitely-not-a-command; do
     [[ -z $got ]] || fail "$verb takes no arguments, got: $got"
 done
 print "ok  zsh offers nothing for argumentless commands"
+
+# Flags are read from the command table: a command'"'"'s own flags join the
+# globals, and a command without any offers only the globals.
+got=$(offers 3 ./pve-toolbox status "-")
+has $got --json || fail "status did not offer --json: $got"
+has $got --quiet || fail "status did not offer --quiet: $got"
+got=$(offers 3 ./pve-toolbox install "-")
+[[ $got != *--json* ]] || fail "install offered --json, which it does not accept: $got"
+got=$(offers 3 ./pve-toolbox lxc-update "-")
+has $got --dry-run || fail "lxc-update did not offer --dry-run: $got"
+[[ $got != *--yes* ]] || fail "lxc-update offered --yes, which its runner refuses: $got"
+print "ok  zsh offers a command'"'"'s own flags, not another command'"'"'s"
+
+# help completes command names, the same list as the bare prompt.
+got=$(offers 3 ./pve-toolbox help "")
+has $got status || fail "help offered no command names: $got"
+print "ok  zsh completes command names after help"
+
+# --color'"'"'s value is the same three words for every command, offered
+# before any command has even been typed.
+got=$(offers 2 ./pve-toolbox "--color=")
+for value in --color=auto --color=always --color=never; do
+    has $got $value || fail "--color= missing $value: $got"
+done
+print "ok  zsh offers --color'"'"'s values"
 '
