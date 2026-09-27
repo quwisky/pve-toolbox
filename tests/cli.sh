@@ -303,3 +303,90 @@ for target in flags flag-help; do
     [[ $out == *"-y"* ]] || fail "'_complete $target bogus-command' dropped the globals: $out"
 done
 pass "_complete flags and flag-help survive an absent, empty, or unknown command"
+
+# --- man page -----------------------------------------------------------------
+
+# Roff-escapes a string the same way _man_escape does, so an expectation
+# containing a hyphen matches what the generator actually emits.
+mroff() { local s=$1; s=${s//\\/\\\\}; s=${s//-/\\-}; printf '%s' "$s"; }
+
+man=$(SOURCE_DATE_EPOCH=1790000000 ./pve-toolbox _man) || fail "_man failed"
+[[ $man == .TH\ PVE-TOOLBOX\ 1\ \"September\ 2026\"* ]] || fail "_man date not taken from SOURCE_DATE_EPOCH"
+[[ $man != *"@COMMANDS@"* && $man != *"@OPTIONS@"* && $man != *"@DATE@"* ]] || fail "_man left a placeholder"
+while IFS= read -r c; do
+    [[ $man == *".B $(mroff "$c")"* ]] || fail "man page lacks command $c"
+done < <(./pve-toolbox _complete commands)
+for f in --json --quiet --dry-run --allow-removals --notify --color; do
+    [[ $man == *"$(mroff "$f")"* ]] || fail "man page lacks flag $f"
+done
+[[ $(SOURCE_DATE_EPOCH=1790000000 ./pve-toolbox _man) == "$man" ]] || fail "_man is not reproducible"
+if command -v groff >/dev/null 2>&1; then
+    warn_out=$(printf '%s\n' "$man" | groff -man -ww -z 2>&1) || fail "groff failed: $warn_out"
+    [[ -z $warn_out ]] || fail "groff warnings: $warn_out"
+elif [[ ${PACKAGING_TEST_REQUIRED:-0} -eq 1 ]]; then
+    fail "groff is required to lint the man page"
+else
+    printf 'skip man page lint, no groff\n'
+fi
+pass "generated man page covers every command and flag"
+
+# _man must not call discover: a checkout with zero modules would make
+# discover die, so _man succeeding there proves it never ran.
+empty_root=$(tmp)
+mkdir -p "$empty_root/lib" "$empty_root/modules" "$empty_root/share/man"
+cp "$ROOT"/lib/*.sh "$empty_root/lib/"
+cp "$ROOT/VERSION" "$empty_root/VERSION"
+cp "$ROOT/pve-toolbox" "$empty_root/pve-toolbox"
+cp "$ROOT/share/man/pve-toolbox.1.in" "$empty_root/share/man/pve-toolbox.1.in"
+out=$(PVE_TOOLBOX_ROOT="$empty_root" launch_bin "$empty_root/pve-toolbox" _man 2>&1) \
+    || fail "_man died in a module-less checkout, so it must have called discover: $out"
+[[ -n $out ]] || fail "_man produced nothing in a module-less checkout"
+pass "_man does not call discover"
+
+# _man needs no root: the whole test suite already runs unprivileged, so a
+# plain, successful call here is the proof.
+[[ $(id -u) -ne 0 ]] || fail "test suite must not run as root"
+launch _man >/dev/null || fail "_man failed as a normal user"
+pass "_man works as a normal user"
+
+# _man is hidden: not offered by completion, not documented by help, but
+# still recognised (not "unknown command").
+got=" $(launch _complete commands | tr '\n' ' ') "
+[[ $got != *" _man "* ]] || fail "_man is offered by completion"
+out=$(launch help _man 2>&1 || true)
+[[ $out == *"'_man' is internal and has no help"* ]] || fail "help _man does not call it internal: $out"
+pass "_man is hidden from completion and help"
+
+# P2-2: commands that require root say so in the generated page, and
+# lxc-update names the globals its runner refuses.
+[[ $man == *"Requires root."* ]] || fail "man page never says Requires root."
+refused="The -y, --yes and -f, --force options are refused."
+[[ $man == *"$(mroff "$refused")"* ]] || fail "man page lacks the lxc-update refused-globals sentence"
+
+# P2-3: facts from the deleted static debian/pve-toolbox.1 must survive into
+# the generated page, even though the wording is free to change.
+[[ $man == *"refuse this command"* ]] || fail "man page dropped: packaged installs refuse 'link'"
+[[ $man == *"cluster"* && $man == *"storage"* && $man == *"installed"* ]] \
+    || fail "man page dropped doctor's audit scope (host, cluster, storage, installed modules)"
+[[ $man == *"Exit status 0 when healthy"* ]] || fail "man page dropped doctor's exit-status sentence"
+quiet_json="cannot be combined with $(mroff "--json")"
+[[ $man == *"$quiet_json"* ]] || fail "man page dropped: --quiet cannot combine with --json"
+color_force="$(mroff "--json") or $(mroff "--quiet") always force"
+[[ $man == *"$color_force"* ]] || fail "man page dropped: --json/--quiet always force colour off"
+
+# ENVIRONMENT: NO_COLOR is documented.
+[[ $man == *"NO_COLOR"* ]] || fail "man page lacks the ENVIRONMENT section's NO_COLOR"
+[[ $man == *".SH ENVIRONMENT"* ]] || fail "man page lacks an ENVIRONMENT section"
+pass "generated man page carries every fact from the deleted static page"
+
+# Missing template: fails closed rather than printing nothing. A fixture
+# root with everything but share/man/ exercises that path without disturbing
+# the real template used by every other assertion above.
+no_template_root=$(tmp)
+mkdir -p "$no_template_root/lib" "$no_template_root/modules"
+cp "$ROOT"/lib/*.sh "$no_template_root/lib/"
+cp "$ROOT/VERSION" "$ROOT/pve-toolbox" "$no_template_root/"
+rc=0; err=$(PVE_TOOLBOX_ROOT="$no_template_root" launch_bin "$no_template_root/pve-toolbox" _man 2>&1) || rc=$?
+[[ $rc -eq 1 ]] || fail "_man with a missing template exited $rc, want 1"
+[[ $err == *"man page template missing"* ]] || fail "_man with a missing template did not say why: $err"
+pass "_man fails closed when its template is missing"
