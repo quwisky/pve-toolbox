@@ -138,11 +138,11 @@ though it carries the same `schema_version` and `command`:
   "modules": [
     {
       "name": "zfs-scrub",
-      "title": "ZFS Scrub",
-      "description": "schedule periodic zpool scrubs",
-      "tags": ["storage", "zfs"],
+      "title": "ZFS scrub + Discord",
+      "description": "scheduled scrub per pool, Discord message on start and on result",
+      "tags": ["storage", "zfs", "monitoring", "notify"],
       "installed": true,
-      "status": "installed, next scrub in 3 days"
+      "status": "pools:2  [rpool tank]"
     }
   ]
 }

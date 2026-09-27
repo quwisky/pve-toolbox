@@ -84,19 +84,19 @@ declare `MODULE_HOST_ONLY=1` and warn if they detect an LXC.
 ## Usage
 
 ```
-pve-toolbox                    interactive menu
-pve-toolbox ui                 full-screen menu (needs whiptail)
-pve-toolbox list [--json] [tag] list modules and their status
-pve-toolbox install <mod>...   install specific modules
-pve-toolbox update [mod]...    update (all installed if none given)
-pve-toolbox check [mod]...     report available updates, change nothing
-pve-toolbox status [mod]       detailed status
-pve-toolbox doctor             read-only host and module health audit
-pve-toolbox lxc-update [ID]...  update local running Debian/Ubuntu containers
+pve-toolbox                      interactive menu
+pve-toolbox ui                   full-screen menu (needs whiptail)
+pve-toolbox list [--json] [tag]  list modules and their status
+pve-toolbox install <mod>...     install specific modules
+pve-toolbox update [mod]...      update (all installed if none given)
+pve-toolbox check [mod]...       report available updates, change nothing
+pve-toolbox status [mod]         detailed status
+pve-toolbox doctor               read-only host and module health audit
+pve-toolbox lxc-update [ID]...   update local running Debian/Ubuntu containers
 pve-toolbox uninstall <mod>...
-pve-toolbox self-update        git pull this checkout (git installs only)
-pve-toolbox help [command]     list commands, or one command's usage and flags
-pve-toolbox --version          print the installed version
+pve-toolbox self-update          git pull this checkout (git installs only)
+pve-toolbox help [command]       list commands, or one command's usage and flags
+pve-toolbox --version            print the installed version
 ```
 
 `pve-toolbox help` and `pve-toolbox <command> --help` print the same thing.
