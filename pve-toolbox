@@ -384,135 +384,25 @@ module_has_function() { # module_has_function <module> <function>
     )
 }
 
-# One process-lifetime cache of every module's status line, filled by
-# load_statuses. Never invalidated and never refreshed mid-process: each
-# launcher run reads a consistent snapshot. The menu and the ui never call
-# load_statuses, so they keep re-reading status live, one module at a time.
+# One process-lifetime cache of every module's status line, filled once per
+# command, serially, by load_statuses: each module's module_status runs
+# exactly once. Never invalidated and never refreshed mid-process: each
+# launcher run reads a consistent snapshot. Process-scoped: the menu and the
+# ui never call load_statuses, so they keep re-reading status live, one
+# module at a time.
 declare -gA MODULE_STATUS=()
 MODULE_STATUS_LOADED=0
-# A worker ends its result file with this line, written by the same printf
-# as the status, so a file that does not end with it is incomplete.
-_LS_END='--- pve-toolbox status end ---'
 
-# The load_statuses run in progress, for its EXIT trap: the process that set
-# the trap, the temporary directory, and a copy of the launcher's stderr.
-_LS_OWNER=''
-_LS_DIR=''
-_LS_ERR=''
-
-# _process_tree <pid> -> set _PROCESS_TREE to every live process below <pid>:
-# its children, theirs, and so on. Read from /proc without forking, because
-# it runs in an EXIT trap. Zombies are left out.
-_process_tree() {
-    local f stat pid i=0
-    local -A kids=()
-    for f in /proc/[0-9]*/stat; do
-        IFS= read -r stat 2>/dev/null < "$f" || continue
-        stat=${stat##*) }   # "state ppid ...": the command name may hold ") "
-        [[ $stat != Z* ]] || continue
-        stat=${stat#* }
-        pid=${f#/proc/}; pid=${pid%/stat}
-        kids[${stat%% *}]+=" $pid"
-    done
-    # shellcheck disable=SC2206 # a space-separated list of PIDs, split on purpose
-    _PROCESS_TREE=(${kids[$1]-})
-    while (( i < ${#_PROCESS_TREE[@]} )); do
-        # shellcheck disable=SC2206 # as above
-        _PROCESS_TREE+=(${kids[${_PROCESS_TREE[i]}]-})
-        i=$((i + 1))
-    done
-}
-
-# EXIT trap while load_statuses runs, so an interrupt, a signal or a die
-# leaves no temporary directory and no status worker behind, and never
-# blocks for long. Only the process that set the trap acts: a worker
-# inherits it if a signal lands between fork and the trap reset.
-#
-# Every process below the launcher at this point is a status worker or
-# something a worker started: the launcher runs nothing else in the
-# background. The workers ignore ^C (see load_statuses) and a module_status
-# can be stuck, so waiting for them could last forever. The trap sends TERM
-# to all of them, and again to any left, for at most 3s. It does not pause
-# between rounds, so it forks nothing but rm: a TERM ends them within
-# milliseconds, and one that outlives it (a command stuck in the kernel)
-# costs at most 3s of CPU. Once none is left it reaps them, which cannot
-# block, and removes the directory; after 3s it removes the directory
-# anyway. Only a worker writes into it, and a write never creates it again,
-# so that is safe even if something survived.
-#
-# It removes only a real directory owned by this user: the name is chosen
-# before it is created (so an interrupt during mkdir cannot leave it
-# behind), and someone else may own a directory of that name.
-_load_statuses_cleanup() {
-    [[ $BASHPID == "$_LS_OWNER" ]] || return 0
-    [[ -z $_LS_ERR ]] || exec 2>&"$_LS_ERR"
-    local end=$(( ${EPOCHREALTIME//[!0-9]/} + 3000000 ))
-    _process_tree "$BASHPID"
-    while (( ${#_PROCESS_TREE[@]} && ${EPOCHREALTIME//[!0-9]/} < end )); do
-        kill -TERM "${_PROCESS_TREE[@]}" 2>/dev/null || true
-        _process_tree "$BASHPID"
-    done
-    (( ${#_PROCESS_TREE[@]} )) || wait 2>/dev/null || true
-    if [[ -n $_LS_DIR && -d $_LS_DIR && ! -L $_LS_DIR && -O $_LS_DIR ]]; then
-        rm -rf -- "$_LS_DIR"
-    fi
-}
-
-# Fill MODULE_STATUS for every discovered module, module_status calls running
-# at most 8 at a time. Idempotent: a second call is a no-op. Safe to call
-# concurrently with other modules' module_status only because the module
-# contract requires module_status to be read-only.
-#
-# The workers and everything they start ignore SIGINT and SIGQUIT, so ^C and
-# ^\ reach only the launcher, whose EXIT trap stops them with TERM. Left to
-# the default, ^C also reached every bash process of the workers, and bash
-# can spin forever in a subshell that SIGINT hits while it forks.
-#
-# A worker hit by ^C before it ignores it dies with bash's own complaints
-# ("wait_for: No record of process"), so the workers are forked with stderr
-# on /dev/null; the EXIT trap uses a copy of the launcher's stderr.
-#
-# Each worker writes its result and the end line with one printf, and forks
-# nothing after collecting the status. A result file that is missing or does
-# not end with the end line (a full disk, a worker killed mid-write) stops
-# the command naming the module; it never reads as installed.
+# Fill MODULE_STATUS for every discovered module, one module_status call at a
+# time. Idempotent: a second call is a no-op.
 load_statuses() {
     [[ $MODULE_STATUS_LOADED -eq 1 ]] && return 0
     discover
-    local i=0 running=0 m st c err end=$'\n'"$_LS_END"$'\n'
-    _LS_OWNER=$BASHPID
-    _LS_DIR="${TMPDIR:-/tmp}/pve-toolbox-status.$BASHPID.$SRANDOM$SRANDOM"
-    _LS_ERR=''
-    trap _load_statuses_cleanup EXIT
-    # mkdir fails if the name exists; that directory is not ours to remove.
-    mkdir -m 0700 -- "$_LS_DIR" || { _LS_DIR=''; die "could not create a temporary directory"; }
-    exec {_LS_ERR}>&2 || _LS_ERR=''
+    local m st
     for m in "${MODULES[@]}"; do
-        (
-            trap '' INT QUIT
-            [[ -z $_LS_ERR ]] || exec {_LS_ERR}>&-
-            st=$(run_module "$m" module_status 2>/dev/null) || true
-            printf '%s%s' "${st:-not installed}" "$end" > "$_LS_DIR/$i"
-        ) </dev/null &
-        i=$((i + 1)); running=$((running + 1))
-        if (( running >= 8 )); then wait -n || true; running=$((running - 1)); fi
-    done 2>/dev/null
-    wait || true
-    if [[ -n $_LS_ERR ]]; then
-        err=$_LS_ERR _LS_ERR=''
-        exec {err}>&-
-    fi
-    i=0
-    for m in "${MODULES[@]}"; do
-        c=''
-        [[ ! -f $_LS_DIR/$i ]] || IFS= read -r -d '' c < "$_LS_DIR/$i" || true
-        [[ $c == *"$end" ]] || die "could not read the status of $m"
-        MODULE_STATUS[$m]=${c%"$end"}
-        i=$((i + 1))
+        st=$(run_module "$m" module_status 2>/dev/null) || true
+        MODULE_STATUS[$m]=${st:-not installed}
     done
-    rm -rf -- "$_LS_DIR"
-    trap - EXIT
-    _LS_OWNER='' _LS_DIR=''
     MODULE_STATUS_LOADED=1
 }
 

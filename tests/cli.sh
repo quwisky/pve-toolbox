@@ -520,13 +520,12 @@ rc=0; err=$(PVE_TOOLBOX_ROOT="$no_template_root" launch_bin "$no_template_root/p
 [[ $err == *"man page template missing"* ]] || fail "_man with a missing template did not say why: $err"
 pass "_man fails closed when its template is missing"
 
-# --- parallel status cache ------------------------------------------------
+# --- module status cache ---------------------------------------------------
 
-# load_statuses computes every module's module_status concurrently and once
-# per command. a-one is installed instantly; b-two and d-four each sleep
-# before reporting installed, so if the two sleeps run one after another the
-# whole command takes at least 6s; c-three exits non-zero with no output and
-# must read as not installed.
+# load_statuses fills the process-lifetime MODULE_STATUS cache once per
+# command, one module_status call at a time, in discovery order. a-one,
+# b-two and d-four are installed; c-three exits non-zero with no output and
+# must read as not installed, with an installed module on either side of it.
 status_root=$(tmp)
 mkdir -p "$status_root/lib" \
     "$status_root/modules/a-one" "$status_root/modules/b-two" \
@@ -535,53 +534,53 @@ cp "$ROOT"/lib/*.sh "$status_root/lib/"
 cp "$ROOT/VERSION" "$status_root/VERSION"
 cp "$ROOT/pve-toolbox" "$status_root/pve-toolbox"
 chmod 0755 "$status_root/pve-toolbox"
+# Each fixture's module_status appends its own name to $STATUS_CALLS (a file
+# outside the checkout, so callers that do not set it are unaffected) before
+# reporting, so a test can count how many times load_statuses actually calls
+# it.
 printf '%s\n' \
     'MODULE_NAME="a-one"' 'MODULE_TITLE="A one"' 'MODULE_DESC="fixture a"' \
     'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
-    'module_status() { printf "installed a"; }' \
+    'module_status() { printf "a-one\n" >> "${STATUS_CALLS:-/dev/null}"; printf "installed a"; }' \
     > "$status_root/modules/a-one/module.sh"
 printf '%s\n' \
     'MODULE_NAME="b-two"' 'MODULE_TITLE="B two"' 'MODULE_DESC="fixture b"' \
     'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
-    'module_status() { sleep 3; printf "installed b"; }' \
+    'module_status() { printf "b-two\n" >> "${STATUS_CALLS:-/dev/null}"; printf "installed b"; }' \
     > "$status_root/modules/b-two/module.sh"
 printf '%s\n' \
     'MODULE_NAME="c-three"' 'MODULE_TITLE="C three"' 'MODULE_DESC="fixture c"' \
     'MODULE_TAGS="fixture solo"' 'MODULE_HOST_ONLY=0' \
-    'module_status() { exit 3; }' \
+    'module_status() { printf "c-three\n" >> "${STATUS_CALLS:-/dev/null}"; exit 3; }' \
     > "$status_root/modules/c-three/module.sh"
 printf '%s\n' \
     'MODULE_NAME="d-four"' 'MODULE_TITLE="D four"' 'MODULE_DESC="fixture d"' \
     'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
-    'module_status() { sleep 3; printf "installed d"; }' \
+    'module_status() { printf "d-four\n" >> "${STATUS_CALLS:-/dev/null}"; printf "installed d"; }' \
     > "$status_root/modules/d-four/module.sh"
 
 status_launch() { # status_launch [args...] -> the fixture launcher above
     PVE_TOOLBOX_ROOT="$status_root" launch_bin "$status_root/pve-toolbox" "$@"
 }
 
-SECONDS=0
-list_out=$(status_launch list) || fail "list failed against the parallel-status fixture"
-list_elapsed=$SECONDS
+list_out=$(status_launch list) || fail "list failed against the status fixture"
 order=$(grep -oE '^(a-one|b-two|c-three|d-four)' <<<"$list_out" | tr '\n' ' ')
 [[ $order == "a-one b-two c-three d-four " ]] \
     || fail "list did not keep discovery order over the status fixture: $order"
 c_status=$(awk '/^c-three/{getline; print; exit}' <<<"$list_out")
 [[ $c_status == *"status: not installed"* ]] \
     || fail "c-three (exit 3, no output) did not read as not installed: $c_status"
-[[ $list_elapsed -lt 5 ]] \
-    || fail "list took ${list_elapsed}s over 4 modules with two 3s statuses; want under 5s (parallel), a serial run needs at least 6s"
-pass "list computes module status in parallel, in under 5s, preserving discovery order"
+pass "list preserves discovery order and reads a failing status as not installed"
 
-installed_out=$(status_launch _complete installed) || fail "_complete installed failed against the parallel-status fixture"
+installed_out=$(status_launch _complete installed) || fail "_complete installed failed against the status fixture"
 [[ $installed_out == $'a-one\nb-two\nd-four' ]] \
     || fail "_complete installed did not list a-one, b-two, d-four in order: $installed_out"
 pass "_complete installed lists installed modules in discovery order"
 
-# The parallel results are the results a one-at-a-time run gives: each
-# fixture module's module_status is run alone, in its own shell, and read
-# the way status_line reads it (no output means not installed).
-serial_json=$(status_launch list --json) || fail "list --json failed against the parallel-status fixture"
+# The cached results are the results a one-at-a-time run gives: each fixture
+# module's module_status is run alone, in its own shell, and read the way
+# status_line reads it (no output means not installed).
+cache_json=$(status_launch list --json) || fail "list --json failed against the status fixture"
 for m in a-one b-two c-three d-four; do
     want=$(bash -c 'source "$1"; module_status' _ "$status_root/modules/$m/module.sh" 2>/dev/null) || true
     want=${want:-not installed}
@@ -589,248 +588,38 @@ for m in a-one b-two c-three d-four; do
     [[ $want != "not installed" ]] || want_installed=false
     jq -e --arg m "$m" --arg st "$want" --argjson inst "$want_installed" \
         '.modules[] | select(.name == $m) | .status == $st and .installed == $inst' \
-        <<<"$serial_json" >/dev/null \
-        || fail "list --json status of $m differs from a one-at-a-time run (want '$want', installed $want_installed): $serial_json"
+        <<<"$cache_json" >/dev/null \
+        || fail "list --json status of $m differs from a one-at-a-time run (want '$want', installed $want_installed): $cache_json"
 done
-pass "parallel module status matches a one-at-a-time run over the fixture"
+pass "cached module status matches a one-at-a-time run over the fixture"
 
-# A status result that cannot be written completely must fail closed. The
-# launcher runs with a zero file-size limit (and SIGXFSZ ignored, so the
-# write returns an error instead of killing the worker): the result file can
-# be created but nothing can be written to it, which is what a full disk
-# leaves behind. It works the same as root, which chmod-based tests do not.
-# e-five is not installed; its module_update leaves a marker if it ever runs.
-# TMPDIR is a directory of the test's own, so a leaked temporary directory
-# is visible.
-fail_root=$(tmp)
-fail_tmp=$(tmp)
-mkdir -p "$fail_root/lib" "$fail_root/modules/e-five"
-cp "$ROOT"/lib/*.sh "$fail_root/lib/"
-cp "$ROOT/VERSION" "$fail_root/VERSION"
-cp "$ROOT/pve-toolbox" "$fail_root/pve-toolbox"
-chmod 0755 "$fail_root/pve-toolbox"
-printf '%s\n' \
-    'MODULE_NAME="e-five"' 'MODULE_TITLE="E five"' 'MODULE_DESC="fixture e"' \
-    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
-    'module_status() { return 1; }' \
-    "module_update() { : > '$fail_root/updated'; echo UPDATED; }" \
-    > "$fail_root/modules/e-five/module.sh"
-fail_launch() { # fail_launch [args...] -> the fixture launcher, no file may grow
-    TMPDIR="$fail_tmp" PVE_TOOLBOX_ROOT="$fail_root" launch_bin \
-        bash -c 'trap "" XFSZ; ulimit -f 0; exec "$0" "$@"' "$fail_root/pve-toolbox" "$@"
-}
-out=$(TMPDIR="$fail_tmp" PVE_TOOLBOX_ROOT="$fail_root" launch_bin "$fail_root/pve-toolbox" list) \
-    || fail "list failed against the unwritable-status fixture without a size limit"
-[[ $out == *"status: not installed"* ]] \
-    || fail "the unwritable-status fixture's e-five is not 'not installed' to begin with: $out"
-for args in "list" "list --json" "_complete installed" "update"; do
-    rc=0
-    # shellcheck disable=SC2086 # $args is a fixed word list above
-    out=$(fail_launch $args 2>&1) || rc=$?
-    [[ $rc -ne 0 ]] || fail "'$args' exited 0 although e-five's status could not be written: $out"
-    [[ $out == *"could not read the status of e-five"* ]] \
-        || fail "'$args' did not name e-five when its status could not be written: $out"
-    [[ $out != *"status:"* && $out != *'"installed"'* && $out != *UPDATED* ]] \
-        || fail "'$args' reported a status for e-five although it could not be read: $out"
-    ! grep -qx 'e-five' <<<"$out" \
-        || fail "'$args' offered e-five as installed although its status could not be read: $out"
-    [[ ! -e $fail_root/updated ]] \
-        || fail "'$args' ran module_update on e-five, which is not installed"
-    [[ -z $(ls -A "$fail_tmp") ]] \
-        || fail "'$args' left its status directory behind: $(ls -A "$fail_tmp")"
+# load_statuses runs each module's module_status exactly once per command: a
+# counter file gets exactly one line per module for 'list' and, separately,
+# for 'list --json'.
+calls_dir=$(tmp)
+calls_file="$calls_dir/calls"
+: > "$calls_file"
+STATUS_CALLS="$calls_file" status_launch list >/dev/null \
+    || fail "list failed while counting module_status calls"
+for m in a-one b-two c-three d-four; do
+    got=$(grep -cx "$m" "$calls_file")
+    [[ $got -eq 1 ]] \
+        || fail "list ran $m's module_status $got time(s), want exactly once: $(cat "$calls_file")"
 done
-pass "an unwritable status result fails closed, names the module, and leaves no temporary directory"
 
-# A result cut short is refused too, not only an empty one. e-big's status
-# is about 4KB; with a 1KB file-size limit the first 1KB reaches the result
-# file and the rest, with the end line, does not.
-big_root=$(tmp)
-big_tmp=$(tmp)
-mkdir -p "$big_root/lib" "$big_root/modules/e-big"
-cp "$ROOT"/lib/*.sh "$big_root/lib/"
-cp "$ROOT/VERSION" "$big_root/VERSION"
-cp "$ROOT/pve-toolbox" "$big_root/pve-toolbox"
-chmod 0755 "$big_root/pve-toolbox"
-printf '%s\n' \
-    'MODULE_NAME="e-big"' 'MODULE_TITLE="E big"' 'MODULE_DESC="fixture big"' \
-    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
-    'module_status() { printf "installed %04000d" 0; }' \
-    > "$big_root/modules/e-big/module.sh"
-out=$(TMPDIR="$big_tmp" PVE_TOOLBOX_ROOT="$big_root" launch_bin "$big_root/pve-toolbox" list) \
-    || fail "list failed against the long-status fixture without a size limit"
-[[ $out == *"status: installed 0000"* ]] || fail "the long-status fixture's e-big is not installed to begin with: $out"
-rc=0
-out=$(TMPDIR="$big_tmp" PVE_TOOLBOX_ROOT="$big_root" launch_bin \
-    bash -c 'trap "" XFSZ; ulimit -f 1; exec "$0" "$@"' "$big_root/pve-toolbox" list 2>&1) || rc=$?
-[[ $rc -ne 0 ]] || fail "list exited 0 although e-big's status was cut short: $out"
-[[ $out == *"could not read the status of e-big"* ]] \
-    || fail "list did not name e-big when its status was cut short: $out"
-[[ $out != *"status:"* ]] || fail "list reported a status for e-big although it was cut short: $out"
-[[ -z $(ls -A "$big_tmp") ]] || fail "list left its status directory behind: $(ls -A "$big_tmp")"
-pass "a status result cut short fails closed and names the module"
-
-# group_left <pgid> -> the live processes still in a process group, from
-# /proc; zombies waiting for their reaper do not count.
-group_left() {
-    local f s st pg
-    for f in /proc/[0-9]*/stat; do
-        IFS= read -r s 2>/dev/null < "$f" || continue
-        read -r st _ pg _ <<<"${s##*) }"
-        [[ $pg != "$1" || $st == Z ]] || printf '%s ' "${f//[!0-9]/}"
-    done
-}
-
-# interrupt_run <dir> <delay> <signal> <command...> -> runs the command as its
-# own job with TMPDIR=<dir>, so the signal reaches its whole process group as
-# a terminal's ^C would. Once the status directory appears in <dir> it waits
-# <delay>s and signals the group. Prints the exit status, followed by
-# "left: <pids>" if anything of the group outlived the command by 3s. Prints
-# "no-dir" if the directory never appeared, and "hang" if the command still
-# ran 10s after the signal. It never blocks: whatever is left of the group
-# then is killed. The command's stderr goes to <dir>.err.
-interrupt_run() {
-    local dir=$1 delay=$2 sig=$3; shift 3
-    (
-        set -m
-        TMPDIR="$dir" "$@" >/dev/null 2>"$dir.err" &
-        pid=$!
-        for _ in $(seq 250); do
-            [[ -z $(ls -A "$dir") ]] || break
-            sleep 0.02
-        done
-        if [[ -z $(ls -A "$dir") ]]; then
-            kill -KILL -- "-$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            echo no-dir; exit 0
-        fi
-        sleep "$delay"
-        kill -"$sig" -- "-$pid" 2>/dev/null || true
-        for _ in $(seq 100); do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.1
-        done
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -KILL -- "-$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-            echo hang; exit 0
-        fi
-        rc=0; wait "$pid" || rc=$?
-        left=$(group_left "$pid")
-        for _ in $(seq 30); do
-            [[ -n $left ]] || break
-            sleep 0.1
-            left=$(group_left "$pid")
-        done
-        if [[ -n $left ]]; then
-            kill -KILL -- "-$pid" 2>/dev/null || true
-            echo "$rc left: $left"
-        else
-            echo "$rc"
-        fi
-    )
-}
-
-# A shell started in the background without job control ignores SIGINT, and
-# so would every launcher it starts: these tests could not interrupt it.
-sig_ign=$(awk '/^SigIgn:/ { print $2 }' "/proc/$BASHPID/status")
-(( (16#$sig_ign & 2) == 0 )) \
-    || fail "SIGINT is ignored here, so the interrupt tests cannot run; run tests/cli.sh in the foreground or under timeout(1)"
-
-# An interrupt while statuses are still being computed (b-two sleeps) also
-# removes the temporary directory.
-sig_tmp=$(tmp)
-sig_rc=$(interrupt_run "$sig_tmp" 0 INT status_launch list)
-[[ $sig_rc != no-dir ]] || fail "list never created its status directory under TMPDIR"
-[[ $sig_rc != hang ]] || fail "an interrupted list was still running 10s later"
-[[ $sig_rc == 130 ]] || fail "an interrupted list exited '$sig_rc', want 130 and nothing left running"
-[[ -z $(ls -A "$sig_tmp") ]] \
-    || fail "an interrupted list left its status directory behind: $(ls -A "$sig_tmp")"
-[[ ! -s $sig_tmp.err ]] || fail "an interrupted list printed errors: $(cat "$sig_tmp.err")"
-# The interrupted status workers must not write into it afterwards either:
-# check again once b-two's and d-four's 3s sleeps are over.
-sleep 3.5
-[[ -z $(ls -A "$sig_tmp") ]] \
-    || fail "a status worker wrote after an interrupted list removed its directory: $(ls -A "$sig_tmp")"
-pass "an interrupted list removes its status directory"
-
-# The same with more modules than the 8 workers run at once, so the launcher
-# is still forking workers when the interrupt arrives. A worker that inherits
-# the launcher's EXIT trap must not remove the directory under its siblings.
-# A few short runs at different moments; each must exit 130, leave nothing
-# behind and print nothing.
-many_root=$(tmp)
-mkdir -p "$many_root/lib"
-cp "$ROOT"/lib/*.sh "$many_root/lib/"
-cp "$ROOT/VERSION" "$many_root/VERSION"
-cp "$ROOT/pve-toolbox" "$many_root/pve-toolbox"
-chmod 0755 "$many_root/pve-toolbox"
-for n in $(seq -w 1 16); do
-    mkdir -p "$many_root/modules/m$n"
-    printf '%s\n' \
-        "MODULE_NAME=\"m$n\"" "MODULE_TITLE=\"M$n\"" 'MODULE_DESC="fixture"' \
-        'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
-        "module_status() { sleep 0.$(( 10#$n % 5 + 2 )); printf 'installed $n'; }" \
-        > "$many_root/modules/m$n/module.sh"
+: > "$calls_file"
+STATUS_CALLS="$calls_file" status_launch list --json >/dev/null \
+    || fail "list --json failed while counting module_status calls"
+for m in a-one b-two c-three d-four; do
+    got=$(grep -cx "$m" "$calls_file")
+    [[ $got -eq 1 ]] \
+        || fail "list --json ran $m's module_status $got time(s), want exactly once: $(cat "$calls_file")"
 done
-many_launch() { PVE_TOOLBOX_ROOT="$many_root" launch_bin "$many_root/pve-toolbox" "$@"; }
-for delay in 0 0.1 0.2 0.3; do
-    many_tmp=$(tmp)
-    many_rc=$(interrupt_run "$many_tmp" "$delay" INT many_launch list)
-    [[ $many_rc != no-dir ]] || fail "list over 16 modules never created its status directory"
-    [[ $many_rc != hang ]] || fail "list over 16 modules interrupted after ${delay}s was still running 10s later"
-    [[ $many_rc == 130 ]] \
-        || fail "list over 16 modules interrupted after ${delay}s exited '$many_rc', want 130 and nothing left running"
-    [[ -z $(ls -A "$many_tmp") ]] \
-        || fail "list over 16 modules interrupted after ${delay}s left its status directory: $(ls -AR "$many_tmp")"
-    [[ ! -s $many_tmp.err ]] \
-        || fail "list over 16 modules interrupted after ${delay}s printed errors: $(cat "$many_tmp.err")"
-done
-pass "an interrupted list over more modules than run at once removes its directory cleanly"
-
-# A module_status that ^C does not stop (a stuck command, or a bash subshell
-# spinning with SIGINT blocked) must not keep an interrupted launcher
-# waiting: the launcher stops the workers and everything they started, and
-# exits promptly. A TERM to the group ends it the same way. The fixtures
-# ignore SIGINT themselves, so the test does not depend on the workers
-# ignoring it.
-stuck_root=$(tmp)
-mkdir -p "$stuck_root/lib" "$stuck_root/modules/s-sleep" "$stuck_root/modules/s-spin"
-cp "$ROOT"/lib/*.sh "$stuck_root/lib/"
-cp "$ROOT/VERSION" "$stuck_root/VERSION"
-cp "$ROOT/pve-toolbox" "$stuck_root/pve-toolbox"
-chmod 0755 "$stuck_root/pve-toolbox"
-printf '%s\n' \
-    'MODULE_NAME="s-sleep"' 'MODULE_TITLE="S sleep"' 'MODULE_DESC="fixture"' \
-    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
-    "module_status() { trap '' INT; sleep 60; printf 'installed'; }" \
-    > "$stuck_root/modules/s-sleep/module.sh"
-printf '%s\n' \
-    'MODULE_NAME="s-spin"' 'MODULE_TITLE="S spin"' 'MODULE_DESC="fixture"' \
-    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
-    "module_status() { trap '' INT; while :; do :; done; }" \
-    > "$stuck_root/modules/s-spin/module.sh"
-stuck_launch() { PVE_TOOLBOX_ROOT="$stuck_root" launch_bin "$stuck_root/pve-toolbox" "$@"; }
-for sig in INT TERM; do
-    want=130; [[ $sig == INT ]] || want=143
-    stuck_tmp=$(tmp)
-    SECONDS=0
-    stuck_rc=$(interrupt_run "$stuck_tmp" 0.3 "$sig" stuck_launch list)
-    stuck_elapsed=$SECONDS
-    [[ $stuck_rc != no-dir ]] || fail "list over stuck modules never created its status directory"
-    [[ $stuck_rc != hang ]] || fail "list over stuck modules was still running 10s after $sig"
-    [[ $stuck_rc == "$want" ]] \
-        || fail "list over stuck modules exited '$stuck_rc' after $sig, want $want and nothing left running"
-    (( stuck_elapsed <= 6 )) || fail "list over stuck modules took ${stuck_elapsed}s to stop after $sig"
-    [[ -z $(ls -A "$stuck_tmp") ]] \
-        || fail "list over stuck modules left its status directory after $sig: $(ls -AR "$stuck_tmp")"
-    [[ ! -s $stuck_tmp.err ]] \
-        || fail "list over stuck modules printed errors after $sig: $(cat "$stuck_tmp.err")"
-done
-pass "an interrupted list stops a module_status that ^C does not stop"
+pass "load_statuses runs each module's module_status exactly once per command"
 
 # --- list --json ------------------------------------------------------------
 
-json_out=$(status_launch list --json) || fail "list --json failed against the parallel-status fixture"
+json_out=$(status_launch list --json) || fail "list --json failed against the status fixture"
 [[ $json_out != *"$ESC"* ]] || fail "list --json contained colour escapes: $json_out"
 [[ $json_out != *"error"* && $json_out != *"warn"* ]] \
     || fail "list --json printed something other than JSON: $json_out"
@@ -848,7 +637,7 @@ jq -e '.modules[0].tags | type == "array"' <<<"$json_out" >/dev/null \
     || fail "list --json tags is not an array: $json_out"
 jq -e '.modules[0].tags == ["fixture"]' <<<"$json_out" >/dev/null \
     || fail "list --json tags content wrong: $json_out"
-pass "list --json matches the documented schema over the parallel-status fixture"
+pass "list --json matches the documented schema over the status fixture"
 
 filtered_out=$(status_launch list --json solo) || fail "list --json <tag> failed"
 jq -e '[.modules[].name] == ["c-three"]' <<<"$filtered_out" >/dev/null \
