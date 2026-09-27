@@ -1038,6 +1038,20 @@ else
         || fail "config show --json mangled a public value: $json"
     pass "config show cleans public values"
 
+    # A public value far larger than one command-line argument may be is
+    # shown in full, in text and in JSON: nothing passes it through argv.
+    dir=$(tmp)
+    big=$(printf 'a%.0s' $(seq 1 300000))
+    conf_write "$dir" e-conf "E_DIR='$big'"
+    rc=0; out=$(conf_launch "$dir" config show e-conf 2>&1) || rc=$?
+    [[ $rc -eq 0 ]] || fail "config show of a 300 KB public value exited $rc: ${out:0:300}"
+    [[ $out == *"E_DIR"*"$big"* ]] || fail "config show did not show a 300 KB public value"
+    rc=0; out=$(conf_launch "$dir" config show --json e-conf 2>&1) || rc=$?
+    [[ $rc -eq 0 ]] || fail "config show --json of a 300 KB public value exited $rc: ${out:0:300}"
+    [[ $(jq -r '.files[0].keys[0].value' <<<"$out") == "$big" ]] \
+        || fail "config show --json did not carry a 300 KB public value"
+    pass "config show handles a public value larger than a command-line argument"
+
     # The file is sourced in a subshell: its own variables cannot redirect
     # what is printed, and anything it writes is discarded.
     dir=$(tmp)
@@ -1058,6 +1072,42 @@ else
         conf_write "$dir" e-conf "E_WEBHOOK='SECRET13'" "E_DIR='/srv/e'" "$line"
         expect_config_fail "a file assigning $line" "$dir/e-conf.conf" "$dir" config show e-conf
     done
+    # Nor by defining a function: this one answers the reader's printf with
+    # a forged public record. A file that defines or redefines a function,
+    # builtin/command/declare included, is refused; so is one that sets a
+    # trap (an EXIT trap could append forged records).
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_WEBHOOK='SECRETA'" "E_DIR='/srv/e'" \
+        'printf() { if [[ $1 == '"'"'ok\0'"'"' ]]; then builtin printf '"'"'ok\0'"'"'; else builtin printf '"'"'%s\0%s\0%s\0%s\0'"'"' "$2" 1 1 "${!2}"; fi; }'
+    expect_config_fail "a file defining printf" "$dir/e-conf.conf: it defines or redefines a shell function" \
+        "$dir" config show e-conf
+    expect_config_fail "a file defining printf (json)" "$dir/e-conf.conf" "$dir" config show --json e-conf
+    # A declare that replays the reader's own snapshot would pass the
+    # function comparison; the separate check for a declare function stops it.
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_WEBHOOK='SECRETA'" "E_DIR='/srv/e'" \
+        'declare() { builtin printf '"'"'%s'"'"' "$_cfgscan_functions"; }' \
+        'printf() { if [[ $1 == '"'"'ok\0'"'"' ]]; then builtin printf '"'"'ok\0'"'"'; else builtin printf '"'"'%s\0%s\0%s\0%s\0'"'"' "$2" 1 1 "${!2}"; fi; }'
+    expect_config_fail "a file whose declare replays the snapshot" \
+        "$dir/e-conf.conf: it defines or redefines a shell function" "$dir" config show e-conf
+    for def in 'builtin() { :; }' 'command() { :; }' 'declare() { :; }' 'readonly -f conf_file' \
+        'conf_file() { :; }' 'function helper { :; }'; do
+        dir=$(tmp)
+        conf_write "$dir" e-conf "E_WEBHOOK='SECRETA'" "E_DIR='/srv/e'" "$def"
+        expect_config_fail "a file running '$def'" "$dir/e-conf.conf" "$dir" config show e-conf
+    done
+    for def in "trap 'printf \"%s\\0\" E_DIR 1 1 \"\$E_WEBHOOK\" ok' EXIT" "trap ':' ERR"; do
+        dir=$(tmp)
+        conf_write "$dir" e-conf "E_WEBHOOK='SECRETA'" "E_DIR='/srv/e'" "$def"
+        expect_config_fail "a file running $def" "$dir/e-conf.conf: it sets a trap" "$dir" config show e-conf
+    done
+    # Shell options it sets cannot make a hidden key public: nocasematch
+    # would otherwise let e_dir match the public pattern E_DIR. The launcher
+    # recomputes which keys are public and refuses the mismatch.
+    dir=$(tmp)
+    conf_write "$dir" e-conf "e_dir='SECRETB'" "E_DIR='/srv/e'" 'shopt -s nocasematch'
+    expect_config_fail "a file setting nocasematch" "could not read configuration file $dir/e-conf.conf" \
+        "$dir" config show e-conf
     pass "config show is not redirected by the file's own variables or output"
 
     # --- what it refuses (P4-2): each names the file, exits 1 and prints
@@ -1112,13 +1162,22 @@ else
     link=$(tmp)/conf
     ln -s "$real" "$link"
     expect_config_fail "a symlinked configuration directory" "$link" "$link" config show e-conf
+    expect_config_fail "a symlinked configuration directory, trailing slash" "$link: it is a symbolic link" \
+        "$link/" config show e-conf
+    expect_config_fail "a symlinked configuration directory, trailing slashes" "$link: it is a symbolic link" \
+        "$link//" config show e-conf
+    expect_config_fail "a symlinked configuration directory, trailing /." "$link: it is a symbolic link" \
+        "$link/." config show e-conf
     dir=$(tmp); conf_plant "$dir"; chmod 0770 "$dir"
     expect_config_fail "a group-writable configuration directory" "$dir" "$dir" config show e-conf
     notdir=$(tmp)/conf; printf 'x\n' > "$notdir"
     expect_config_fail "a configuration directory that is a file" "not a directory" "$notdir" config show e-conf
 
     dir=$(tmp); conf_write "$dir" h-badname "H_TOKEN='SECRET11'"
-    expect_config_fail "an invalid name from module_config_files" "../escape" "$dir" config show h-badname
+    expect_config_fail "an invalid name from module_config_files" \
+        "module h-badname listed an invalid configuration name" "$dir" config show h-badname
+    out=$(conf_launch "$dir" config show h-badname 2>&1 || true)
+    [[ $out != *escape* ]] || fail "config show echoed the invalid name module_config_files printed: $out"
     dir=$(tmp); conf_write "$dir" i-fails "I_TOKEN='SECRET12'"
     expect_config_fail "a failing module_config_files" "i-fails" "$dir" config show i-fails
     pass "config show refuses unsafe configuration files and directories, naming them"

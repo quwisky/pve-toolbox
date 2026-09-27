@@ -118,6 +118,11 @@ patterns such as `JOB_*_SRC`. Every other key shows only `(set, hidden)` or
     `JOB_A_OPTS`. When in doubt, leave the key out; a module without
     `MODULE_CONFIG_PUBLIC` shows every key hidden.
 
+    Public values are shown as the shell expands them when it reads the
+    file. A hand-edited public line that refers to a hidden key, such as
+    `E_DIR="/srv/$E_TOKEN"`, displays that secret. A public key must hold a
+    literal, non-secret value.
+
 A module that keeps more than one configuration file names the others in
 `module_config_files`, one name per line, each matching `^[a-z0-9][a-z0-9-]*$`
 and read from `/etc/pve-toolbox/<name>.conf`. It runs as root before those

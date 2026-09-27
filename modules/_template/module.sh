@@ -22,6 +22,10 @@
 #                       leave out anything that could ever hold a secret -
 #                       a token, a webhook URL, a password, a remote URL that
 #                       can embed credentials, a key or token file path.
+#                       Values are shown as the shell expands them, so a
+#                       hand-edited public line such as E_DIR="/srv/$E_TOKEN"
+#                       displays the hidden key it refers to: a public key
+#                       must hold a literal, non-secret value.
 #
 #   Functions:
 #     module_install      interactive install / reconfigure
