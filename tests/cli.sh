@@ -907,6 +907,18 @@ expect_conf_usage "takes one module name" config show e-conf f-none
 expect_conf_usage "--quiet is not supported by 'config'" config show --quiet e-conf
 pass "config show usage errors exit 64 with suggestions, before the root check"
 
+# A here-string or here-document can need a temporary file, which config
+# show must not: its section of the launcher, and report_clean_text, which
+# cleans its public values, use neither.
+config_code=$(sed -n '/^# -* config show --$/,/^# -* ui --$/p' "$ROOT/pve-toolbox")
+[[ $config_code == *"cmd_config()"* ]] || fail "could not find the config show section of the launcher"
+config_code+=$(sed -n '/^report_clean_text() {/,/^}/p' "$ROOT/lib/report.sh")
+[[ $config_code == *"report_clean_text()"* ]] || fail "could not find report_clean_text"
+if grep -nE '<<' <<<"$config_code" | grep -vE '^[0-9]+: *#'; then
+    fail "config show code uses a here-string or here-document"
+fi
+pass "config show code uses no here-string or here-document"
+
 if [[ $EUID -ne 0 ]]; then
     dir=$(tmp); conf_plant "$dir"
     rc=0; out=$(conf_launch "$dir" config show e-conf 2>&1) || rc=$?
@@ -1226,17 +1238,14 @@ else
 
     # Refusals travel on a channel of their own, never the module's stdout,
     # so a value a module prints cannot pose as one; every refusal message
-    # is config show's own. Nothing is left behind in TMPDIR.
+    # is config show's own.
     conf_module n-prints 'module_config_files() { conf_get "$MODULE_NAME" LIST; }'
     dir=$(tmp)
     conf_write "$dir" n-prints "LIST='ok-name" "refuse:SECRETB2'"
-    chan_tmp=$(tmp)
-    rc=0; out=$(TMPDIR=$chan_tmp conf_launch "$dir" config show n-prints 2>"$errfile") || rc=$?
-    [[ $rc -eq 1 ]] || fail "a printed value that looks like a refusal: exited $rc, want 1: $out"
-    no_secret "a printed value that looks like a refusal" "$out $(<"$errfile")"
-    rc=0; out=$(TMPDIR=$chan_tmp conf_launch "$dir" config show --json n-prints 2>"$errfile") || rc=$?
-    [[ $rc -eq 1 ]] || fail "a printed value that looks like a refusal (json): exited $rc, want 1: $out"
-    no_secret "a printed value that looks like a refusal (json)" "$out $(<"$errfile")"
+    expect_config_fail "a printed value that looks like a refusal" \
+        "module n-prints listed an invalid configuration name" "$dir" config show n-prints
+    expect_config_fail "a printed value that looks like a refusal (json)" \
+        "module n-prints listed an invalid configuration name" "$dir" config show --json n-prints
     # Lines in the channel's own form are, on stdout, only names.
     conf_write "$dir" n-prints "LIST='file n-prints'"
     expect_config_fail "a printed value in the refusal channel's form" \
@@ -1247,12 +1256,42 @@ else
             || fail "a printed value '$line' was taken for a refusal: $out"
     done
     conf_write "$dir" n-prints "LIST='SECRETB3'" "touch '$dir/RAN'"
-    rc=0; out=$(TMPDIR=$chan_tmp conf_launch "$dir" config show n-prints 2>"$errfile") || rc=$?
-    [[ $rc -eq 1 && $(<"$errfile") == *"$dir/n-prints.conf: line 2: "* ]] \
-        || fail "a refusal read through the channel: exited $rc: $out $(<"$errfile")"
-    no_secret "a refusal read through the channel" "$out $(<"$errfile")"
-    [[ -z $(ls -A "$chan_tmp") ]] || fail "config show left files in TMPDIR: $(ls -A "$chan_tmp")"
-    pass "config show takes refusals only from its own channel and leaves no temporary file"
+    expect_config_fail "a refusal read through the channel" "$dir/n-prints.conf: line 2: " \
+        "$dir" config show n-prints
+    # A module that ignores conf_get's failure, and reads again, is still
+    # refused: the first refusal stays on the channel.
+    conf_module o-ignores 'module_config_files() { local i; for i in 1 2 3; do conf_get o-ignores-x K >/dev/null || true; done; printf "o-ignores-y\n"; }'
+    conf_write "$dir" o-ignores "O_A='1'"
+    conf_write "$dir" o-ignores-x "K='SECRETB4'" "junk line"
+    conf_write "$dir" o-ignores-y "O_Y='1'"
+    expect_config_fail "a refusal the module ignored" "$dir/o-ignores-x.conf: line 2: " \
+        "$dir" config show o-ignores
+    pass "config show takes refusals only from its own channel"
+
+    # config show needs no temporary file: it works, and still refuses what
+    # it must, with TMPDIR missing or in a directory nobody can write to.
+    dir=$(tmp); conf_plant "$dir"
+    big=$(printf 'b%.0s' {1..300000})
+    conf_write "$dir" e-conf-extra "E_DIR='$big'" "E_KEY='SECRET3'"
+    conf_write "$dir" o-ignores "O_A='1'"
+    conf_write "$dir" o-ignores-x "K='SECRETB5'" "junk line"
+    for tmpdir in "$(tmp)/missing" /proc; do
+        if TMPDIR=$tmpdir mktemp >/dev/null 2>&1; then
+            fail "TMPDIR=$tmpdir is writable, so it cannot stand for an unusable TMPDIR"
+        fi
+        out=$(TMPDIR=$tmpdir conf_launch "$dir" config show e-conf 2>&1) \
+            || fail "config show with TMPDIR=$tmpdir failed: $out"
+        no_secret "config show with TMPDIR=$tmpdir" "$out"
+        [[ $out == *"e-conf-extra ("*"E_DIR"*"$big"* ]] \
+            || fail "config show with TMPDIR=$tmpdir did not show every file"
+        out=$(TMPDIR=$tmpdir conf_launch "$dir" config show --json e-conf 2>&1) \
+            || fail "config show --json with TMPDIR=$tmpdir failed: $out"
+        [[ $(jq -r '.files[1].keys[0].value' <<<"$out") == "$big" ]] \
+            || fail "config show --json with TMPDIR=$tmpdir lost a large public value"
+        TMPDIR=$tmpdir expect_config_fail "a refusal with TMPDIR=$tmpdir" "$dir/o-ignores-x.conf: line 2: " \
+            "$dir" config show o-ignores
+    done
+    pass "config show works without a usable TMPDIR"
 
     # The parser is linear: each line is split on its quotes once, so 20000
     # keys, or 20000 escaped quotes on one line, parse well within the bound.

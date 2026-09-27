@@ -783,7 +783,8 @@ _config_check_path() { # _config_check_path <file|directory> <path>
         [[ -f $path ]] || die "refusing $what: not a regular file"
     fi
     info=$(stat -c '%u %a' -- "$path") || die "refusing $what: cannot read its owner and mode"
-    read -r owner mode <<<"$info"
+    owner=${info%% *}
+    mode=${info#* }
     [[ $owner == 0 ]] || die "refusing $what: not owned by root"
     [[ $mode =~ ^[0-7]+$ ]] || die "refusing $what: cannot read its mode"
     (((8#$mode & 8#022) == 0)) || die "refusing $what: writable by group or others"
@@ -801,21 +802,30 @@ _config_check_path() { # _config_check_path <file|directory> <path>
 # line number and the reason, never the line itself. Values are therefore
 # exactly what was stored: nothing is expanded, and nothing in the file can
 # run. One pass over the lines; each line is split on its quotes once.
+#
+# No code in this section, nor report_clean_text, uses a here-string, a
+# here-document or a temporary file (tests/cli.sh checks): files are read
+# straight from their descriptor, so config show works, and refuses what it
+# must, whatever TMPDIR is and however full the disk behind it.
 CONFIG_ORDER=()
 declare -A CONFIG_VALUES=()
 _config_parse() { # _config_parse <file>
     local LC_ALL=C
-    local file=$1 content="" size n i last start key value text state
+    local file=$1 all size n i last start key value text state
     local re_assign='^([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
     local -a lines=() pieces=()
     CONFIG_ORDER=()
     CONFIG_VALUES=()
-    # Byte-wise from here on. read stops at a NUL byte, which a text file
-    # never holds, so a short read against the size refuses the file.
+    # Byte-wise from here on. The lines keep their newlines until every
+    # byte is accounted for: bash drops a NUL byte, which a text file never
+    # holds, so a short count against the size refuses the file, and so
+    # does a failed or short read.
     size=$(stat -c '%s' -- "$file") || die "could not read configuration file $file"
-    IFS= read -r -d '' content <"$file" || true
-    [[ ${#content} -eq $size ]] || die "refusing configuration file $file: it contains a NUL byte"
-    [[ -z $content ]] || mapfile -t lines <<<"${content%$'\n'}"
+    mapfile lines <"$file" || die "could not read configuration file $file"
+    printf -v all '%s' "${lines[@]}"
+    [[ ${#all} -eq $size ]] || die "refusing configuration file $file: it contains a NUL byte or could not be read"
+    all=""
+    lines=("${lines[@]%$'\n'}")
     # state: out (between entries) or in (inside a quoted segment, which
     # may continue on the next line).
     state=out
@@ -841,7 +851,7 @@ _config_parse() { # _config_parse <file>
         # has quotes (the quote appended keeps a trailing empty piece).
         # Starting a value, i skips piece 0, the empty text before the
         # opening quote.
-        IFS=\' read -r -a pieces <<<"$text'"
+        _config_split "$text"
         last=$((${#pieces[@]} - 1))
         while :; do
             # Inside a segment: its text runs to the next quote, or to the
@@ -865,6 +875,17 @@ _config_parse() { # _config_parse <file>
         done
     done
     [[ $state == out ]] || _config_refuse "$file" "$start" "unterminated single quote"
+}
+
+# Splits <text> into pieces, the caller's array, at every quote: one more
+# piece than it has quotes, since a quote appended to it ends the last one.
+# Word splitting on IFS=' with globbing off, all local to this function.
+_config_split() { # _config_split <text>
+    local -
+    set -f
+    local IFS=\' text=$1\'
+    # shellcheck disable=SC2206 # the splitting is the point
+    pieces=($text)
 }
 
 # Refuses a file that is not in the conf_set format, naming the line where
@@ -903,11 +924,12 @@ _config_read() { # _config_read <file> <public pattern>...
 # failed: "name", or "file <name>". config show repeats that check itself,
 # so every message the operator sees is built by config show from what it
 # knows (the file, the line and the reason), never from anything a module
-# printed or a file holds.
+# printed or a file holds. Only the first refusal is written: a module that
+# ignores the failure and reads again cannot fill the channel.
 _config_safe_get() { # _config_safe_get <name> <key>
     local f
     if [[ ! ${1:-} =~ $CONFIG_NAME_RE ]]; then
-        printf 'name\n' >&3
+        _config_refusal name
         return 1
     fi
     f=$(conf_file "$1")
@@ -919,48 +941,69 @@ _config_safe_get() { # _config_safe_get <name> <key>
     ) 2>/dev/null; then
         return 0
     fi
-    printf 'file %s\n' "$1" >&3
+    _config_refusal "file $1"
     return 1
 }
 
-# Runs <module>'s module_config_files, setting CONFIG_LISTED to what it
-# printed and CONFIG_REFUSAL to the first line on the refusal channel, and
+# Writes one refusal code to the channel on fd 3, unless one is already
+# waiting there.
+_config_refusal() { # _config_refusal <code>
+    read -r -t 0 -u 3 2>/dev/null || printf '%s\n' "$1" >&3
+}
+
+# Runs <module>'s module_config_files, setting CONFIG_LISTED to the lines it
+# printed and CONFIG_REFUSAL to the first code on the refusal channel, and
 # returns its status. Its stderr is discarded. conf_get is replaced by
 # _config_safe_get and conf_load refused, both readonly so nothing the module
 # sources later can put the originals back.
 #
-# The refusal channel is a file of its own, never the module's stdout, so no
-# value a module prints can pose as a refusal. It is opened for writing and
-# for reading and removed at once, so nothing is left behind on any path;
-# only the module's fd 3 points at it.
-CONFIG_LISTED=""
+# The refusal channel is an anonymous pipe, opened for reading and writing
+# on one descriptor: no path, so nothing in TMPDIR or anywhere else can be
+# swapped for it or left behind, and it is not the module's stdout, so no
+# value a module prints can pose as a refusal. The module gets it as fd 3
+# and nothing else of it. A code is one short line, far below the pipe's
+# buffer, and it is read only once it is waiting, so nothing blocks.
+CONFIG_LISTED=()
 CONFIG_REFUSAL=""
 _config_module_files() { # _config_module_files <module>
-    local chan w r rc=0
-    CONFIG_LISTED=""
+    local c out rc=0
+    CONFIG_LISTED=()
     CONFIG_REFUSAL=""
-    chan=$(mktemp) || die "cannot create a temporary file for module $1"
-    if ! exec {w}>"$chan" {r}<"$chan"; then
-        rm -f -- "$chan"
-        die "cannot open a temporary file for module $1"
+    exec {c}<> <(:) || die "cannot open the refusal channel for module $1"
+    if [[ ! -p /dev/fd/$c ]]; then
+        exec {c}>&-
+        die "cannot open the refusal channel for module $1"
     fi
-    rm -f -- "$chan"
-    CONFIG_LISTED=$(
-        exec 3>&"$w" {w}>&- {r}<&- 2>/dev/null
+    out=$(
+        exec 3>&"$c" {c}>&- 2>/dev/null
         # shellcheck source=/dev/null
         source "$MODULE_DIR/$1/module.sh"
         conf_get() { _config_safe_get "$@"; }
         conf_load() {
-            printf 'load\n' >&3
+            _config_refusal load
             return 1
         }
         readonly -f conf_get conf_load
         module_config_files
     ) || rc=$?
-    exec {w}>&-
-    IFS= read -r -u "$r" CONFIG_REFUSAL || true
-    exec {r}<&-
+    if read -r -t 0 -u "$c"; then
+        IFS= read -r -t 1 -u "$c" CONFIG_REFUSAL || CONFIG_REFUSAL=${CONFIG_REFUSAL:-unreadable}
+    fi
+    exec {c}>&-
+    _config_words $'\n' "$out"
+    CONFIG_LISTED=("${CONFIG_WORDS[@]}")
     return "$rc"
+}
+
+# Splits <text> into CONFIG_WORDS at any of the whitespace characters in
+# <separators>, dropping empty words, with globbing off.
+CONFIG_WORDS=()
+_config_words() { # _config_words <separators> <text>
+    local -
+    set -f
+    local IFS=$1
+    # shellcheck disable=SC2206 # the splitting is the point
+    CONFIG_WORDS=($2)
 }
 
 # True when <key> matches one of the module's public patterns.
@@ -991,7 +1034,8 @@ cmd_config() { # cmd_config show <module>
     [[ $EUID -eq 0 ]] || die "config show needs root: configuration files are readable by root only"
     [[ $mod =~ $CONFIG_NAME_RE ]] \
         || die "refusing configuration name $(printf '%q' "$mod"): it must match $CONFIG_NAME_RE"
-    read -r -a patterns <<<"$(meta "$mod" MODULE_CONFIG_PUBLIC)"
+    _config_words $' \t\n' "$(meta "$mod" MODULE_CONFIG_PUBLIC)"
+    patterns=("${CONFIG_WORDS[@]}")
 
     # A trailing '/' or '/.' makes -L test the link's target instead of the
     # link, so the directory is normalised first, without resolving any
@@ -1025,13 +1069,12 @@ cmd_config() { # cmd_config show <module>
                     ;;
             esac
             [[ -z $CONFIG_REFUSAL && $rc -eq 0 ]] || die "module $mod failed to list its configuration files"
-            while IFS= read -r name; do
-                [[ -n $name ]] || continue
+            for name in "${CONFIG_LISTED[@]}"; do
                 # Not echoed: a name built from configuration could carry a value.
                 [[ $name =~ $CONFIG_NAME_RE ]] \
                     || die "module $mod listed an invalid configuration name (each must match $CONFIG_NAME_RE)"
                 cli_in "$name" "${names[@]}" || names+=("$name")
-            done <<<"$CONFIG_LISTED"
+            done
         fi
         for name in "${names[@]}"; do
             f=$(conf_file "$name")
