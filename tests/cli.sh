@@ -641,6 +641,34 @@ for args in "list" "list --json" "_complete installed" "update"; do
 done
 pass "an unwritable status result fails closed, names the module, and leaves no temporary directory"
 
+# A result cut short is refused too, not only an empty one. e-big's status
+# is about 4KB; with a 1KB file-size limit the first 1KB reaches the result
+# file and the rest, with the end line, does not.
+big_root=$(tmp)
+big_tmp=$(tmp)
+mkdir -p "$big_root/lib" "$big_root/modules/e-big"
+cp "$ROOT"/lib/*.sh "$big_root/lib/"
+cp "$ROOT/VERSION" "$big_root/VERSION"
+cp "$ROOT/pve-toolbox" "$big_root/pve-toolbox"
+chmod 0755 "$big_root/pve-toolbox"
+printf '%s\n' \
+    'MODULE_NAME="e-big"' 'MODULE_TITLE="E big"' 'MODULE_DESC="fixture big"' \
+    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+    'module_status() { printf "installed %04000d" 0; }' \
+    > "$big_root/modules/e-big/module.sh"
+out=$(TMPDIR="$big_tmp" PVE_TOOLBOX_ROOT="$big_root" launch_bin "$big_root/pve-toolbox" list) \
+    || fail "list failed against the long-status fixture without a size limit"
+[[ $out == *"status: installed 0000"* ]] || fail "the long-status fixture's e-big is not installed to begin with: $out"
+rc=0
+out=$(TMPDIR="$big_tmp" PVE_TOOLBOX_ROOT="$big_root" launch_bin \
+    bash -c 'trap "" XFSZ; ulimit -f 1; exec "$0" "$@"' "$big_root/pve-toolbox" list 2>&1) || rc=$?
+[[ $rc -ne 0 ]] || fail "list exited 0 although e-big's status was cut short: $out"
+[[ $out == *"could not read the status of e-big"* ]] \
+    || fail "list did not name e-big when its status was cut short: $out"
+[[ $out != *"status:"* ]] || fail "list reported a status for e-big although it was cut short: $out"
+[[ -z $(ls -A "$big_tmp") ]] || fail "list left its status directory behind: $(ls -A "$big_tmp")"
+pass "a status result cut short fails closed and names the module"
+
 # An interrupt while statuses are still being computed (b-two sleeps) also
 # removes the temporary directory. The launcher runs as its own job so the
 # interrupt reaches its process group, as a terminal's ^C would.

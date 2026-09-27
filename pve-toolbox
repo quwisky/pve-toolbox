@@ -390,6 +390,9 @@ module_has_function() { # module_has_function <module> <function>
 # load_statuses, so they keep re-reading status live, one module at a time.
 declare -gA MODULE_STATUS=()
 MODULE_STATUS_LOADED=0
+# A worker ends its result file with this line, written by the same printf
+# as the status, so a file that does not end with it is incomplete.
+_LS_END='--- pve-toolbox status end ---'
 
 # EXIT trap while load_statuses runs, so an interrupt or a die leaves no
 # temporary directory behind. It waits for any status workers still running
@@ -409,14 +412,14 @@ _load_statuses_cleanup() { # _load_statuses_cleanup <dir> <pid that set the trap
 # concurrently with other modules' module_status only because the module
 # contract requires module_status to be read-only.
 #
-# Each worker writes its result to <index>.tmp and renames it to <index> only
-# if the write succeeded, so an <index> file always holds a complete result
-# and is never empty. A missing or empty result (a full disk, a failed
-# rename) stops the command naming the module; it never reads as installed.
+# Each worker writes its result and the end line with one printf, and forks
+# nothing after collecting the status. A result file that is missing or does
+# not end with the end line (a full disk, a worker killed mid-write) stops
+# the command naming the module; it never reads as installed.
 load_statuses() {
     [[ $MODULE_STATUS_LOADED -eq 1 ]] && return 0
     discover
-    local dir q i=0 running=0 m st
+    local dir q i=0 running=0 m st c end=$'\n'"$_LS_END"$'\n'
     dir=$(mktemp -d) || die "could not create a temporary directory"
     printf -v q '%q' "$dir"
     # shellcheck disable=SC2064 # expand $q now; the trap outlives this call
@@ -424,8 +427,7 @@ load_statuses() {
     for m in "${MODULES[@]}"; do
         (
             st=$(run_module "$m" module_status 2>/dev/null) || true
-            printf '%s' "${st:-not installed}" > "$dir/$i.tmp" \
-                && mv -f -- "$dir/$i.tmp" "$dir/$i"
+            printf '%s%s' "${st:-not installed}" "$end" > "$dir/$i"
         ) </dev/null &
         i=$((i + 1)); running=$((running + 1))
         if (( running >= 8 )); then wait -n || true; running=$((running - 1)); fi
@@ -433,8 +435,10 @@ load_statuses() {
     wait || true
     i=0
     for m in "${MODULES[@]}"; do
-        [[ -f "$dir/$i" && -s "$dir/$i" ]] || die "could not read the status of $m"
-        MODULE_STATUS[$m]=$(<"$dir/$i")
+        c=''
+        [[ ! -f $dir/$i ]] || IFS= read -r -d '' c < "$dir/$i" || true
+        [[ $c == *"$end" ]] || die "could not read the status of $m"
+        MODULE_STATUS[$m]=${c%"$end"}
         i=$((i + 1))
     done
     rm -rf -- "$dir"
