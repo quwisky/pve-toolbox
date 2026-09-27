@@ -578,6 +578,81 @@ installed_out=$(status_launch _complete installed) || fail "_complete installed 
     || fail "_complete installed did not list a-one, b-two, d-four in order: $installed_out"
 pass "_complete installed lists installed modules in discovery order"
 
+# A status result that cannot be written completely must fail closed. The
+# launcher runs with a zero file-size limit (and SIGXFSZ ignored, so the
+# write returns an error instead of killing the worker): the result file can
+# be created but nothing can be written to it, which is what a full disk
+# leaves behind. It works the same as root, which chmod-based tests do not.
+# e-five is not installed; its module_update leaves a marker if it ever runs.
+# TMPDIR is a directory of the test's own, so a leaked temporary directory
+# is visible.
+fail_root=$(tmp)
+fail_tmp=$(tmp)
+mkdir -p "$fail_root/lib" "$fail_root/modules/e-five"
+cp "$ROOT"/lib/*.sh "$fail_root/lib/"
+cp "$ROOT/VERSION" "$fail_root/VERSION"
+cp "$ROOT/pve-toolbox" "$fail_root/pve-toolbox"
+chmod 0755 "$fail_root/pve-toolbox"
+printf '%s\n' \
+    'MODULE_NAME="e-five"' 'MODULE_TITLE="E five"' 'MODULE_DESC="fixture e"' \
+    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+    'module_status() { return 1; }' \
+    "module_update() { : > '$fail_root/updated'; echo UPDATED; }" \
+    > "$fail_root/modules/e-five/module.sh"
+fail_launch() { # fail_launch [args...] -> the fixture launcher, no file may grow
+    TMPDIR="$fail_tmp" PVE_TOOLBOX_ROOT="$fail_root" launch_bin \
+        bash -c 'trap "" XFSZ; ulimit -f 0; exec "$0" "$@"' "$fail_root/pve-toolbox" "$@"
+}
+out=$(TMPDIR="$fail_tmp" PVE_TOOLBOX_ROOT="$fail_root" launch_bin "$fail_root/pve-toolbox" list) \
+    || fail "list failed against the unwritable-status fixture without a size limit"
+[[ $out == *"status: not installed"* ]] \
+    || fail "the unwritable-status fixture's e-five is not 'not installed' to begin with: $out"
+for args in "list" "list --json" "_complete installed" "update"; do
+    rc=0
+    # shellcheck disable=SC2086 # $args is a fixed word list above
+    out=$(fail_launch $args 2>&1) || rc=$?
+    [[ $rc -ne 0 ]] || fail "'$args' exited 0 although e-five's status could not be written: $out"
+    [[ $out == *"could not read the status of e-five"* ]] \
+        || fail "'$args' did not name e-five when its status could not be written: $out"
+    [[ $out != *"status:"* && $out != *'"installed"'* && $out != *UPDATED* ]] \
+        || fail "'$args' reported a status for e-five although it could not be read: $out"
+    ! grep -qx 'e-five' <<<"$out" \
+        || fail "'$args' offered e-five as installed although its status could not be read: $out"
+    [[ ! -e $fail_root/updated ]] \
+        || fail "'$args' ran module_update on e-five, which is not installed"
+    [[ -z $(ls -A "$fail_tmp") ]] \
+        || fail "'$args' left its status directory behind: $(ls -A "$fail_tmp")"
+done
+pass "an unwritable status result fails closed, names the module, and leaves no temporary directory"
+
+# An interrupt while statuses are still being computed (b-two sleeps) also
+# removes the temporary directory. The launcher runs as its own job so the
+# interrupt reaches its process group, as a terminal's ^C would.
+sig_tmp=$(tmp)
+sig_rc=$(
+    set -m
+    TMPDIR="$sig_tmp" status_launch list >/dev/null 2>&1 &
+    pid=$!
+    for _ in $(seq 50); do
+        [[ -z $(ls -A "$sig_tmp") ]] || break
+        sleep 0.1
+    done
+    [[ -n $(ls -A "$sig_tmp") ]] || { kill -- "-$pid" 2>/dev/null; echo "no-dir"; exit 0; }
+    kill -INT -- "-$pid"
+    rc=0; wait "$pid" || rc=$?
+    echo "$rc"
+)
+[[ $sig_rc != no-dir ]] || fail "list never created its status directory under TMPDIR"
+[[ $sig_rc -ne 0 ]] || fail "list exited 0 although it was interrupted"
+[[ -z $(ls -A "$sig_tmp") ]] \
+    || fail "an interrupted list left its status directory behind: $(ls -A "$sig_tmp")"
+# The interrupted status workers must not write into it afterwards either:
+# check again once b-two's and d-four's 3s sleeps are over.
+sleep 3.5
+[[ -z $(ls -A "$sig_tmp") ]] \
+    || fail "a status worker wrote after an interrupted list removed its directory: $(ls -A "$sig_tmp")"
+pass "an interrupted list removes its status directory"
+
 # --- list --json ------------------------------------------------------------
 
 json_out=$(status_launch list --json) || fail "list --json failed against the parallel-status fixture"
@@ -641,3 +716,4 @@ jq -e . <<<"$quirky_json" >/dev/null \
 [[ $(jq -r '.modules[0].installed' <<<"$quirky_json") == true ]] \
     || fail "list --json did not read the quirky module as installed: $quirky_json"
 pass "list --json stays valid JSON for quotes, backslashes, control characters, and empty tags"
+

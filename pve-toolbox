@@ -391,19 +391,41 @@ module_has_function() { # module_has_function <module> <function>
 declare -gA MODULE_STATUS=()
 MODULE_STATUS_LOADED=0
 
+# EXIT trap while load_statuses runs, so an interrupt or a die leaves no
+# temporary directory behind. Status workers still running (only after an
+# interrupt: they ignore SIGINT, as background jobs of a script do) are
+# stopped first, so none can write into the directory once it is removed.
+_load_statuses_cleanup() { # _load_statuses_cleanup <dir>
+    local -a pids=()
+    mapfile -t pids < <(jobs -pr)
+    if [[ ${#pids[@]} -gt 0 ]]; then
+        kill -- "${pids[@]}" 2>/dev/null || true
+        wait 2>/dev/null || true
+    fi
+    rm -rf -- "$1"
+}
+
 # Fill MODULE_STATUS for every discovered module, module_status calls running
 # at most 8 at a time. Idempotent: a second call is a no-op. Safe to call
 # concurrently with other modules' module_status only because the module
 # contract requires module_status to be read-only.
+#
+# Each worker writes its result to <index>.tmp and renames it to <index> only
+# if the write succeeded, so an <index> file always holds a complete result
+# and is never empty. A missing or empty result (a full disk, a failed
+# rename) stops the command naming the module; it never reads as installed.
 load_statuses() {
     [[ $MODULE_STATUS_LOADED -eq 1 ]] && return 0
     discover
     local dir i=0 running=0 m st
     dir=$(mktemp -d) || die "could not create a temporary directory"
+    # shellcheck disable=SC2064 # expand $dir now; the trap outlives this call
+    trap "_load_statuses_cleanup $(printf '%q' "$dir")" EXIT
     for m in "${MODULES[@]}"; do
         (
             st=$(run_module "$m" module_status 2>/dev/null) || true
-            printf '%s' "${st:-not installed}" > "$dir/$i"
+            printf '%s' "${st:-not installed}" > "$dir/$i.tmp" \
+                && mv -f -- "$dir/$i.tmp" "$dir/$i"
         ) </dev/null &
         i=$((i + 1)); running=$((running + 1))
         if (( running >= 8 )); then wait -n || true; running=$((running - 1)); fi
@@ -411,11 +433,12 @@ load_statuses() {
     wait || true
     i=0
     for m in "${MODULES[@]}"; do
-        [[ -f "$dir/$i" ]] || die "could not read the status of $m"
+        [[ -f "$dir/$i" && -s "$dir/$i" ]] || die "could not read the status of $m"
         MODULE_STATUS[$m]=$(<"$dir/$i")
         i=$((i + 1))
     done
     rm -rf -- "$dir"
+    trap - EXIT
     MODULE_STATUS_LOADED=1
 }
 
