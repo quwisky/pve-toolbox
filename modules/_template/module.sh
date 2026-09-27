@@ -23,8 +23,11 @@
 #                       a token, a webhook URL, a password, a remote URL that
 #                       can embed credentials, a key or token file path.
 #                       config show parses the stored KEY='value' lines and
-#                       never runs the file: public values are shown exactly
-#                       as stored, and a file not in that format is refused.
+#                       never runs the file: a $ or " inside the quotes is
+#                       shown literally, a line outside that form refuses the
+#                       file, and public values go through the usual cleanup
+#                       (credential URLs redacted, newlines joined, control
+#                       characters replaced).
 #
 #   Functions:
 #     module_install      interactive install / reconfigure
@@ -41,7 +44,9 @@
 #     module_config_files optional: extra conf names `config show` displays
 #                         after <module>.conf, one per line, each matching
 #                         ^[a-z0-9][a-z0-9-]*$. Read-only: print names and
-#                         nothing else, and exit 0. For example:
+#                         nothing else, and exit 0. Read with conf_get, which
+#                         config show replaces with its own parser (conf_load
+#                         is refused, stderr is discarded). For example:
 #                           module_config_files() {
 #                               local id
 #                               for id in $(conf_get "$MODULE_NAME" MY_IDS); do

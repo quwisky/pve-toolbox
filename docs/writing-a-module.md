@@ -119,16 +119,22 @@ patterns such as `JOB_*_SRC`. Every other key shows only `(set, hidden)` or
     `MODULE_CONFIG_PUBLIC` shows every key hidden.
 
     `config show` parses the stored `KEY='value'` lines and never runs the
-    file, so public values are shown exactly as stored, never expanded.
-    Files that are not in that format, including hand-edited lines with
-    double quotes, `$`, or commands, are refused.
+    file. Nothing is expanded: a `$` or `"` inside the single quotes is shown
+    literally. A line outside that form, such as a double-quoted or unquoted
+    value or a command, refuses the whole file. A public value is shown as
+    stored after the usual cleanup: credentials in URLs and webhook URLs are
+    redacted, newlines are joined with `; `, and control characters are
+    replaced.
 
 A module that keeps more than one configuration file names the others in
 `module_config_files`, one name per line, each matching `^[a-z0-9][a-z0-9-]*$`
 and read from `/etc/pve-toolbox/<name>.conf`. It runs as root before those
 files are shown, so keep it read-only: read with `conf_get`, validate what you
 read, print names only, and return 0, because a non-zero exit makes `config show`
-fail.
+fail. While it runs, `conf_get` is `config show`'s own reader: it applies the
+same checks and parser, so it never runs the file, and a file that fails them
+fails `config show`. `conf_load` is refused, and anything the function
+prints on stderr is discarded.
 
 ```bash
 module_config_files() {

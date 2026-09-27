@@ -1162,6 +1162,69 @@ else
         <<<"$json" >/dev/null || fail "conf_set round trip: E_WEBHOOK not hidden: $json"
     pass "config show round-trips values written by conf_set"
 
+    # module_config_files reads through conf_get, which config show replaces
+    # with its own parser: the module's file is never run, even there. The
+    # fixture's module_config_files is the template's documented example,
+    # taken from the template itself.
+    example=$(sed -n '/^#                           module_config_files() {/,/^#                           }/s/^#                           //p' \
+        "$ROOT/modules/_template/module.sh")
+    [[ $example == *"conf_get"*"MY_IDS"* ]] || fail "could not extract the template's module_config_files example"
+    conf_module j-ids "$example"
+    dir=$(tmp)
+    conf_write "$dir" j-ids "MY_IDS='1 2 x'" "J_TOKEN='SECRETK'"
+    conf_write "$dir" j-ids-1 "J_ONE='SECRETL'"
+    conf_write "$dir" j-ids-2 "J_TWO=''"
+    out=$(conf_launch "$dir" config show j-ids) || fail "config show of the template example failed: $out"
+    no_secret "config show of the template example" "$out"
+    [[ $out == *"j-ids ("*"j-ids-1 ("*"J_ONE"*"j-ids-2 ("*"J_TWO"* ]] \
+        || fail "config show did not show the extra files module_config_files read with conf_get: $out"
+    dir=$(tmp)
+    conf_write "$dir" j-ids "J_TOKEN='SECRETLEAK'" "MY_IDS='1'" 'echo "stderr: $J_TOKEN" >&2' \
+        "touch '$dir/RAN'" 'echo "stdout: $J_TOKEN"'
+    conf_write "$dir" j-ids-1 "J_ONE='1'"
+    expect_config_fail "a hostile file read by module_config_files" "$dir/j-ids.conf: line 3: " \
+        "$dir" config show j-ids
+    expect_config_fail "a hostile file read by module_config_files (json)" "$dir/j-ids.conf: line 3: " \
+        "$dir" config show --json j-ids
+    [[ ! -e $dir/RAN ]] || fail "config show ran the configuration file module_config_files read"
+    # An extra file that module_config_files reads is held to the same checks.
+    dir=$(tmp)
+    conf_module k-reads 'module_config_files() { local id; for id in $(conf_get k-reads-ids IDS); do printf "k-reads-%s\n" "$id"; done; }'
+    conf_write "$dir" k-reads "K_A='1'"
+    conf_write "$dir" k-reads-ids "IDS='1'" "touch '$dir/RAN'"
+    expect_config_fail "a hostile extra file read by module_config_files" "$dir/k-reads-ids.conf: line 2: " \
+        "$dir" config show k-reads
+    [[ ! -e $dir/RAN ]] || fail "config show ran an extra configuration file module_config_files read"
+    dir=$(tmp)
+    conf_write "$dir" k-reads "K_A='1'"
+    conf_write "$dir" k-reads-ids "IDS='SECRETM'"
+    chmod 0606 "$dir/k-reads-ids.conf"
+    expect_config_fail "an unsafe extra file read by module_config_files" \
+        "$dir/k-reads-ids.conf: writable by group or others" "$dir" config show k-reads
+    # conf_load would run the file, so module_config_files cannot use it.
+    conf_module l-loads 'module_config_files() { conf_load l-loads; printf "l-loads-%s\n" "${L_ID:-1}"; }'
+    dir=$(tmp)
+    conf_write "$dir" l-loads "L_ID='1'" "L_TOKEN='SECRETN'"
+    expect_config_fail "module_config_files using conf_load" "conf_load" "$dir" config show l-loads
+    # What a module prints on stderr never reaches the terminal.
+    conf_module m-noisy 'module_config_files() { echo "noise SECRETO" >&2; printf "m-noisy-1\n"; }'
+    dir=$(tmp)
+    conf_write "$dir" m-noisy "M_A='1'"
+    errfile=$(tmp)/stderr
+    out=$(conf_launch "$dir" config show m-noisy 2>"$errfile") || fail "config show m-noisy failed: $out"
+    no_secret "module_config_files stderr" "$out $(<"$errfile")"
+    pass "config show never runs a file module_config_files reads, and discards its stderr"
+
+    # The parser is linear: 5000 keys parse in well under the bound.
+    dir=$(tmp)
+    ( umask 077; for ((i = 0; i < 5000; i++)); do printf "E_K_%s='value %s'\n" "$i" "$i"; done > "$dir/e-conf.conf" )
+    start=$SECONDS
+    out=$(conf_launch "$dir" config show e-conf) || fail "config show of 5000 keys failed"
+    elapsed=$((SECONDS - start))
+    [[ $(grep -c '^  E_K_' <<<"$out") -eq 5000 ]] || fail "config show of 5000 keys did not show them all"
+    [[ $elapsed -lt 10 ]] || fail "config show of 5000 keys took ${elapsed}s"
+    pass "config show parses 5000 keys in ${elapsed}s"
+
     # --- what it refuses (P4-2): each names the file, exits 1 and prints
     # nothing from any file, including the ones that were fine.
     dir=$(tmp); conf_plant "$dir"
