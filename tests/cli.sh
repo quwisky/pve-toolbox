@@ -429,6 +429,24 @@ color_force="$(mroff "--json") or $(mroff "--quiet") always force"
     || fail "man page's TOOLBOX_COLOR entry does not say it overrides NO_COLOR"
 pass "generated man page carries every fact from the deleted static page"
 
+# The man-page summary reads as a capitalised sentence opener; 'help' keeps
+# the lowercase, mid-sentence form used in its own table.
+help_summary=$(launch help lxc-update | sed -n '3p')
+[[ $help_summary == "${help_summary,}" ]] \
+    || fail "test fixture assumption broken: lxc-update summary is already capitalised"
+cap_summary="$(mroff "${help_summary^}")"
+
+# The summary, CLI_DESC, "Requires root.", and the refused-globals sentence
+# are each separated by .sp, matching help's blank-line separation, instead
+# of running together as one paragraph.
+[[ $man == *"$cap_summary."$'\n'".sp"$'\n'* ]] \
+    || fail "man page does not capitalise the summary and separate it from CLI_DESC with .sp"
+[[ $man == *".sp"$'\n'"Requires root."* ]] \
+    || fail "man page does not separate Requires root. with .sp"
+[[ $man == *".sp"$'\n'"$(mroff "$refused")"* ]] \
+    || fail "man page does not separate the refused-globals sentence with .sp"
+pass "man page capitalises the summary and separates it, CLI_DESC, root, and refused-globals facts with .sp"
+
 # Missing template: fails closed rather than printing nothing. A fixture
 # root with everything but share/man/ exercises that path without disturbing
 # the real template used by every other assertion above.

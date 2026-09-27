@@ -962,11 +962,21 @@ cmd_man() {
     fi
     commands=""
     for c in "${CLI_COMMANDS[@]}"; do
-        commands+=$'.TP\n'".B $(_man_escape "${CLI_USAGE[$c]}")"$'\n'"$(_man_text "${CLI_SUMMARY[$c]}")."$'\n'
-        [[ -z ${CLI_DESC[$c]:-} ]] || commands+="$(_man_text "${CLI_DESC[$c]}")"$'\n'
-        [[ -z ${CLI_ROOT[$c]:-} ]] || commands+="$(_man_text "Requires root.")"$'\n'
+        # Capitalised so the man-page summary reads as a sentence opener;
+        # 'help' keeps the lowercase, mid-sentence form used in its table.
+        commands+=$'.TP\n'".B $(_man_escape "${CLI_USAGE[$c]}")"$'\n'"$(_man_text "${CLI_SUMMARY[$c]^}")."$'\n'
+        # Each optional fact below gets its own .sp, matching the blank-line
+        # separation cli_help_command uses between the same facts, so two
+        # sentences (e.g. a summary and a CLI_DESC that both open the same
+        # way) never read as one run-on paragraph.
+        if [[ -n ${CLI_DESC[$c]:-} ]]; then
+            commands+=$'.sp\n'"$(_man_text "${CLI_DESC[$c]}")"$'\n'
+        fi
+        if [[ -n ${CLI_ROOT[$c]:-} ]]; then
+            commands+=$'.sp\n'"$(_man_text "Requires root.")"$'\n'
+        fi
         if [[ -n ${CLI_NO_GLOBALS[$c]:-} ]]; then
-            commands+="$(_man_text "$(_man_no_globals_sentence "$c")")"$'\n'
+            commands+=$'.sp\n'"$(_man_text "$(_man_no_globals_sentence "$c")")"$'\n'
         fi
         for f in ${CLI_FLAGS[$c]:-}; do
             commands+=$'.RS\n.TP\n'".B $(_man_escape "$f")"$'\n'"$(_man_text "${CLI_FLAG_DESC[$f]}")"$'\n.RE\n'
