@@ -578,6 +578,22 @@ installed_out=$(status_launch _complete installed) || fail "_complete installed 
     || fail "_complete installed did not list a-one, b-two, d-four in order: $installed_out"
 pass "_complete installed lists installed modules in discovery order"
 
+# The parallel results are the results a one-at-a-time run gives: each
+# fixture module's module_status is run alone, in its own shell, and read
+# the way status_line reads it (no output means not installed).
+serial_json=$(status_launch list --json) || fail "list --json failed against the parallel-status fixture"
+for m in a-one b-two c-three d-four; do
+    want=$(bash -c 'source "$1"; module_status' _ "$status_root/modules/$m/module.sh" 2>/dev/null) || true
+    want=${want:-not installed}
+    want_installed=true
+    [[ $want != "not installed" ]] || want_installed=false
+    jq -e --arg m "$m" --arg st "$want" --argjson inst "$want_installed" \
+        '.modules[] | select(.name == $m) | .status == $st and .installed == $inst' \
+        <<<"$serial_json" >/dev/null \
+        || fail "list --json status of $m differs from a one-at-a-time run (want '$want', installed $want_installed): $serial_json"
+done
+pass "parallel module status matches a one-at-a-time run over the fixture"
+
 # A status result that cannot be written completely must fail closed. The
 # launcher runs with a zero file-size limit (and SIGXFSZ ignored, so the
 # write returns an error instead of killing the worker): the result file can
