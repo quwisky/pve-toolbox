@@ -98,6 +98,10 @@ got=$(offers 4 ./pve-toolbox list storage "")
 [[ -z $got ]] || fail "list takes one tag, got: $got"
 print "ok  zsh stops after one tag"
 
+got=$(offers 4 ./pve-toolbox list --json "")
+has $got storage || fail "no tags offered for list --json: $got"
+print "ok  zsh offers tags after list --json"
+
 # Flags are accepted anywhere, so the command is the first non-flag word.
 got=$(offers 4 ./pve-toolbox -y install "")
 [[ $got == *zfs-scrub* ]] || fail "a flag before the command broke it: $got"

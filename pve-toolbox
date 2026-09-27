@@ -168,7 +168,7 @@ declare -A CLI_SUMMARY=(
 declare -A CLI_USAGE=(
     [menu]="menu"
     [ui]="ui"
-    [list]="list [tag]"
+    [list]="list [--json] [tag]"
     [install]="install <module>..."
     [update]="update [module]..."
     [check]="check [--json|--quiet] [module]..."
@@ -181,6 +181,7 @@ declare -A CLI_USAGE=(
     [help]="help [command]"
 )
 declare -A CLI_FLAGS=(
+    [list]="--json"
     [check]="--json --quiet"
     [status]="--json --quiet"
     [doctor]="--json --quiet"
@@ -198,7 +199,7 @@ declare -A CLI_DESC=(
     [link]="Packaged installs refuse this command."
 )
 declare -A CLI_EXAMPLES=(
-    [list]=$'pve-toolbox list\npve-toolbox list storage'
+    [list]=$'pve-toolbox list\npve-toolbox list storage\npve-toolbox list --json'
     [install]=$'pve-toolbox install config-backup\npve-toolbox -y install zfs-scrub'
     [status]=$'pve-toolbox status\npve-toolbox status --json zfs-scrub'
     [check]='pve-toolbox check --quiet'
@@ -236,7 +237,7 @@ cli_help_overview() {
     for c in "${CLI_COMMANDS[@]}"; do printf '  %-12s %s\n' "$c" "${CLI_SUMMARY[$c]}"; done
     printf '\nOptions:\n'
     for spec in "${CLI_GLOBAL_FLAGS[@]}"; do cli_print_option "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
-    cli_print_option "--json, --quiet" "machine-readable output (status, check, doctor); see 'pve-toolbox help status'"
+    cli_print_option "--json, --quiet" "machine-readable output (status, check, doctor); --json also for list; see 'pve-toolbox help status'"
     printf "\nRun 'pve-toolbox help <command>' for details.\n"
 }
 
@@ -573,6 +574,25 @@ cmd_list() {
         fi
     fi
     load_statuses
+    if [[ $OUTPUT_JSON -eq 1 ]]; then
+        local json='[]' item st
+        for m in "${MODULES[@]}"; do
+            [[ -n $tag && " $(meta "$m" MODULE_TAGS) " != *" $tag "* ]] && continue
+            st=$(status_line "$m")
+            item=$(jq -cn --arg name "$m" \
+                --arg title "$(report_clean_text "$(meta "$m" MODULE_TITLE)")" \
+                --arg description "$(report_clean_text "$(meta "$m" MODULE_DESC)")" \
+                --arg tags "$(meta "$m" MODULE_TAGS)" \
+                --arg raw "$st" \
+                --arg status "$(report_clean_text "$st")" \
+                '{name:$name,title:$title,description:$description,
+                  tags:($tags|split(" ")|map(select(length>0))),
+                  installed:($raw != "not installed"),status:$status}')
+            json=$(jq -cn --argjson a "$json" --argjson i "$item" '$a + [$i]')
+        done
+        jq -n --argjson modules "$json" '{schema_version:1,command:"list",modules:$modules}'
+        return 0
+    fi
     for m in "${MODULES[@]}"; do
         [[ -n $tag && " $(meta "$m" MODULE_TAGS) " != *" $tag "* ]] && continue
         printf '%s%-24s%s %s\n' "$c_bold" "$m" "$c_reset" "$(meta "$m" MODULE_DESC)"

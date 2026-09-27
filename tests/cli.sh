@@ -103,6 +103,8 @@ done
 [[ $help == *"pve-toolbox help <command>"* ]] || fail "--help lacks the per-command hint"
 [[ $help == *"--json, --quiet"*"status, check, doctor"* ]] \
     || fail "--help no longer mentions --json/--quiet and where they apply"
+[[ $help == *"--json, --quiet"*"--json"*"also for list"* ]] \
+    || fail "--help does not say --json also works for list: $help"
 [[ $help != *"set -euo"* && $help != *"#"* ]] || fail "--help leaked source text"
 [[ $(launch help) == "$help" ]] || fail "'help' and '--help' differ"
 for c in list install status lxc-update; do
@@ -111,6 +113,13 @@ for c in list install status lxc-update; do
     [[ $a == "$b" ]] || fail "help $c and $c --help differ"
     [[ $a == *"Usage: pve-toolbox $c"* ]] || fail "help $c lacks its usage line"
 done
+list_help=$(launch help list)
+[[ $list_help == *"Usage: pve-toolbox list [--json] [tag]"* ]] \
+    || fail "help list lacks the --json usage: $list_help"
+[[ $list_help == *"--json"*"emit versioned, machine-readable JSON"* ]] \
+    || fail "help list does not document --json: $list_help"
+[[ $list_help == *"pve-toolbox list --json"* ]] \
+    || fail "help list lacks a --json example: $list_help"
 [[ $(launch help install) == *"Requires root"* ]] || fail "help install does not say it needs root"
 [[ $(launch help lxc-update) == *"--dry-run"* ]] || fail "help lxc-update lacks its flags"
 lxc_help=$(launch help lxc-update)
@@ -177,6 +186,8 @@ got=$(launch _complete flag-help lxc-update)
 [[ $got == *$'\n--dry-run:'* ]] || fail "'_complete flag-help lxc-update' lost --dry-run: $got"
 [[ " $(launch _complete flags status | tr '\n' ' ') " == *" --yes "* ]] \
     || fail "'_complete flags status' lost --yes"
+[[ " $(launch _complete flags list | tr '\n' ' ') " == *" --json "* ]] \
+    || fail "'_complete flags list' lost --json"
 pass "help and completion leave out the globals lxc-update refuses"
 
 # The launcher still accepts --yes and --force for lxc-update and passes them
@@ -224,11 +235,15 @@ expect_usage "did you mean: zfs-scrub" status zfs-scrubb
 expect_usage "did you mean: storage" list storag
 expect_usage "run 'pve-toolbox help install'" install --json zfs-scrub
 expect_usage "cannot be used together" status --json --quiet
+expect_usage "--quiet is not supported by 'list'" list --quiet
+expect_usage "--quiet is not supported by 'list'" list --json --quiet
 # Accepted combinations that must keep working (flags anywhere).
 out=$(launch status --json zfs-scrub) ; jq -e .schema_version <<<"$out" >/dev/null || fail "flag after arguments broke status"
 out=$(launch --json status zfs-scrub) ; jq -e .schema_version <<<"$out" >/dev/null || fail "flag before the command broke status"
 launch -y list >/dev/null || fail "-y list rejected"
 launch list --color=never >/dev/null || fail "--color after the command rejected"
+out=$(launch list --json) ; jq -e '.schema_version == 1 and .command == "list"' <<<"$out" >/dev/null \
+    || fail "list --json did not produce the expected envelope"
 # '--' ends flags: a flag-looking argument is a (bad) module name, not a flag.
 expect_usage "unknown module" install -- --weird-name
 pass "per-command flags, suggestions and accepted combinations"
@@ -353,6 +368,17 @@ done < <(./pve-toolbox _complete commands)
 for f in --json --quiet --dry-run --allow-removals --notify --color; do
     [[ $man == *"$(mroff "$f")"* ]] || fail "man page lacks flag $f"
 done
+# list's own entry (not just --json somewhere else in the page, from status,
+# check or doctor) documents --json in its usage and its own flag block.
+# Isolate the text between list's usage line and the next command's (install)
+# so the check cannot be satisfied by a later command's --json instead.
+list_marker=".B $(mroff 'list [--json] [tag]')"
+next_marker=".B $(mroff 'install <module>...')"
+[[ $man == *"$list_marker"* ]] || fail "man page lacks list's usage with --json"
+list_block=${man#*"$list_marker"}
+list_block=${list_block%%"$next_marker"*}
+[[ $list_block == *".RS"*".B $(mroff --json)"* ]] \
+    || fail "man page's list entry lacks its own --json flag: $list_block"
 [[ $(SOURCE_DATE_EPOCH=1790000000 ./pve-toolbox _man) == "$man" ]] || fail "_man is not reproducible"
 if command -v groff >/dev/null 2>&1; then
     warn_out=$(printf '%s\n' "$man" | groff -man -ww -z 2>&1) || fail "groff failed: $warn_out"
@@ -521,7 +547,7 @@ printf '%s\n' \
     > "$status_root/modules/b-two/module.sh"
 printf '%s\n' \
     'MODULE_NAME="c-three"' 'MODULE_TITLE="C three"' 'MODULE_DESC="fixture c"' \
-    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+    'MODULE_TAGS="fixture solo"' 'MODULE_HOST_ONLY=0' \
     'module_status() { exit 3; }' \
     > "$status_root/modules/c-three/module.sh"
 printf '%s\n' \
@@ -551,3 +577,67 @@ installed_out=$(status_launch _complete installed) || fail "_complete installed 
 [[ $installed_out == $'a-one\nb-two\nd-four' ]] \
     || fail "_complete installed did not list a-one, b-two, d-four in order: $installed_out"
 pass "_complete installed lists installed modules in discovery order"
+
+# --- list --json ------------------------------------------------------------
+
+json_out=$(status_launch list --json) || fail "list --json failed against the parallel-status fixture"
+[[ $json_out != *"$ESC"* ]] || fail "list --json contained colour escapes: $json_out"
+[[ $json_out != *"error"* && $json_out != *"warn"* ]] \
+    || fail "list --json printed something other than JSON: $json_out"
+jq -e '.schema_version == 1' <<<"$json_out" >/dev/null \
+    || fail "list --json schema_version is not 1: $json_out"
+jq -e '.command == "list"' <<<"$json_out" >/dev/null \
+    || fail "list --json command is not 'list': $json_out"
+jq -e '[.modules[].name] == ["a-one","b-two","c-three","d-four"]' <<<"$json_out" >/dev/null \
+    || fail "list --json module names/order wrong: $json_out"
+jq -e '.modules[2].installed == false' <<<"$json_out" >/dev/null \
+    || fail "list --json did not read c-three (exit 3, no output) as not installed: $json_out"
+jq -e '.modules[0].installed == true' <<<"$json_out" >/dev/null \
+    || fail "list --json did not read a-one as installed: $json_out"
+jq -e '.modules[0].tags | type == "array"' <<<"$json_out" >/dev/null \
+    || fail "list --json tags is not an array: $json_out"
+jq -e '.modules[0].tags == ["fixture"]' <<<"$json_out" >/dev/null \
+    || fail "list --json tags content wrong: $json_out"
+pass "list --json matches the documented schema over the parallel-status fixture"
+
+filtered_out=$(status_launch list --json solo) || fail "list --json <tag> failed"
+jq -e '[.modules[].name] == ["c-three"]' <<<"$filtered_out" >/dev/null \
+    || fail "list --json <tag> did not filter by tag: $filtered_out"
+pass "list --json filters by tag"
+
+rc=0; status_launch list --json nosuch >/dev/null 2>&1 || rc=$?
+[[ $rc -eq 64 ]] || fail "list --json nosuch exited $rc, want 64"
+pass "list --json rejects an unknown tag with exit 64"
+
+# JSON validity for any module metadata: quotes, backslashes, control
+# characters (tab, newline) in title/description, and a module with no tags
+# at all.
+json_meta_root=$(tmp)
+mkdir -p "$json_meta_root/lib" "$json_meta_root/modules/quirky"
+cp "$ROOT"/lib/*.sh "$json_meta_root/lib/"
+cp "$ROOT/VERSION" "$json_meta_root/VERSION"
+cp "$ROOT/pve-toolbox" "$json_meta_root/pve-toolbox"
+chmod 0755 "$json_meta_root/pve-toolbox"
+cat > "$json_meta_root/modules/quirky/module.sh" <<'MODULE_EOF'
+MODULE_NAME="quirky"
+MODULE_TITLE='Weird "title" \with\ backslash'
+MODULE_DESC=$'line one\tline two "quoted" \\ backslash\nline three'
+MODULE_TAGS=""
+MODULE_HOST_ONLY=0
+module_status() { printf '%s' 'installed "v1" \only-once'; }
+MODULE_EOF
+quirky_json=$(PVE_TOOLBOX_ROOT="$json_meta_root" \
+    launch_bin "$json_meta_root/pve-toolbox" list --json) \
+    || fail "list --json failed for quirky metadata"
+jq -e . <<<"$quirky_json" >/dev/null \
+    || fail "list --json produced invalid JSON for quirky metadata: $quirky_json"
+[[ $(jq -r '.modules[0].title' <<<"$quirky_json") == 'Weird "title" \with\ backslash' ]] \
+    || fail "list --json mangled a title with quotes and backslashes: $quirky_json"
+[[ $(jq -r '.modules[0].description' <<<"$quirky_json") \
+    == 'line one line two "quoted" \ backslash; line three' ]] \
+    || fail "list --json did not clean a description with tabs/newlines as report_clean_text does: $quirky_json"
+[[ $(jq -r '.modules[0].tags | length' <<<"$quirky_json") == 0 ]] \
+    || fail "list --json gave a nonempty tags array for an untagged module: $quirky_json"
+[[ $(jq -r '.modules[0].installed' <<<"$quirky_json") == true ]] \
+    || fail "list --json did not read the quirky module as installed: $quirky_json"
+pass "list --json stays valid JSON for quotes, backslashes, control characters, and empty tags"
