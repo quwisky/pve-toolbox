@@ -86,7 +86,7 @@ declare `MODULE_HOST_ONLY=1` and warn if they detect an LXC.
 ```
 pve-toolbox                    interactive menu
 pve-toolbox ui                 full-screen menu (needs whiptail)
-pve-toolbox list [tag]         list modules and their status
+pve-toolbox list [--json] [tag] list modules and their status
 pve-toolbox install <mod>...   install specific modules
 pve-toolbox update [mod]...    update (all installed if none given)
 pve-toolbox check [mod]...     report available updates, change nothing
@@ -105,8 +105,9 @@ what was probably meant.
 
 Flags: `-y` non-interactive (modules read their env vars instead of prompting),
 `-f` force, `--json` versioned output, `--quiet` exit-status-only output,
-`--color=auto|always|never` colour output, `-V` version, `-h` help. JSON and
-quiet output apply to `status`, `check`, and `doctor`.
+`--color=auto|always|never` colour output, `-V` version, `-h` help. JSON
+output applies to `status`, `check`, `doctor`, and `list`; quiet output
+applies to `status`, `check`, and `doctor`.
 
 Use `pve-toolbox lxc-update --dry-run` as root on PVE 9 to preview container
 package updates. Execution requires a terminal and confirmation; `--allow-removals`

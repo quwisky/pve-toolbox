@@ -85,7 +85,7 @@ declare `MODULE_HOST_ONLY=1` and warn if they detect an LXC.
 ```
 pve-toolbox                    interactive menu
 pve-toolbox ui                 full-screen menu (needs whiptail)
-pve-toolbox list [tag]         list modules and their status
+pve-toolbox list [--json] [tag] list modules and their status
 pve-toolbox install <mod>...   install specific modules
 pve-toolbox update [mod]...    update (all installed if none given)
 pve-toolbox check [mod]...     report available updates, change nothing
@@ -100,7 +100,8 @@ pve-toolbox --version          print the installed version
 Flags: `-y` non-interactive (modules read their env vars instead of
 prompting), `-f` force, `--json` versioned output, `--quiet` exit-status-only
 output, `--color=auto|always|never` colour output, `-V` version, `-h` help.
-JSON and quiet output are available for `status`, `check`, and `doctor`.
+JSON output is available for `status`, `check`, `doctor`, and `list`; quiet
+output is available for `status`, `check`, and `doctor`.
 
 ## Help
 
