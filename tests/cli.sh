@@ -493,3 +493,61 @@ rc=0; err=$(PVE_TOOLBOX_ROOT="$no_template_root" launch_bin "$no_template_root/p
 [[ $rc -eq 1 ]] || fail "_man with a missing template exited $rc, want 1"
 [[ $err == *"man page template missing"* ]] || fail "_man with a missing template did not say why: $err"
 pass "_man fails closed when its template is missing"
+
+# --- parallel status cache ------------------------------------------------
+
+# load_statuses computes every module's module_status concurrently and once
+# per command. a-one is installed instantly; b-two and d-four each sleep
+# before reporting installed, so if the two sleeps run one after another the
+# whole command takes at least 6s; c-three exits non-zero with no output and
+# must read as not installed.
+status_root=$(tmp)
+mkdir -p "$status_root/lib" \
+    "$status_root/modules/a-one" "$status_root/modules/b-two" \
+    "$status_root/modules/c-three" "$status_root/modules/d-four"
+cp "$ROOT"/lib/*.sh "$status_root/lib/"
+cp "$ROOT/VERSION" "$status_root/VERSION"
+cp "$ROOT/pve-toolbox" "$status_root/pve-toolbox"
+chmod 0755 "$status_root/pve-toolbox"
+printf '%s\n' \
+    'MODULE_NAME="a-one"' 'MODULE_TITLE="A one"' 'MODULE_DESC="fixture a"' \
+    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+    'module_status() { printf "installed a"; }' \
+    > "$status_root/modules/a-one/module.sh"
+printf '%s\n' \
+    'MODULE_NAME="b-two"' 'MODULE_TITLE="B two"' 'MODULE_DESC="fixture b"' \
+    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+    'module_status() { sleep 3; printf "installed b"; }' \
+    > "$status_root/modules/b-two/module.sh"
+printf '%s\n' \
+    'MODULE_NAME="c-three"' 'MODULE_TITLE="C three"' 'MODULE_DESC="fixture c"' \
+    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+    'module_status() { exit 3; }' \
+    > "$status_root/modules/c-three/module.sh"
+printf '%s\n' \
+    'MODULE_NAME="d-four"' 'MODULE_TITLE="D four"' 'MODULE_DESC="fixture d"' \
+    'MODULE_TAGS="fixture"' 'MODULE_HOST_ONLY=0' \
+    'module_status() { sleep 3; printf "installed d"; }' \
+    > "$status_root/modules/d-four/module.sh"
+
+status_launch() { # status_launch [args...] -> the fixture launcher above
+    PVE_TOOLBOX_ROOT="$status_root" launch_bin "$status_root/pve-toolbox" "$@"
+}
+
+SECONDS=0
+list_out=$(status_launch list) || fail "list failed against the parallel-status fixture"
+list_elapsed=$SECONDS
+order=$(grep -oE '^(a-one|b-two|c-three|d-four)' <<<"$list_out" | tr '\n' ' ')
+[[ $order == "a-one b-two c-three d-four " ]] \
+    || fail "list did not keep discovery order over the status fixture: $order"
+c_status=$(awk '/^c-three/{getline; print; exit}' <<<"$list_out")
+[[ $c_status == *"status: not installed"* ]] \
+    || fail "c-three (exit 3, no output) did not read as not installed: $c_status"
+[[ $list_elapsed -lt 5 ]] \
+    || fail "list took ${list_elapsed}s over 4 modules with two 3s statuses; want under 5s (parallel), a serial run needs at least 6s"
+pass "list computes module status in parallel, in under 5s, preserving discovery order"
+
+installed_out=$(status_launch _complete installed) || fail "_complete installed failed against the parallel-status fixture"
+[[ $installed_out == $'a-one\nb-two\nd-four' ]] \
+    || fail "_complete installed did not list a-one, b-two, d-four in order: $installed_out"
+pass "_complete installed lists installed modules in discovery order"

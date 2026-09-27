@@ -383,7 +383,46 @@ module_has_function() { # module_has_function <module> <function>
     )
 }
 
+# One process-lifetime cache of every module's status line, filled by
+# load_statuses. Never invalidated and never refreshed mid-process: each
+# launcher run reads a consistent snapshot. The menu and the ui never call
+# load_statuses, so they keep re-reading status live, one module at a time.
+declare -gA MODULE_STATUS=()
+MODULE_STATUS_LOADED=0
+
+# Fill MODULE_STATUS for every discovered module, module_status calls running
+# at most 8 at a time. Idempotent: a second call is a no-op. Safe to call
+# concurrently with other modules' module_status only because the module
+# contract requires module_status to be read-only.
+load_statuses() {
+    [[ $MODULE_STATUS_LOADED -eq 1 ]] && return 0
+    discover
+    local dir i=0 running=0 m st
+    dir=$(mktemp -d) || die "could not create a temporary directory"
+    for m in "${MODULES[@]}"; do
+        (
+            st=$(run_module "$m" module_status 2>/dev/null) || true
+            printf '%s' "${st:-not installed}" > "$dir/$i"
+        ) </dev/null &
+        i=$((i + 1)); running=$((running + 1))
+        if (( running >= 8 )); then wait -n || true; running=$((running - 1)); fi
+    done
+    wait || true
+    i=0
+    for m in "${MODULES[@]}"; do
+        [[ -f "$dir/$i" ]] || die "could not read the status of $m"
+        MODULE_STATUS[$m]=$(<"$dir/$i")
+        i=$((i + 1))
+    done
+    rm -rf -- "$dir"
+    MODULE_STATUS_LOADED=1
+}
+
 status_line() { # status_line <module> -> short status, "not installed" if it is not
+    if [[ $MODULE_STATUS_LOADED -eq 1 && -n ${MODULE_STATUS[$1]+x} ]]; then
+        printf '%s' "${MODULE_STATUS[$1]}"
+        return 0
+    fi
     local st
     st=$(run_module "$1" module_status 2>/dev/null) || true
     printf '%s' "${st:-not installed}"
@@ -533,6 +572,7 @@ cmd_list() {
             cli_usage_error "unknown tag: $tag" list "${s[@]}"
         fi
     fi
+    load_statuses
     for m in "${MODULES[@]}"; do
         [[ -n $tag && " $(meta "$m" MODULE_TAGS) " != *" $tag "* ]] && continue
         printf '%s%-24s%s %s\n' "$c_bold" "$m" "$c_reset" "$(meta "$m" MODULE_DESC)"
@@ -550,6 +590,7 @@ cmd_each() { # cmd_each <function> [--check] <modules...>
     local list=("$@") m
     [[ $fn != module_update || ${#list[@]} == 0 ]] || TOOLBOX_UPDATE_EXPLICIT=1
     if [[ ${#list[@]} -eq 0 ]]; then
+        load_statuses
         for m in "${MODULES[@]}"; do
             is_installed "$m" || continue
             list+=("$m")
@@ -591,6 +632,7 @@ cmd_module_report() { # cmd_module_report <status|check> <function> [--check] <m
     report_reset "$command"
     discover
     if [[ $explicit -eq 0 ]]; then
+        load_statuses
         for m in "${MODULES[@]}"; do
             is_installed "$m" || continue
             list+=("$m")
@@ -861,7 +903,7 @@ cmd_complete() { # cmd_complete <commands|modules|installed|tags|flags <cmd>|fla
         modules)
             discover; printf '%s\n' "${MODULES[@]}" ;;
         installed)
-            discover
+            load_statuses
             # An if, not an &&: with nothing installed the last iteration
             # would otherwise decide the exit status.
             for m in "${MODULES[@]}"; do

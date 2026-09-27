@@ -35,6 +35,10 @@ each module carries a `# shellcheck disable=SC2034` above the block.
 `module_status` is called for every module on every menu draw, on every
 `ui` action, and by `uninstall` completion, so keep it cheap and make its first
 word meaningful — the menu shows only that word in the `STATUS` column.
+`list`, tab completion, and the default (no modules named) form of `update`,
+`check`, and `status` compute every module's `module_status` at the same time
+in separate processes, so it must be read-only and safe to run concurrently
+with other modules' `module_status`.
 
 !!! warning "`not installed` is compared exactly"
 

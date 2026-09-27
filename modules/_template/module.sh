@@ -23,7 +23,11 @@
 #                         and exit 1 if it is not. That string is compared
 #                         exactly to decide what update/uninstall/ui act on,
 #                         so a longer line merely containing the words counts
-#                         as installed.
+#                         as installed. list, completion, and the default form
+#                         of update/check/status run every module's
+#                         module_status at the same time, so it must be
+#                         read-only and safe to run concurrently with other
+#                         modules' module_status.
 #     module_status_long  detailed status (optional, falls back to status)
 #     module_doctor       emit read-only health results with doctor_result
 #                         (optional; called only for installed modules)
