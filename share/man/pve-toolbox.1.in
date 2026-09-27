@@ -23,6 +23,13 @@ package-update run.
 .TP
 .B NO_COLOR
 When set to a non-empty value, disables colour unless \-\-color=always is given.
+.TP
+.B TOOLBOX_COLOR
+Colour mode when \-\-color is not given: auto (default), always, or never;
+overrides NO_COLOR. auto colours a stream only when it is a terminal, unless
+NO_COLOR or TERM=dumb turn it off; always/never override both. The launcher
+sets this from \-\-color once and exports it, so a standalone runner reaches
+the same decision.
 .SH FILES
 .TP
 .I /etc/pve-toolbox/

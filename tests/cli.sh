@@ -122,6 +122,36 @@ rc=0; launch help definitely-not >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 64 ]] || fail "help <unknown> exited $rc, want 64"
 pass "top-level and per-command help"
 
+# Long option/flag facts (--color=WHEN, --quiet) wrap inside the Options
+# block rather than running off the terminal: no options-block line exceeds
+# 78 columns (the same width CLI_DESC already folds at), and a continuation
+# line - one whose label column is blank - is indented to line up under
+# where the description text starts, 19 columns in.
+check_options_wrap() { # check_options_wrap <name> <help-text>
+    local name=$1 text=$2 line inopts=0
+    while IFS= read -r line; do
+        if [[ $inopts -eq 0 ]]; then
+            [[ $line == "Options:" ]] && inopts=1
+            continue
+        fi
+        [[ -n $line ]] || break
+        [[ ${#line} -le 78 ]] \
+            || fail "'$name' options block has a line over 78 columns (${#line}): $line"
+        if [[ ${line:2:1} == " " ]]; then
+            [[ ${line:0:19} == "$(printf '%19s' '')" && -n ${line:19} && ${line:19:1} != " " ]] \
+                || fail "'$name' continuation line is not indented to column 20: '$line'"
+        fi
+    done <<<"$text"
+}
+check_options_wrap "help status" "$(launch help status)"
+check_options_wrap "help lxc-update" "$lxc_help"
+check_options_wrap "help" "$help"
+[[ $(launch help status) == *"--color=WHEN"*$'\n'*"also disables it"* ]] \
+    || fail "help status's --color=WHEN description did not wrap onto a second line"
+[[ $(launch help status) == *"--quiet"*$'\n'*"This cannot be combined with --json"* ]] \
+    || fail "help status's --quiet description did not wrap onto a second line"
+pass "help wraps long option descriptions with a hanging indent, no line over 78 columns"
+
 # lxc-update's runner refuses --yes and --force, so neither its help nor its
 # completion offers them; every other global still applies. The launcher
 # itself keeps accepting them, so the runner is what explains the refusal.
@@ -330,6 +360,22 @@ else
 fi
 pass "generated man page covers every command and flag"
 
+# _man_text's leading '.'/apostrophe guard, exercised directly rather than
+# only through whatever CLI_* strings happen to start with today. Extracted
+# straight from pve-toolbox (the range from _man_escape's definition through
+# _man_text's closing brace) so this tests the real function, not a copy.
+man_text_src=$(sed -n '/^_man_escape() {/,/^}/p' ./pve-toolbox)
+[[ -n $man_text_src ]] || fail "could not extract _man_escape/_man_text from pve-toolbox"
+out=$(eval "$man_text_src"; _man_text '.foo')
+[[ $out == '\&.foo' ]] || fail "_man_text did not guard a line starting with '.': $out"
+out=$(eval "$man_text_src"; _man_text "'foo")
+[[ $out == "\\&'foo" ]] || fail "_man_text did not guard a line starting with an apostrophe: $out"
+out=$(eval "$man_text_src"; _man_text 'plain text')
+[[ $out == 'plain text' ]] || fail "_man_text changed ordinary text: $out"
+out=$(eval "$man_text_src"; _man_text 'a-b')
+[[ $out == 'a\-b' ]] || fail "_man_text did not escape a hyphen: $out"
+pass "_man_text guards a leading '.' or apostrophe and leaves ordinary text alone"
+
 # _man must not call discover: a checkout with zero modules would make
 # discover die, so _man succeeding there proves it never ran.
 empty_root=$(tmp)
@@ -374,9 +420,13 @@ quiet_json="cannot be combined with $(mroff "--json")"
 color_force="$(mroff "--json") or $(mroff "--quiet") always force"
 [[ $man == *"$color_force"* ]] || fail "man page dropped: --json/--quiet always force colour off"
 
-# ENVIRONMENT: NO_COLOR is documented.
+# ENVIRONMENT: NO_COLOR and TOOLBOX_COLOR are both documented.
 [[ $man == *"NO_COLOR"* ]] || fail "man page lacks the ENVIRONMENT section's NO_COLOR"
 [[ $man == *".SH ENVIRONMENT"* ]] || fail "man page lacks an ENVIRONMENT section"
+[[ $man == *".B TOOLBOX_COLOR"$'\n'*"auto (default), always, or never"* ]] \
+    || fail "man page's TOOLBOX_COLOR entry is missing or lost its three values"
+[[ $man == *".B TOOLBOX_COLOR"* ]] && [[ $man == *"overrides NO_COLOR"* ]] \
+    || fail "man page's TOOLBOX_COLOR entry does not say it overrides NO_COLOR"
 pass "generated man page carries every fact from the deleted static page"
 
 # Missing template: fails closed rather than printing nothing. A fixture

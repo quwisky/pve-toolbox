@@ -207,26 +207,48 @@ declare -A CLI_EXAMPLES=(
     [help]='pve-toolbox help status'
 )
 
+# fold -s breaks after the space, so strip what it leaves at line ends. One
+# place for that fix, shared by the free-text CLI_DESC paragraph below and by
+# cli_print_option, so a long fact never overruns the terminal in either.
+cli_fold() { # cli_fold <width> <text> -> wrapped, no trailing spaces
+    fold -s -w "$1" <<<"$2" | sed 's/ *$//'
+}
+
+# Prints one "  label           description" row, wrapping the description at
+# the same total width CLI_DESC uses (78 columns) and indenting continuation
+# lines to line up under the description column, so a long option fact wraps
+# instead of running off the terminal.
+cli_print_option() { # cli_print_option <label> <description>
+    local label=$1 desc=$2 indent=19 first=1 line
+    while IFS= read -r line; do
+        if ((first)); then
+            printf '  %-16s %s\n' "$label" "$line"
+            first=0
+        else
+            printf '%*s%s\n' "$indent" '' "$line"
+        fi
+    done < <(cli_fold $((78 - indent)) "$desc")
+}
+
 cli_help_overview() {
     local c spec
     printf 'Usage: pve-toolbox [options] [command] [arguments]\n\nCommands:\n'
     for c in "${CLI_COMMANDS[@]}"; do printf '  %-12s %s\n' "$c" "${CLI_SUMMARY[$c]}"; done
     printf '\nOptions:\n'
-    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do printf '  %-16s %s\n' "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
-    printf "  %-16s %s\n" "--json, --quiet" "machine-readable output (status, check, doctor); see 'pve-toolbox help status'"
+    for spec in "${CLI_GLOBAL_FLAGS[@]}"; do cli_print_option "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
+    cli_print_option "--json, --quiet" "machine-readable output (status, check, doctor); see 'pve-toolbox help status'"
     printf "\nRun 'pve-toolbox help <command>' for details.\n"
 }
 
 cli_help_command() { # cli_help_command <command>
     local c=$1 f spec line
     printf 'Usage: pve-toolbox %s\n\n%s\n' "${CLI_USAGE[$c]}" "${CLI_SUMMARY[$c]}"
-    # fold -s breaks after the space, so strip what it leaves at line ends.
-    if [[ -n ${CLI_DESC[$c]:-} ]]; then printf '\n'; fold -s -w 78 <<<"${CLI_DESC[$c]}" | sed 's/ *$//'; fi
+    if [[ -n ${CLI_DESC[$c]:-} ]]; then printf '\n'; cli_fold 78 "${CLI_DESC[$c]}"; fi
     [[ -z ${CLI_ROOT[$c]:-} ]] || printf '\nRequires root.\n'
     printf '\nOptions:\n'
-    for f in ${CLI_FLAGS[$c]:-}; do printf '  %-16s %s\n' "$f" "${CLI_FLAG_DESC[$f]}"; done
+    for f in ${CLI_FLAGS[$c]:-}; do cli_print_option "$f" "${CLI_FLAG_DESC[$f]}"; done
     while IFS= read -r spec; do
-        printf '  %-16s %s\n' "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"
+        cli_print_option "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"
     done < <(cli_global_specs "$c")
     if [[ -n ${CLI_EXAMPLES[$c]:-} ]]; then
         printf '\nExamples:\n'
