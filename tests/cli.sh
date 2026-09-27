@@ -23,6 +23,11 @@ launch() { # launch [args...] -> runs ./pve-toolbox against throwaway dirs
 
 ESC=$'\e['
 
+# The colour cases below assume a capable terminal and no inherited colour
+# preference; CI runs with TERM unset or dumb, so pin them here.
+export TERM=xterm
+unset NO_COLOR TOOLBOX_COLOR
+
 # pty <command-string> -> run inside script(1) so stdout and stderr are ttys
 pty() { script -qec "$1" /dev/null; }
 
