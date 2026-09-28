@@ -154,5 +154,9 @@ schedule, and the outcome of its last run.
 `update` re-syncs the installed runner and the unit files with the checkout,
 offers to remove timers for jobs no longer in `JOBS`, and prompts for the
 settings of jobs that are configured but have no timer. Invalid schedules are
-reported and rewritten through the same validated prompt. `check` reports that
-without changing anything.
+reported and rewritten through the same validated prompt. Every question is
+asked before the runner or any unit file changes, so answers that run out or an
+invalid answer stop `update` with nothing rewritten. Once unit files have
+changed, `update` runs `systemctl daemon-reload` even if saving a job then
+fails, and a failed reload fails the update. `check` reports that without
+changing anything.

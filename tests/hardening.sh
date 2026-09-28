@@ -311,6 +311,7 @@ zr_run() { # zr_run <dir> <answers> <function> [VAR=value]...
     mkdir -p "$dir"/{bin,lib,conf,state,systemd,log,fake}
     cat > "$dir/fake/systemctl" <<'SH'
 #!/bin/sh
+printf '%s\n' "$*" >> "${0%/*}/systemctl.log"
 case $1 in is-enabled|is-active) exit 1 ;; esac
 exit 0
 SH
@@ -333,7 +334,11 @@ SH
             [[ $1 == calendar && ${*: -1} != bogus ]] || return 1
             printf "  Next elapse: Thu 2026-10-01 00:00:00 UTC\n"
         }
-        "$fn"
+        # A test can inject a failure: $dir/fake/hook.sh runs last.
+        [[ ! -f $dir/fake/hook.sh ]] || source "$dir/fake/hook.sh"
+        # As a condition, the way the launcher runs it: set -e does not
+        # apply inside, so an unchecked failure is not caught for the module.
+        "$fn" || exit $?
     ' _ "$dir" "$@" 2>&1) || ZR_RC=$?
     [[ $ZR_RC -ne 124 ]] || fail "zfs-replication $3 hung: $ZR_OUT"
 }
@@ -438,6 +443,84 @@ grep -qx 'OnCalendar=hourly' "$WORK/zr-upd/systemd/pve-toolbox-zfs-sync@b.timer"
 grep -qx "JOB_A_OPTS='--recursive --compress=zstd-fast'" "$WORK/zr-upd/conf/zfs-replication.conf" \
     || fail "zfs-replication update did not fill job a's empty OPTS with the default"
 pass "zfs-replication update rewrites missing job timers with the module defaults"
+
+# A job save that fails after the units were rewritten still reloads systemd,
+# so no unit file on disk differs from what systemd runs.
+(
+    export TOOLBOX_CONF_DIR="$WORK/zr-updfail/conf"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    conf_set zfs-replication JOBS 'a b'
+    conf_set zfs-replication JOB_A_SRC tank/a
+    conf_set zfs-replication JOB_A_DST backup/a
+    conf_set zfs-replication JOB_B_SRC tank/b
+    conf_set zfs-replication JOB_B_DST backup/b
+) >/dev/null || exit 1
+mkdir -p "$WORK/zr-updfail/fake"
+cat > "$WORK/zr-updfail/fake/hook.sh" <<'SH'
+eval "$(declare -f conf_set | sed '1s/conf_set/_real_conf_set/')"
+conf_set() { [[ $2 != JOB_B_SRC ]] || return 1; _real_conf_set "$@"; }
+SH
+zr_run "$WORK/zr-updfail" '\n\n\n\n\n\n\n\n\n\n' module_update
+[[ $ZR_RC -ne 0 ]] || fail "zfs-replication update succeeded although job b could not be saved: $ZR_OUT"
+[[ -f $WORK/zr-updfail/systemd/pve-toolbox-zfs-sync@a.timer ]] \
+    || fail "zfs-replication update did not get as far as job a's timer: $ZR_OUT"
+grep -qx daemon-reload "$WORK/zr-updfail/fake/systemctl.log" \
+    || fail "zfs-replication update left rewritten units without a daemon-reload: $ZR_OUT"
+pass "zfs-replication update reloads systemd when a job save fails"
+
+# Every question comes before the first unit is written: an invalid answer
+# under -y stops update with no unit file changed.
+(
+    export TOOLBOX_CONF_DIR="$WORK/zr-upd-y/conf"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    conf_set zfs-replication JOBS 'a b'
+    conf_set zfs-replication JOB_A_SRC tank/a
+    conf_set zfs-replication JOB_A_DST backup/a
+    conf_set zfs-replication JOB_B_SRC tank/b
+    conf_set zfs-replication JOB_B_DST backup/b
+) >/dev/null || exit 1
+zr_run "$WORK/zr-upd-y" '' module_update ASSUME_YES=1 ZFS_REPL_B_SCHEDULE=bogus
+[[ $ZR_RC -ne 0 ]] || fail "zfs-replication -y update accepted an invalid schedule for job b: $ZR_OUT"
+[[ -z $(find "$WORK/zr-upd-y"/{bin,lib,systemd} -type f) ]] \
+    || fail "zfs-replication update wrote units before its last question: $(find "$WORK/zr-upd-y"/{bin,lib,systemd} -type f)"
+pass "zfs-replication update asks every question before writing a unit"
+
+# A failed daemon-reload fails the update instead of reporting it in sync.
+(
+    export TOOLBOX_CONF_DIR="$WORK/zr-upd-reload/conf"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    conf_set zfs-replication JOBS a
+    conf_set zfs-replication JOB_A_SRC tank/a
+    conf_set zfs-replication JOB_A_DST backup/a
+) >/dev/null || exit 1
+mkdir -p "$WORK/zr-upd-reload/fake"
+printf '%s\n' 'systemctl() { [[ $1 != daemon-reload ]] || return 1; command systemctl "$@"; }' \
+    > "$WORK/zr-upd-reload/fake/hook.sh"
+zr_run "$WORK/zr-upd-reload" '\n\n\n\n\n' module_update
+[[ $ZR_RC -ne 0 && $ZR_OUT != *'In sync'* ]] \
+    || fail "zfs-replication update reported success after a failed daemon-reload: $ZR_OUT"
+pass "zfs-replication update fails when daemon-reload fails"
+
+# Install writes job timers while saving; a save that fails after that still
+# reloads systemd before install fails.
+mkdir -p "$WORK/zr-inst-fail/fake"
+cat > "$WORK/zr-inst-fail/fake/hook.sh" <<'SH'
+eval "$(declare -f conf_set | sed '1s/conf_set/_real_conf_set/')"
+conf_set() { [[ $2 != JOBS ]] || return 1; _real_conf_set "$@"; }
+SH
+answers="$zr_hook\n"
+answers+='tank/a\nbackup/a\n\nn\n\n'   # job a: no fixup, default schedule
+answers+='\nn\nn\n'                    # notify start, test, run now
+zr_run "$WORK/zr-inst-fail" "$answers" module_install ZFS_REPL_JOBS=a
+[[ $ZR_RC -ne 0 ]] || fail "zfs-replication install succeeded although JOBS could not be saved: $ZR_OUT"
+[[ -f $WORK/zr-inst-fail/systemd/pve-toolbox-zfs-sync@a.timer ]] \
+    || fail "zfs-replication install did not get as far as job a's timer: $ZR_OUT"
+grep -qx daemon-reload "$WORK/zr-inst-fail/fake/systemctl.log" \
+    || fail "zfs-replication install left a written timer without a daemon-reload: $ZR_OUT"
+pass "zfs-replication install reloads systemd when a save fails"
 
 # --- zfs-scrub --------------------------------------------------------------
 
