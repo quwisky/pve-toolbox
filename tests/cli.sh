@@ -1270,6 +1270,44 @@ else
         || fail "config show --json under LC_ALL=C did not replace the C1 control byte with ?: $json"
     pass "config show replaces the UTF-8 C1 control range with ? regardless of the caller's locale"
 
+    # A lone byte in 0x80-0x9f is not UTF-8 at all, so the check above does
+    # not see it, yet an 8-bit terminal reads a bare 0x9b as CSI. Text output
+    # shows every invalid byte as ?, and keeps valid UTF-8 as it is.
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_DIR='A"$'\x9b'"B é"$'\xc2'"'"
+    for loc in C C.UTF-8; do
+        out=$(LC_ALL=$loc conf_launch "$dir" config show e-conf) \
+            || fail "config show under LC_ALL=$loc failed: $out"
+        grep -Eq '^  E_DIR +A\?B é\?$' <<<"$out" \
+            || fail "config show under LC_ALL=$loc did not replace lone bytes with ?: $(od -c <<<"$out")"
+        json=$(LC_ALL=$loc conf_launch "$dir" config show --json e-conf) \
+            || fail "config show --json under LC_ALL=$loc failed: $json"
+        [[ $(jq -r '.files[0].keys[0].value' <<<"$json") == "A"$'\xef\xbf\xbd'"B é"$'\xef\xbf\xbd' ]] \
+            || fail "config show --json under LC_ALL=$loc did not carry lone bytes as U+FFFD: $json"
+    done
+    pass "config show shows lone invalid bytes as ? in text and U+FFFD in --json"
+
+    # Valid UTF-8 stays exact however long the value: a reader that decodes
+    # in chunks splits a character at the boundary and shows it as ?. Many
+    # invalid bytes stay fast.
+    dir=$(tmp)
+    big=$(printf 'é%.0s' $(seq 1 150000))
+    conf_write "$dir" e-conf "E_DIR='$big'"
+    out=$(conf_launch "$dir" config show e-conf) || fail "config show of a long UTF-8 value failed"
+    [[ $out == *"E_DIR"*" $big" && $out != *'?'* ]] \
+        || fail "config show corrupted a long UTF-8 value in text output"
+    json=$(conf_launch "$dir" config show --json e-conf) || fail "config show --json of a long UTF-8 value failed"
+    [[ $(jq -r '.files[0].keys[0].value' <<<"$json") == "$big" ]] \
+        || fail "config show --json corrupted a long UTF-8 value"
+    bad=$(printf '\x9b%.0s' $(seq 1 300000))
+    conf_write "$dir" e-conf "E_DIR='$bad'"
+    out=$(TOOLBOX_BIN_DIR=$(tmp) TOOLBOX_STATE_DIR=$(tmp) TOOLBOX_SYSTEMD_DIR=$(tmp) \
+        TOOLBOX_CONF_DIR=$dir PVE_TOOLBOX_ROOT="$conf_root" \
+        timeout 20 "$conf_root/pve-toolbox" config show e-conf) \
+        || fail "config show of 300000 invalid bytes failed or took over 20 s"
+    [[ $out == *"E_DIR"*" ${bad//$'\x9b'/?}" ]] || fail "config show did not show 300000 invalid bytes as ?"
+    pass "config show keeps long UTF-8 exact and stays fast on many invalid bytes"
+
     # A public value far larger than one command-line argument may be is
     # shown in full, in text and in JSON: nothing passes it through argv.
     dir=$(tmp)
