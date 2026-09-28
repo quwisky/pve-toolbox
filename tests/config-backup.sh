@@ -32,6 +32,30 @@ export CB_CONF=/dev/null
 # shellcheck source=modules/config-backup/pve-config-backup.sh
 source "$ROOT/modules/config-backup/pve-config-backup.sh"
 
+# --- runner state writes ----------------------------------------------------
+#
+# The runner keeps its own state writer. A write that fails part way (past a
+# 1 KiB file-size limit, the way a full disk would) keeps the previous file
+# whole and fails; nothing depends on TMPDIR.
+(
+    export CB_STATE_FILE="$WORK/state-atomic/config-backup.state"
+    _cb_state_set KEY old || fail "_cb_state_set could not write a fresh state file"
+    TMPDIR="$WORK/no-such-dir" _cb_state_set OTHER kept \
+        || fail "_cb_state_set depends on TMPDIR"
+    big=$(printf 'x%.0s' $(seq 1 4096))
+    (
+        trap '' XFSZ
+        ulimit -f 1
+        _cb_state_set KEY "$big" 2>/dev/null && fail "_cb_state_set reported success for a failed write"
+        exit 0
+    ) || exit 1
+    [[ $(_cb_state_get KEY) == old && $(_cb_state_get OTHER) == kept ]] \
+        || fail "a failed _cb_state_set write lost the previous state"
+    [[ $(stat -c '%a' "$CB_STATE_FILE") == 644 ]] || fail "_cb_state_set changed the state file mode"
+    [[ -z $(find "$WORK/state-atomic" -name '.*') ]] || fail "a failed _cb_state_set left a temporary file"
+) || exit 1
+pass "runner state writes keep the previous file when they fail"
+
 # --- the fixture ------------------------------------------------------------
 
 FIX=$(mktemp -d "$WORK/fixXXXXXX")
