@@ -141,7 +141,8 @@ Every prompt follows the same rules:
 See [State versus config](../writing-a-module.md#state-versus-config).
 
 `state_get` `state_set` `state_clear` `state_exists`
-: `0644`, `KEY=value`. `state_set` returns non-zero when it cannot write.
+: `0644`, `KEY=value`. `state_set` warns and returns non-zero when it cannot
+  write.
 
 `conf_file` `conf_get` `conf_set` `conf_load` `conf_clear` `conf_exists`
 : `0600`, `KEY='value'`, sourceable. `conf_load` sources every key into the
@@ -150,7 +151,7 @@ See [State versus config](../writing-a-module.md#state-versus-config).
 
 `conf_set` and `state_set` write the new file beside the old one and rename
 it into place, so a failed write (a full disk, a read-only filesystem) leaves
-the previous file whole. Module code checks `conf_set` (`|| return 1`).
+the previous file whole. Module code checks both (`|| return 1`).
 
 ## GitHub releases
 

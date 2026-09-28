@@ -134,7 +134,8 @@ state_set failwrite KEY "old"
     ulimit -f 1
     out=$(conf_set failwrite KEY "$big" 2>&1) && fail "conf_set reported success for a failed write"
     [[ $out == *"could not write"* ]] || fail "conf_set did not say the write failed: $out"
-    state_set failwrite KEY "$big" 2>/dev/null && fail "state_set reported success for a failed write"
+    out=$(state_set failwrite KEY "$big" 2>&1) && fail "state_set reported success for a failed write"
+    [[ $out == *"could not write"* ]] || fail "state_set did not say the write failed: $out"
     exit 0
 ) || exit 1
 [[ $(conf_get failwrite KEY) == old ]] || fail "a failed conf_set write lost the previous value"
@@ -150,17 +151,17 @@ conf_clear failwrite; state_clear failwrite
 pass "a failed conf_set or state_set write keeps the previous file"
 
 # Modules run as a condition (`if ! run_module ...`), where bash ignores
-# set -e, so an unchecked conf_set failure is dropped and install goes on to
-# report success. Every call in a module (including the packaged legacy
-# modules) checks its status: || or && on the same line, or a trailing \ into
-# the rest of an && chain. A line-based heuristic: it catches a bare call, not
-# `|| true` or a chain whose own status is dropped.
-unchecked=$(grep -rn --include='*.sh' -E '(^|[;&|({[:space:]])conf_set[[:space:]]' "$ROOT/modules" "$ROOT/debian/legacy" \
+# set -e, so an unchecked conf_set or state_set failure is dropped and install
+# goes on to report success. Every call in a module (including the packaged
+# legacy modules) checks its status: || or && on the same line, or a trailing
+# \ into the rest of an && chain. A line-based heuristic: it catches a bare
+# call, not `|| true` or a chain whose own status is dropped.
+unchecked=$(grep -rn --include='*.sh' -E '(^|[;&|({[:space:]])(conf|state)_set[[:space:]]' "$ROOT/modules" "$ROOT/debian/legacy" \
     | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#' \
     | grep -Ev '(\|\||&&)|\\$' || true)
-[[ -z $unchecked ]] || fail "conf_set calls that ignore a failure:
+[[ -z $unchecked ]] || fail "conf_set or state_set calls that ignore a failure:
 $unchecked"
-pass "every conf_set call in a module checks its status"
+pass "every conf_set and state_set call in a module checks its status"
 
 # The documented promise: a helper script installed into TOOLBOX_BIN_DIR can
 # source the file directly rather than depending on this library.

@@ -318,11 +318,11 @@ module_install() {
         done
     fi
 
-    state_set "$MODULE_NAME" POOLS "${want[*]}"
-    state_set "$MODULE_NAME" INTERVAL "$ZFS_SCRUB_INTERVAL"
-    state_set "$MODULE_NAME" NOTIFY_START "$ZFS_SCRUB_NOTIFY_START"
-    state_set "$MODULE_NAME" SCRIPT_SUM "$(_zs_sum "$(_zs_src)")"
-    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" POOLS "${want[*]}" || return 1
+    state_set "$MODULE_NAME" INTERVAL "$ZFS_SCRUB_INTERVAL" || return 1
+    state_set "$MODULE_NAME" NOTIFY_START "$ZFS_SCRUB_NOTIFY_START" || return 1
+    state_set "$MODULE_NAME" SCRIPT_SUM "$(_zs_sum "$(_zs_src)")" || return 1
+    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)" || return 1
 
     step "Done - ${#want[@]} pool(s) scheduled"
     dim "  systemctl list-timers '$ZS_UNIT@*'"
@@ -458,9 +458,9 @@ module_update() {
     done
 
     _zs_scheduled
-    state_set "$MODULE_NAME" POOLS "${ZS_SCHEDULED[*]}"
-    state_set "$MODULE_NAME" SCRIPT_SUM "$new"
-    state_set "$MODULE_NAME" UPDATED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" POOLS "${ZS_SCHEDULED[*]}" || return 1
+    state_set "$MODULE_NAME" SCRIPT_SUM "$new" || return 1
+    state_set "$MODULE_NAME" UPDATED_AT "$(date -Is)" || return 1
     step "In sync - ${#ZS_SCHEDULED[@]} pool(s) scheduled"
 }
 

@@ -352,11 +352,11 @@ module_install() {
         done
     fi
 
-    state_set "$MODULE_NAME" VERSION "$GH_TAG"
-    state_set "$MODULE_NAME" ARCH "$arch"
-    state_set "$MODULE_NAME" COLLECTORS "${got[*]}"
-    state_set "$MODULE_NAME" ENDPOINT "$SCRUTINY_API_ENDPOINT"
-    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" VERSION "$GH_TAG" || return 1
+    state_set "$MODULE_NAME" ARCH "$arch" || return 1
+    state_set "$MODULE_NAME" COLLECTORS "${got[*]}" || return 1
+    state_set "$MODULE_NAME" ENDPOINT "$SCRUTINY_API_ENDPOINT" || return 1
+    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)" || return 1
 
     step "Done - $GH_TAG"
     dim "  systemctl list-timers '$UNIT_PREFIX-*'"
@@ -480,8 +480,8 @@ module_update() {
     SC_UPDATE_TIMERS_PAUSED=0
 
     if [[ ${#broken[@]} -eq 0 ]]; then
-        state_set "$MODULE_NAME" VERSION "$GH_TAG"
-        state_set "$MODULE_NAME" UPDATED_AT "$(date -Is)"
+        state_set "$MODULE_NAME" VERSION "$GH_TAG" || return 1
+        state_set "$MODULE_NAME" UPDATED_AT "$(date -Is)" || return 1
         for s in "${updated[@]}"; do rm -f "$TOOLBOX_BIN_DIR/${SC_BIN[$s]}.prev"; done
         step "Updated to $GH_TAG"
     else

@@ -66,7 +66,7 @@ kp_vm_save() { # <vmid> <version> <identity> <fingerprint> <install|update|unins
         state_set "komodo-periphery-qemu-$id" version "$version" &&
         state_set "komodo-periphery-qemu-$id" machine_id "${KP_VM_MACHINE:-}" &&
         state_set "komodo-periphery-qemu-$id" fingerprint "$fingerprint" &&
-        state_set "komodo-periphery-qemu-$id" result "$action completed; Core connectivity unverified"
+        state_set "komodo-periphery-qemu-$id" result "$action completed; Core connectivity unverified" || return 1
 }
 
 kp_vm_register() { # Include a first-install target before staging can fail.

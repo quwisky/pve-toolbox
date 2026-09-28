@@ -374,9 +374,9 @@ module_install() {
         done
     fi
 
-    state_set "$MODULE_NAME" JOBS "${kept[*]}"
-    state_set "$MODULE_NAME" SCRIPT_SUM "$(_zr_sum "$(_zr_src)")"
-    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" JOBS "${kept[*]}" || return 1
+    state_set "$MODULE_NAME" SCRIPT_SUM "$(_zr_sum "$(_zr_src)")" || return 1
+    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)" || return 1
 
     step "Done - ${#kept[@]} job(s) scheduled"
     dim "  systemctl list-timers '$ZR_UNIT@*'"
@@ -480,9 +480,9 @@ module_update() {
         _zr_enable "$j" || die "could not enable the timer for $j"
     done
 
-    state_set "$MODULE_NAME" JOBS "${ZR_SCHEDULED[*]}"
-    state_set "$MODULE_NAME" SCRIPT_SUM "$new"
-    state_set "$MODULE_NAME" UPDATED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" JOBS "${ZR_SCHEDULED[*]}" || return 1
+    state_set "$MODULE_NAME" SCRIPT_SUM "$new" || return 1
+    state_set "$MODULE_NAME" UPDATED_AT "$(date -Is)" || return 1
     step "In sync - ${#ZR_SCHEDULED[@]} job(s) scheduled"
 }
 

@@ -499,8 +499,8 @@ state_set() { # state_set <module> <key> <value>
         $0 ~ "^" k "=" { print k "=" ENVIRON["_STATE_V"]; found = 1; next }
         { print }
         END { if (!found) print k "=" ENVIRON["_STATE_V"] }
-    ' "$f") || return 1
-    _replace_file "$f" 0644 "$out"
+    ' "$f") && _replace_file "$f" 0644 "$out" \
+        || { warn "not saving state $2: could not write $f"; return 1; }
 }
 
 state_get() { # state_get <module> <key>

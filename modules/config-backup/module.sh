@@ -468,11 +468,11 @@ module_install() {
     # State before the unit starts: the runner writes this same file, so
     # starting it first leaves a window where its results are overwritten by
     # the install's own read-modify-write.
-    state_set "$MODULE_NAME" ARCHIVE_DIR "$CB_ARCHIVE_DIR"
-    state_set "$MODULE_NAME" SCHEDULE "$CB_SCHEDULE"
-    state_set "$MODULE_NAME" STALE_AFTER_DAYS "$(_cb_stale_days_for "$CB_SCHEDULE")"
-    state_set "$MODULE_NAME" SCRIPT_SUM "$(_cb_sum "$(_cb_src)")"
-    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" ARCHIVE_DIR "$CB_ARCHIVE_DIR" || return 1
+    state_set "$MODULE_NAME" SCHEDULE "$CB_SCHEDULE" || return 1
+    state_set "$MODULE_NAME" STALE_AFTER_DAYS "$(_cb_stale_days_for "$CB_SCHEDULE")" || return 1
+    state_set "$MODULE_NAME" SCRIPT_SUM "$(_cb_sum "$(_cb_src)")" || return 1
+    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)" || return 1
 
     if [[ $CB_RUN_NOW == y ]]; then
         systemctl start --no-block "$CB_UNIT.service"
@@ -561,10 +561,10 @@ module_update() {
     systemd_oneshot "$CB_UNIT" "pve-toolbox PVE configuration snapshot" \
         "$(_cb_exec)" "$sched"
 
-    state_set "$MODULE_NAME" SCHEDULE "$sched"
-    state_set "$MODULE_NAME" STALE_AFTER_DAYS "$(_cb_stale_days_for "$sched")"
-    state_set "$MODULE_NAME" SCRIPT_SUM "$new"
-    state_set "$MODULE_NAME" UPDATED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" SCHEDULE "$sched" || return 1
+    state_set "$MODULE_NAME" STALE_AFTER_DAYS "$(_cb_stale_days_for "$sched")" || return 1
+    state_set "$MODULE_NAME" SCRIPT_SUM "$new" || return 1
+    state_set "$MODULE_NAME" UPDATED_AT "$(date -Is)" || return 1
     step "In sync - snapshots $sched"
 }
 
