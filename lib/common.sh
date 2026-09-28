@@ -473,6 +473,20 @@ is_newer() {
 
 _state_file() { printf '%s/%s.state' "$TOOLBOX_STATE_DIR" "$1"; }
 
+# Replace <file> with <content> through a hidden temporary file beside it,
+# synced and then renamed, so a write that fails part way (a full disk) or a
+# crash leaves the old file whole. Beside it, not under TMPDIR: the directory
+# is the target's own. -T: <file> is the target itself, never a directory to
+# move into.
+_replace_file() { # _replace_file <file> <mode> <content>
+    local tmp
+    tmp=$(mktemp "${1%/*}/.${1##*/}.XXXXXX") || return 1
+    printf '%s\n' "$3" > "$tmp" && chmod "$2" "$tmp" && sync -- "$tmp" \
+        && mv -fT -- "$tmp" "$1" && return 0
+    rm -f "$tmp"
+    return 1
+}
+
 state_set() { # state_set <module> <key> <value>
     local f out; f=$(_state_file "$1")
     mkdir -p "$TOOLBOX_STATE_DIR"
@@ -486,8 +500,7 @@ state_set() { # state_set <module> <key> <value>
         { print }
         END { if (!found) print k "=" ENVIRON["_STATE_V"] }
     ' "$f") || return 1
-    printf '%s\n' "$out" > "$f"
-    chmod 0644 "$f"
+    _replace_file "$f" 0644 "$out"
 }
 
 state_get() { # state_get <module> <key>
@@ -530,9 +543,7 @@ conf_set() { # conf_set <module> <key> <value>
     # Via the environment, not -v: awk expands backslash escapes in -v values
     # and would eat the quote escaping. A stored value can span lines, so the
     # shell quoting is followed across them: only a line that starts outside
-    # quotes starts a key, and a replaced key takes every line it spans. The
-    # result goes through a variable, not a temporary file, so nothing
-    # depends on TMPDIR.
+    # quotes starts a key, and a replaced key takes every line it spans.
     out=$(_CONF_V=$q LC_ALL=C awk -v k="$2" '
         function scan(s,   i, c) {
             for (i = 1; i <= length(s); i++) {
@@ -561,8 +572,7 @@ conf_set() { # conf_set <module> <key> <value>
         return 1
     fi
     ((rc == 0)) || { warn "not saving $2: could not read $f"; return 1; }
-    # Overwrite in place so the 0600 mode and the inode survive.
-    printf '%s\n' "$out" > "$f"
+    _replace_file "$f" 0600 "$out" || { warn "not saving $2: could not write $f"; return 1; }
 }
 
 # Read one key back by sourcing in a subshell, so the quoting round-trips.
