@@ -200,7 +200,7 @@ declare -A CLI_DESC=(
     [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Use --dry-run for a cached preview, --allow-removals to enable package removals and cleanup, and --notify for a Discord report. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades. Package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local systemd schedule. Scheduled runs update every eligible local container with the non-removing policy, never catch up after downtime, and can report every batch to Discord when explicitly enabled. Use 'pve-toolbox status lxc-update' to inspect timer health and recent results."
     [doctor]="The audit covers host, cluster, storage and installed modules. Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
     [link]="Packaged installs refuse this command."
-    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, tabs and newlines flattened; any other control character, including DEL, shown as ? in text and JSON-escaped in --json, except the C1 range U+0080-U+009F, which JSON does not require escaping and --json does not either, so it is shown as ? there too); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
+    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, tabs and carriage returns turned into spaces, newlines joined with '; '; any other control character, including DEL, shown as ? in text and JSON-escaped in --json, except the C1 range U+0080-U+009F, which JSON does not require escaping and --json does not either, so it is shown as ? there too; a byte that is not valid UTF-8 shown as ? in text and as U+FFFD in --json); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
 )
 declare -A CLI_EXAMPLES=(
     [list]=$'pve-toolbox list\npve-toolbox list storage\npve-toolbox list --json'
@@ -1177,7 +1177,11 @@ cmd_config() { # cmd_config show <module>
     elif [[ ${#files[@]} -eq 0 ]]; then
         printf 'no saved configuration for %s\n' "$mod"
     else
-        printf '%s' "$text"
+        # A lone byte in 0x80-0x9f is not UTF-8, so the C1 check above
+        # misses it, but an 8-bit terminal reads a bare 0x9b as CSI. jq
+        # decodes its input as UTF-8 whatever the locale and turns every
+        # invalid byte into U+FFFD, shown here as ?.
+        printf '%s' "$text" | jq -Rr 'gsub("�"; "?")'
     fi
 }
 

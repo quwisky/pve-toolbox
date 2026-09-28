@@ -1270,6 +1270,23 @@ else
         || fail "config show --json under LC_ALL=C did not replace the C1 control byte with ?: $json"
     pass "config show replaces the UTF-8 C1 control range with ? regardless of the caller's locale"
 
+    # A lone byte in 0x80-0x9f is not UTF-8 at all, so the check above does
+    # not see it, yet an 8-bit terminal reads a bare 0x9b as CSI. Text output
+    # shows every invalid byte as ?, and keeps valid UTF-8 as it is.
+    dir=$(tmp)
+    conf_write "$dir" e-conf "E_DIR='A"$'\x9b'"B é"$'\xc2'"'"
+    for loc in C C.UTF-8; do
+        out=$(LC_ALL=$loc conf_launch "$dir" config show e-conf) \
+            || fail "config show under LC_ALL=$loc failed: $out"
+        grep -Eq '^  E_DIR +A\?B é\?$' <<<"$out" \
+            || fail "config show under LC_ALL=$loc did not replace lone bytes with ?: $(od -c <<<"$out")"
+        json=$(LC_ALL=$loc conf_launch "$dir" config show --json e-conf) \
+            || fail "config show --json under LC_ALL=$loc failed: $json"
+        [[ $(jq -r '.files[0].keys[0].value' <<<"$json") == "A"$'\xef\xbf\xbd'"B é"$'\xef\xbf\xbd' ]] \
+            || fail "config show --json under LC_ALL=$loc did not carry lone bytes as U+FFFD: $json"
+    done
+    pass "config show shows lone invalid bytes as ? in text and U+FFFD in --json"
+
     # A public value far larger than one command-line argument may be is
     # shown in full, in text and in JSON: nothing passes it through argv.
     dir=$(tmp)
