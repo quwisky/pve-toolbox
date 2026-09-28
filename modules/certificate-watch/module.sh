@@ -297,7 +297,7 @@ module_install() {
     ask_int CW_ACME_STALE_DAYS "ACME task stale threshold (days)" "$CW_ACME_STALE_DAYS" 1
     _cw_validate || die "$CW_ERROR"
     local key
-    for key in "${CW_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
+    for key in "${CW_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
     ok "configured read-only certificate watch"
 }
@@ -312,7 +312,7 @@ module_update() {
     done
     if [[ ${#missing[@]} -eq 0 ]]; then ok "certificate watch configuration is up to date"; return 0; fi
     if [[ $check_only -eq 1 ]]; then warn "update available: missing settings ${missing[*]}"; return 0; fi
-    for key in "${missing[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
+    for key in "${missing[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
     ok "added missing certificate watch settings"
 }
 

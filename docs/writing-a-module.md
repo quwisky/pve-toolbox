@@ -88,9 +88,16 @@ word meaningful — the menu shows only that word in the `STATUS` column.
 Anything secret — a token, a webhook URL, a password — belongs in config.
 
 ```bash
-conf_set  "$MODULE_NAME" API_TOKEN "$token"          # 0600
-state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"  # 0644
+conf_set  "$MODULE_NAME" API_TOKEN "$token" || return 1  # 0600
+state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"      # 0644
 ```
+
+Module functions run with `set -e` off, because the launcher calls them as a
+condition. `conf_set` warns and returns non-zero, leaving the file unchanged,
+when it cannot save the key (for example into a file whose quoting never
+closes), so check every call with `|| return 1` or an `&&` chain. Otherwise
+install carries on and reports success with nothing saved. `tests/lib.sh`
+fails on a `conf_set` call in `modules/` that does neither.
 
 Config values are single-quoted with `'\''` escaping, so any value round-trips
 and the file stays sourceable by a plain script:

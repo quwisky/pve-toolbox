@@ -360,7 +360,7 @@ module_install() {
     ask_int SH_THIN_FAIL "thin-pool failure threshold (percent)" "$SH_THIN_FAIL" "$((SH_THIN_WARN + 1))" 100
     _sh_validate || die "$SH_ERROR"
     local key
-    for key in "${SH_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
+    for key in "${SH_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
     ok "configured read-only storage hygiene audit"
 }
@@ -375,7 +375,7 @@ module_update() {
     done
     if [[ ${#missing[@]} -eq 0 ]]; then ok "storage hygiene configuration is up to date"; return 0; fi
     if [[ $check_only -eq 1 ]]; then warn "update available: missing settings ${missing[*]}"; return 0; fi
-    for key in "${missing[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
+    for key in "${missing[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
     ok "added missing storage hygiene settings"
 }
 

@@ -166,3 +166,19 @@ pass "upgrade readiness validates policy and thresholds at the prompt"
     [[ $(conf_get upgrade-readiness UR_MIN_FREE_MB) == 8192 ]] || fail "reinstall discarded the typed free-space threshold: $out"
 ) || exit 1
 pass "upgrade readiness reinstall stores the new answers"
+
+# A configuration file conf_set refuses (a quote that never closes) fails the
+# install instead of reporting it configured with nothing saved.
+(
+    unset "${UR_CONF_KEYS[@]}"
+    require_root() { :; }; require_pve() { :; }; pkg_ensure() { :; }
+    export TOOLBOX_CONF_DIR="$WORK/ur-broken-conf" TOOLBOX_STATE_DIR="$WORK/ur-broken-state"
+    mkdir -p "$TOOLBOX_CONF_DIR"
+    printf "UR_POLICY='pve-9'\nb'\n" > "$TOOLBOX_CONF_DIR/upgrade-readiness.conf"
+    if out=$(printf '%s\n' pve-9 24 4096 | module_install 2>&1); then
+        fail "install into a refused configuration file reported success: $out"
+    fi
+    [[ $out == *'never closed'* ]] || fail "install did not say why it failed: $out"
+    [[ $out != *'configured read-only'* ]] || fail "install printed its success line after a refused write: $out"
+) || exit 1
+pass "upgrade readiness install fails when its configuration cannot be saved"

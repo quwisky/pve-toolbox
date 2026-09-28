@@ -40,7 +40,7 @@ kp_vm_registry() ( # <list|add|remove> [vmid]; serialize the shared index only.
     else
         if [[ $action == add ]]; then updated+=("$target"); fi
         if ((${#updated[@]})); then
-            conf_set komodo-periphery-qemu KP_VM_IDS "${updated[*]}"
+            conf_set komodo-periphery-qemu KP_VM_IDS "${updated[*]}" || return 1
         else
             conf_clear komodo-periphery-qemu
         fi
@@ -156,7 +156,7 @@ kp_vm_cleanup() { # <vmid> <stage-directory>; leave pending on any uncertainty
         <<<"$KP_INSPECTION_JSON" >/dev/null; then
         kp_vm_registry remove "$id" || return 1
     fi
-    conf_set "komodo-periphery-qemu-$id" KP_PENDING ''
+    conf_set "komodo-periphery-qemu-$id" KP_PENDING '' || return 1
 }
 
 kp_vm_recover() { # <vmid> <transaction-id>

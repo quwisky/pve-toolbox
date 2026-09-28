@@ -366,10 +366,10 @@ module_install() {
     ask_int BA_MIN_KEEP_LAST "minimum keep-last retention" "$BA_MIN_KEEP_LAST" 1
     _ba_validate_settings || die "invalid backup audit settings: $BA_CONFIG_ERROR"
 
-    conf_set "$MODULE_NAME" BA_FRESHNESS_HOURS "$BA_FRESHNESS_HOURS"
-    conf_set "$MODULE_NAME" BA_STORAGE_WARN "$BA_STORAGE_WARN"
-    conf_set "$MODULE_NAME" BA_STORAGE_FAIL "$BA_STORAGE_FAIL"
-    conf_set "$MODULE_NAME" BA_MIN_KEEP_LAST "$BA_MIN_KEEP_LAST"
+    conf_set "$MODULE_NAME" BA_FRESHNESS_HOURS "$BA_FRESHNESS_HOURS" || return 1
+    conf_set "$MODULE_NAME" BA_STORAGE_WARN "$BA_STORAGE_WARN" || return 1
+    conf_set "$MODULE_NAME" BA_STORAGE_FAIL "$BA_STORAGE_FAIL" || return 1
+    conf_set "$MODULE_NAME" BA_MIN_KEEP_LAST "$BA_MIN_KEEP_LAST" || return 1
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
     ok "configured read-only backup audit"
     dim "  run: pve-toolbox doctor"
@@ -393,7 +393,7 @@ module_update() {
         return 0
     fi
     for key in "${missing[@]}"; do
-        conf_set "$MODULE_NAME" "$key" "${!key}"
+        conf_set "$MODULE_NAME" "$key" "${!key}" || return 1
         ok "added $key"
     done
 }

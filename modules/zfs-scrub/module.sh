@@ -113,9 +113,9 @@ _zs_sum() { # _zs_sum <file>
 _zs_write_conf() {
     local notify_start=0
     [[ $ZFS_SCRUB_NOTIFY_START == y ]] && notify_start=1
-    conf_set "$MODULE_NAME" DISCORD_WEBHOOK "$ZFS_SCRUB_WEBHOOK"
-    conf_set "$MODULE_NAME" POLL_INTERVAL   "$ZFS_SCRUB_INTERVAL"
-    conf_set "$MODULE_NAME" NOTIFY_START    "$notify_start"
+    conf_set "$MODULE_NAME" DISCORD_WEBHOOK "$ZFS_SCRUB_WEBHOOK" || return 1
+    conf_set "$MODULE_NAME" POLL_INTERVAL   "$ZFS_SCRUB_INTERVAL" || return 1
+    conf_set "$MODULE_NAME" NOTIFY_START    "$notify_start" || return 1
     ok "wrote $(conf_file "$MODULE_NAME") (0600)"
 }
 
@@ -286,7 +286,7 @@ module_install() {
     install_toolbox_lib discord.sh
     install -m 0755 "$(_zs_src)" "$TOOLBOX_BIN_DIR/$ZS_BIN"
     ok "installed $TOOLBOX_BIN_DIR/$ZS_BIN"
-    _zs_write_conf
+    _zs_write_conf || return 1
     _zs_write_service
     for p in "${want[@]}"; do
         var=$(_zs_var "$p")

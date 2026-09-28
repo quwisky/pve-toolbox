@@ -150,8 +150,9 @@ refused whole, naming the file and the line but never its content.
   - Older versions left such a stray continuation line behind when a
     key whose value spanned several lines was set again. If the stray line
     leaves a quote open, `pve-toolbox install <module>` now refuses to save
-    into the file instead, with `not saving <KEY>: ... never closed`; fix
-    the line `config show` names, then run install again.
+    into the file, prints `not saving <KEY>: ... never closed`, and reports
+    the module as failed; fix the line `config show` names, then run install
+    again.
 - **A refusal naming a reason like "not owned by root" or "writable by group
   or others"** is a permission problem: run `chown root:root` and
   `chmod 0600` on the named file, or, if the refusal names

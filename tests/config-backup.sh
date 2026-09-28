@@ -480,6 +480,13 @@ fi
   printf '%s\n' "${CB_MISSING[@]:-}" | grep -qx CB_AGE_RECIPIENT \
       || fail "an absent key was not reported as missing"
 
+  # A file conf_set refuses (a quote that never closes) fails the write
+  # instead of reporting the configuration written.
+  printf "b'\n" >> "$(conf_file config-backup)"
+  out=$(CB_WEBHOOK=x _cb_write_conf 2>&1) && fail "_cb_write_conf reported success into a refused file: $out"
+  [[ $out != *"ok"*"wrote"* ]] || fail "_cb_write_conf printed its success line after a refused write: $out"
+  conf_clear config-backup
+
   # module_status must print exactly this and nothing else when absent.
   st=$(module_status) && fail "module_status returned 0 when not installed"
   [[ $st == "not installed" ]] || fail "module_status printed [$st]"

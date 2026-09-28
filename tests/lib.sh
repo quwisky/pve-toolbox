@@ -123,6 +123,17 @@ pass "conf_set refuses a file with an unclosed quote"
 conf_clear notmp; state_clear notmp
 pass "conf_set and state_set do not use TMPDIR"
 
+# Modules run as a condition (`if ! run_module ...`), where bash ignores
+# set -e, so an unchecked conf_set failure is dropped and install goes on to
+# report success. Every call in a module checks its status: || or && on the
+# same line, or a trailing \ into the rest of an && chain.
+unchecked=$(grep -rn --include='*.sh' -E '(^|[;&|({[:space:]])conf_set[[:space:]]' "$ROOT/modules" \
+    | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#' \
+    | grep -Ev '(\|\||&&)|\\$' || true)
+[[ -z $unchecked ]] || fail "conf_set calls that ignore a failure:
+$unchecked"
+pass "every conf_set call in a module checks its status"
+
 # The documented promise: a helper script installed into TOOLBOX_BIN_DIR can
 # source the file directly rather than depending on this library.
 conf_set sourceable WEBHOOK "https://example.invalid/a'b\$c"
