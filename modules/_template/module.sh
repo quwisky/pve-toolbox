@@ -32,8 +32,8 @@
 #                       character, DEL included, as ?, and --json
 #                       JSON-escapes it, except the C1 range (U+0080-U+009F),
 #                       which JSON does not require escaping and --json does
-#                       not either, so it is shown as ? there too. A byte
-#                       that is not valid UTF-8 is shown as ? in text and as
+#                       not either, so it is shown as ? there too. An
+#                       invalid UTF-8 sequence is shown as ? in text and as
 #                       U+FFFD in --json.
 #
 #   Functions:

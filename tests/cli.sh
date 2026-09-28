@@ -1287,6 +1287,27 @@ else
     done
     pass "config show shows lone invalid bytes as ? in text and U+FFFD in --json"
 
+    # Valid UTF-8 stays exact however long the value: a reader that decodes
+    # in chunks splits a character at the boundary and shows it as ?. Many
+    # invalid bytes stay fast.
+    dir=$(tmp)
+    big=$(printf 'é%.0s' $(seq 1 150000))
+    conf_write "$dir" e-conf "E_DIR='$big'"
+    out=$(conf_launch "$dir" config show e-conf) || fail "config show of a long UTF-8 value failed"
+    [[ $out == *"E_DIR"*" $big" && $out != *'?'* ]] \
+        || fail "config show corrupted a long UTF-8 value in text output"
+    json=$(conf_launch "$dir" config show --json e-conf) || fail "config show --json of a long UTF-8 value failed"
+    [[ $(jq -r '.files[0].keys[0].value' <<<"$json") == "$big" ]] \
+        || fail "config show --json corrupted a long UTF-8 value"
+    bad=$(printf '\x9b%.0s' $(seq 1 300000))
+    conf_write "$dir" e-conf "E_DIR='$bad'"
+    out=$(TOOLBOX_BIN_DIR=$(tmp) TOOLBOX_STATE_DIR=$(tmp) TOOLBOX_SYSTEMD_DIR=$(tmp) \
+        TOOLBOX_CONF_DIR=$dir PVE_TOOLBOX_ROOT="$conf_root" \
+        timeout 20 "$conf_root/pve-toolbox" config show e-conf) \
+        || fail "config show of 300000 invalid bytes failed or took over 20 s"
+    [[ $out == *"E_DIR"*" ${bad//$'\x9b'/?}" ]] || fail "config show did not show 300000 invalid bytes as ?"
+    pass "config show keeps long UTF-8 exact and stays fast on many invalid bytes"
+
     # A public value far larger than one command-line argument may be is
     # shown in full, in text and in JSON: nothing passes it through argv.
     dir=$(tmp)
