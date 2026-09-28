@@ -67,7 +67,13 @@ UNIT
         package-owned) : > "$KP_TEST_ROOT/package-owned" ;;
     esac
 }
-kp_guest() { chroot "$KP_TEST_ROOT" /bin/bash /guest.sh "$@"; }
+# Crash doubles kill the recorded guest PID: under a systemctl time limit their
+# parent is timeout(1), not the guest shell.
+kp_guest() {
+    chroot "$KP_TEST_ROOT" /bin/bash /guest.sh "$@" &
+    printf '%s\n' "$!" > "$KP_TEST_ROOT/guest-pid"
+    wait "$!"
+}
 kp_assert_no_guest_mutation() {
     if grep -Eq '^(start|stop|enable|disable|daemon-reload|reset-failed)' "$KP_TEST_LOG"; then
         fail 'read-only inspection mutated service'

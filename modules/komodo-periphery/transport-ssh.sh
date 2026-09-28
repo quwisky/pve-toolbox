@@ -26,7 +26,8 @@ kp_ssh_run() { # <remote command> [stdin file]
         -o IdentitiesOnly=yes -o ForwardAgent=no -o ClearAllForwardings=yes
         -o ControlMaster=no -o ConnectTimeout=8 -p "$KP_SSH_PORT"
         "root@$KP_SSH_ADDRESS" "$command")
-    if [[ -n $input ]]; then timeout 130s ssh "${args[@]}" < "$input"; else timeout 130s ssh "${args[@]}" < /dev/null; fi
+    # 250 s covers connection setup plus the guest time budget in guest.sh.
+    if [[ -n $input ]]; then timeout 250s ssh "${args[@]}" < "$input"; else timeout 250s ssh "${args[@]}" < /dev/null; fi
 }
 
 kp_ssh_verified_run() { # <PVE UUID> <remote command> [stdin file]

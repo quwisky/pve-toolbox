@@ -196,7 +196,8 @@ LXC records even when the numeric IDs match. Updates to the shared VM list are
 serialized, so operations on different VMs preserve each other's entries.
 VM transfer uses a protected nonce-bound directory under guest `/run`.
 Files are sent in verified chunks,
-then removed after a completed operation. An interrupted operation retains the
+then removed after a completed operation. QGA transfer is slow for a large
+binary; it reports each file's size and progress every 768 KiB. An interrupted operation retains the
 transaction ID for explicit recovery.
 
 Run `pve-toolbox config show komodo-periphery` as root to display the main
@@ -222,6 +223,14 @@ handles services reported as active before their executable or shell-wrapper
 child is ready. It then requires ten successful stability samples, one second
 apart. A restart-count change, a process change after readiness, or a persistent
 executable-verification failure still triggers rollback.
+
+Each guest `systemctl` call has a time limit: 20 seconds for stop and start, and
+10 seconds for other calls. A call that exceeds it counts as a failure and
+triggers rollback; systemd may still finish the job afterwards. If the rollback
+stop also times out, the result reports the rollback as failed and the pending
+transaction stays for recovery. With these limits an update and its rollback
+finish within about three minutes. For a VM, the host waits up to 240 seconds
+(QGA) or 250 seconds (SSH) for the guest operation's result.
 
 If the new service fails to start or remain healthy, the error includes the
 failed health check, the start command's message, systemd state/result, MainPID

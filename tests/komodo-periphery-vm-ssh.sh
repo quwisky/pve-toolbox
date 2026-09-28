@@ -34,7 +34,16 @@ case $command in
 esac
 FAKE
 chmod +x "$WORK/bin/ssh"
-export KP_SSH_CALLS="$WORK/calls" PATH="$WORK/bin:$PATH" TOOLBOX_ROOT=$PWD
+# Record each SSH session limit; a slow but healthy guest operation, including
+# a rollback, must fit (see the guest time budget in guest.sh).
+cat > "$WORK/bin/timeout" <<'FAKE'
+#!/usr/bin/env bash
+printf '%s\n' "$1" >> "$KP_SSH_LIMITS"
+shift
+exec "$@"
+FAKE
+chmod +x "$WORK/bin/timeout"
+export KP_SSH_CALLS="$WORK/calls" KP_SSH_LIMITS="$WORK/limits" PATH="$WORK/bin:$PATH" TOOLBOX_ROOT=$PWD
 : > "$KP_SSH_CALLS"
 source modules/komodo-periphery/host.sh
 # The real host-path owner check needs root. This test keeps paths inside its
@@ -54,6 +63,8 @@ done
 grep -Fq "UserKnownHostsFile=$WORK/known_hosts" "$KP_SSH_CALLS" || fail 'dedicated host-key file missing'
 grep -Fq "IdentityFile=$WORK/id" "$KP_SSH_CALLS" || fail 'exact key missing'
 grep -Fq 'root@vm.example.invalid' "$KP_SSH_CALLS" || fail 'wrong SSH destination'
+[[ $(sort -u "$KP_SSH_LIMITS") =~ ^([0-9]+)s$ ]] && ((BASH_REMATCH[1] >= 200)) \
+    || fail "SSH session limit shorter than the guest budget: $(sort -u "$KP_SSH_LIMITS" | tr '\n' ' ')"
 if kp_ssh_inspect 201 vm.example.invalid 22 "$WORK/id" "$WORK/known_hosts" aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee; then fail 'wrong VM UUID accepted'; fi
 export KP_SSH_UID=1000
 if kp_ssh_inspect 201 vm.example.invalid 22 "$WORK/id" "$WORK/known_hosts" "$uuid"; then fail 'non-root SSH user accepted'; fi

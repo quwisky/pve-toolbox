@@ -12,6 +12,19 @@ KG_DIAGNOSTICS=null
 KG_HEALTH_REASON="" KG_HEALTH_AGENT_PID=""
 KG_CONFIG_FINGERPRINT=""
 kg_fail() { KG_REASON=$1; return 1; }
+# Guest time budget. A VM host waits 240 s (QGA) or 250 s (SSH, including
+# connection setup) for one guest operation, so a slow update plus its rollback
+# must finish well inside that. Worst case for an update that rolls back:
+#   version probes 2 x 5 s, stop/start 4 x 20 s, other systemctl calls 4 x 10 s,
+#   health checks 2 x ~20 s (samples one second apart), diagnostics 10 s
+#   = about 180 s, plus local file copies.
+# A timed-out call fails like any other: systemd may still be running the job,
+# and the transaction rolls back or stays pending for recovery.
+kg_systemctl() {
+    local limit=10s
+    [[ $1 != stop && $1 != start ]] || limit=20s
+    timeout "$limit" systemctl "$@"
+}
 kg_safe_path() { # Absolute canonical path, root-owned and not writable by others.
     local path=$1 mode
     [[ ! $path =~ [[:cntrl:]] ]] || return 1
@@ -67,7 +80,7 @@ kg_inspect_inner() {
     [[ $os == debian && $version == 13 && $arch == x86_64 ]] || { kg_fail 'requires Debian 13 amd64 guest'; return 1; }
     IFS= read -r KG_MACHINE < /etc/machine-id
     [[ $KG_MACHINE =~ ^[0-9a-f]{32}$ && $KG_MACHINE != 00000000000000000000000000000000 ]] || { kg_fail 'invalid guest machine-id'; return 1; }
-    KG_SHOW=$(systemctl show "$KG_UNIT" --no-pager --property=LoadState,FragmentPath,DropInPaths,User,Type,EnvironmentFiles,Environment,ActiveState,UnitFileState,MainPID,NRestarts,ExecStart,NeedDaemonReload) || { kg_fail 'cannot inspect systemd service'; return 1; }
+    KG_SHOW=$(kg_systemctl show "$KG_UNIT" --no-pager --property=LoadState,FragmentPath,DropInPaths,User,Type,EnvironmentFiles,Environment,ActiveState,UnitFileState,MainPID,NRestarts,ExecStart,NeedDaemonReload) || { kg_fail 'cannot inspect systemd service'; return 1; }
     if [[ $(kg_prop LoadState) == not-found ]]; then
         [[ ! -e /usr/local/bin/periphery && ! -L /usr/local/bin/periphery && ! -e /etc/systemd/system/periphery.service && ! -L /etc/systemd/system/periphery.service ]] || { kg_fail 'unmanaged files without service'; return 1; }
         if [[ -e /etc/komodo/periphery.config.toml || -L /etc/komodo/periphery.config.toml ]]; then
@@ -400,13 +413,13 @@ kg_restore() {
         else return 1; fi
     done
     kg_mark restoring || return 1
-    loaded=$(systemctl show "$KG_UNIT" --property=LoadState) || return 1
+    loaded=$(kg_systemctl show "$KG_UNIT" --property=LoadState) || return 1
     if [[ $loaded == *'LoadState=not-found'* && ! -e $unit && $(jq -r '.backups.unit // ""' <<<"$record") == "" ]]; then
         : # Fresh install failed before its service existed; nothing can be stopped.
     else
-        systemctl stop "$KG_UNIT" >/dev/null 2>&1 || return 1
+        kg_systemctl stop "$KG_UNIT" >/dev/null 2>&1 || return 1
         if [[ $(jq -r '.backups.unit // ""' <<<"$record") == "" ]]; then
-            systemctl disable "$KG_UNIT" >/dev/null 2>&1 || return 1
+            kg_systemctl disable "$KG_UNIT" >/dev/null 2>&1 || return 1
         fi
     fi
     for leaf in binary unit config owner; do
@@ -424,13 +437,13 @@ kg_restore() {
             rm -f -- "$path" || return 1
         fi
     done
-    systemctl daemon-reload >/dev/null 2>&1 || return 1
+    kg_systemctl daemon-reload >/dev/null 2>&1 || return 1
     active=$(jq -r .active <<<"$record"); enabled=$(jq -r .enabled <<<"$record")
     if [[ -f $unit ]]; then
-        if [[ $enabled == enabled ]]; then systemctl enable "$KG_UNIT" >/dev/null 2>&1 || return 1
-        else systemctl disable "$KG_UNIT" >/dev/null 2>&1 || return 1; fi
+        if [[ $enabled == enabled ]]; then kg_systemctl enable "$KG_UNIT" >/dev/null 2>&1 || return 1
+        else kg_systemctl disable "$KG_UNIT" >/dev/null 2>&1 || return 1; fi
         if [[ $active == active ]]; then
-            systemctl start "$KG_UNIT" >/dev/null 2>&1 && kg_service_health "$binary" || return 1
+            kg_systemctl start "$KG_UNIT" >/dev/null 2>&1 && kg_service_health "$binary" || return 1
         fi
     fi
     kg_mark restored && mv -fT "$KG_STORE/pending.json" "$KG_STORE/last-failure.json" && sync -f "$KG_STORE" || return 1
@@ -519,8 +532,8 @@ kg_apply() {
           active:$inspected.active,enabled:$inspected.enabled,config_changed:$changed,config_path:$config_path,backups:$backups,phase:"backed_up"}' | kg_atomic "$KG_STORE/pending.json" || return 1
     KG_OWN_TRANSACTION=1
     if [[ $KG_ACTION == uninstall ]]; then
-        kg_mark stopping && systemctl stop "$KG_UNIT" >/dev/null 2>&1 && systemctl disable "$KG_UNIT" >/dev/null 2>&1 || { kg_fail 'could not stop/disable service'; return 1; }
-        kg_mark replacing && rm -f -- "$binary" "$unit" && systemctl daemon-reload >/dev/null 2>&1 || { kg_fail 'could not remove owned files'; return 1; }
+        kg_mark stopping && kg_systemctl stop "$KG_UNIT" >/dev/null 2>&1 && kg_systemctl disable "$KG_UNIT" >/dev/null 2>&1 || { kg_fail 'could not stop/disable service'; return 1; }
+        kg_mark replacing && rm -f -- "$binary" "$unit" && kg_systemctl daemon-reload >/dev/null 2>&1 || { kg_fail 'could not remove owned files'; return 1; }
         jq -nc --arg machine "$KG_MACHINE" '{machine_id:$machine}' | kg_atomic "$KG_STORE/retained.json" || return 1
         rm -f -- "$KG_STORE/owner.json" || return 1
     else
@@ -529,7 +542,7 @@ kg_apply() {
         else
             kg_mark stopping || return 1
             if [[ $expected != absent && ( $KG_ACTION != configure || $(jq -r .active <<<"$inspected") == active ) ]]; then
-                systemctl stop "$KG_UNIT" >/dev/null 2>&1 || { kg_fail 'could not stop service'; return 1; }
+                kg_systemctl stop "$KG_UNIT" >/dev/null 2>&1 || { kg_fail 'could not stop service'; return 1; }
             fi
             kg_mark replacing || return 1
             if [[ $KG_EDIT_CONFIG == true && $config_changed == true ]]; then
@@ -564,13 +577,13 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT
-                chmod 0644 "$unit" && sync -f "$unit" && systemctl daemon-reload >/dev/null 2>&1 && systemctl enable "$KG_UNIT" >/dev/null 2>&1 || return 1
+                chmod 0644 "$unit" && sync -f "$unit" && kg_systemctl daemon-reload >/dev/null 2>&1 && kg_systemctl enable "$KG_UNIT" >/dev/null 2>&1 || return 1
             fi
             kg_mark starting || return 1
             if [[ $expected == absent || $(jq -r .active <<<"$inspected") == active ]]; then
                 startup_since=$(date +%s)
                 KG_HEALTH_REASON='systemctl start failed'
-                if ! { start_output=$(systemctl start "$KG_UNIT" 2>&1 | head -c 2048) && kg_service_health "$binary"; }; then
+                if ! { start_output=$(kg_systemctl start "$KG_UNIT" 2>&1 | head -c 2048) && kg_service_health "$binary"; }; then
                     kg_startup_diagnostics "$startup_since" "$start_output" || true
                     kg_fail 'new service failed startup health check'; return 1
                 fi
