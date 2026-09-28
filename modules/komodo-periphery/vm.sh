@@ -97,7 +97,9 @@ kp_vm_inspect() { # <vmid>; uses selected KP_VM_* connection globals
     elif [[ $KP_VM_TRANSPORT == ssh ]]; then
         [[ -n $uuid ]] || { warn 'SSH requires a PVE smbios1 UUID'; return 1; }
         kp_ssh_inspect "$id" "$KP_VM_ADDRESS" "$KP_VM_PORT" "$KP_VM_KEY" "$KP_VM_HOSTS" "$uuid" || { warn 'pinned SSH guest inspection failed'; return 1; }
-        [[ -z ${KP_VM_HOST_FINGERPRINT:-} || $KP_SSH_HOST_FINGERPRINT == "$KP_VM_HOST_FINGERPRINT" ]] || { warn 'SSH host key changed'; return 1; }
+        [[ -z ${KP_VM_HOST_FINGERPRINT:-} || $KP_SSH_HOST_FINGERPRINT == "$KP_VM_HOST_FINGERPRINT" ]] || {
+            warn 'SSH host key changed; review it with an interactive install, update or uninstall (not -y)'; return 1;
+        }
         result=$KP_SSH_INSPECTION_JSON
     else return 1; fi
     [[ ${#result} -le 65536 ]] && jq -e 'type=="object" and .schema==1 and
@@ -239,6 +241,15 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         if [[ $saved_transport == ssh ]]; then KP_VM_HOST_FINGERPRINT=$(conf_get "$record" KP_HOST_FINGERPRINT); fi
         kp_ssh_prepare "$id" "$address" "$port" "$key_file" "$hosts" || { warn 'SSH identity files or pinned host key invalid'; return 1; }
         port=$KP_SSH_PORT KP_VM_PORT=$KP_SSH_PORT
+        if [[ -n $KP_VM_HOST_FINGERPRINT && $KP_SSH_HOST_FINGERPRINT != "$KP_VM_HOST_FINGERPRINT" ]]; then
+            warn "SSH host key changed: pinned $KP_VM_HOST_FINGERPRINT; known-hosts file now pins $KP_SSH_HOST_FINGERPRINT"
+            warn 'An unexpected change can indicate a man-in-the-middle attack. Verify the new key out of band.'
+            confirm 'Accept the new SSH host key for this VM' n || {
+                warn 'new SSH host key not accepted; VM unchanged. Review it in an interactive run (not -y).'; return 1;
+            }
+            # The guest's DMI UUID and machine ID are still verified below.
+            KP_VM_HOST_FINGERPRINT=$KP_SSH_HOST_FINGERPRINT
+        fi
     fi
     kp_vm_inspect "$id" || return 1
     KP_VM_IDENTITY=$KP_TARGET_IDENTITY

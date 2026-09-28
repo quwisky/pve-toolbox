@@ -92,3 +92,66 @@ kp_vm_change uninstall || fail 'completed uninstall could not be reconciled'
 [[ -z $(conf_get komodo-periphery-qemu KP_VM_IDS) ]] || fail 'cleaned uninstall still registered'
 [[ $(kp_vm_status) == 'no managed VMs' ]] || fail 'cleaned uninstall reported incomplete'
 printf 'ok VM transfer intent, staging failure, secret isolation and cleanup\n'
+
+# A rotated SSH host key: only interactive consent re-pins it, and the guest
+# identity must still match. Restore the real orchestration and prompts first.
+source modules/komodo-periphery/vm.sh
+unset _TOOLBOX_COMMON_LOADED
+source lib/common.sh
+fixture_uuid=11111111-2222-3333-4444-555555555555 old_pin=SHA256:oldpin new_pin=SHA256:newpin
+guest_machine=$KP_VM_MACHINE
+pve_qemu_ready() { PVE_QEMU_CONFIG_JSON=$(jq -nc --arg u "$fixture_uuid" '{smbios1:("uuid="+$u)}'); }
+kp_ssh_prepare() { KP_SSH_HOST_FINGERPRINT=$new_pin KP_SSH_PORT=22; }
+kp_ssh_inspect() {
+    printf 'inspect\n' >> "$WORK/calls"
+    [[ $6 == "$fixture_uuid" ]] || return 1
+    KP_SSH_INSPECTION_JSON=$(jq -nc --arg machine "$guest_machine" '{schema:1,layout:"supported",owned:true,version:"2.3.3",
+        binary:"/usr/local/bin/periphery",service_user:"root",unit:"periphery.service",config_paths:["/etc/komodo/periphery.config.toml"],
+        transaction:"none",fingerprint:("c"*64),reason:"",machine_id:$machine}')
+}
+kp_vm_apply() { printf 'apply\n' >> "$WORK/calls"; KP_OUTCOME_JSON='{"fingerprint":"absent"}'; }
+kp_vm_cleanup() { :; }
+ask_valid() {
+    case $1 in
+        id) printf -v "$1" '%s' 201 ;;
+        address) printf -v "$1" '%s' vm.example.invalid ;;
+        key_file|hosts) printf -v "$1" '%s' "$WORK/ssh-$1" ;;
+        *) fail "unexpected host-key prompt $1" ;;
+    esac
+}
+ask_int() { printf -v "$1" '%s' 22; }
+ask_choice() { [[ $1 == transport ]] || fail "unexpected host-key prompt $1"; printf -v "$1" '%s' ssh; }
+record=komodo-periphery-qemu-201
+for pair in KP_TRANSPORT=ssh KP_ADDRESS=vm.example.invalid KP_PORT=22 "KP_KEY_FILE=$WORK/ssh-key_file" \
+    "KP_KNOWN_HOSTS=$WORK/ssh-hosts" "KP_HOST_FINGERPRINT=$old_pin" \
+    "KP_IDENTITY=$(printf '%s\n' pve1 qemu 201 "$fixture_uuid" "$guest_machine" | sha256sum | cut -d ' ' -f1)"; do
+    conf_set "$record" "${pair%%=*}" "${pair#*=}"
+done
+state_set "$record" machine_id "$guest_machine"
+state_set "$record" fingerprint "$(printf 'c%.0s' {1..64})"
+kp_vm_registry add 201
+pin() { conf_get "$record" KP_HOST_FINGERPRINT; }
+
+: > "$WORK/calls"
+out=$(kp_vm_change update 2>&1 <<<n) && fail 'declined host-key rotation accepted'
+[[ $out == *"$old_pin"* && $out == *"$new_pin"* ]] || fail "rotation prompt omits the fingerprints: $out"
+[[ $out == *man-in-the-middle* ]] || fail "rotation prompt omits the interception warning: $out"
+[[ $(pin) == "$old_pin" ]] || fail 'declined rotation replaced the pin'
+[[ ! -s $WORK/calls ]] || fail 'guest contacted after declined rotation'
+out=$(ASSUME_YES=1 kp_vm_change update 2>&1 </dev/null) && fail 'host-key rotation accepted under -y'
+[[ $out == *interactive* ]] || fail "-y refusal does not point to the interactive command: $out"
+[[ $(pin) == "$old_pin" ]] || fail '-y replaced the pin'
+out=$(kp_vm_change update 2>&1 </dev/null) && fail 'host-key rotation accepted at end of input'
+[[ $(pin) == "$old_pin" ]] || fail 'end of input replaced the pin'
+out=$(kp_vm_status 2>&1) && fail 'status accepted a rotated host key'
+[[ $out == *interactive* ]] || fail "status does not point to the interactive command: $out"
+[[ $(pin) == "$old_pin" ]] || fail 'status replaced the pin'
+guest_machine=fedcba9876543210fedcba9876543210
+out=$(kp_vm_change uninstall 2>&1 <<<$'y\ny') && fail 're-pin bypassed guest identity verification'
+[[ $(pin) == "$old_pin" ]] || fail 'pin replaced for a different guest'
+guest_machine=$KP_VM_MACHINE
+: > "$WORK/calls"
+out=$(kp_vm_change uninstall 2>&1 <<<$'y\ny') || fail "accepted host-key rotation stopped the operation: $out"
+[[ $(pin) == "$new_pin" ]] || fail 'accepted rotation not re-pinned'
+grep -qx apply "$WORK/calls" || fail 'operation did not continue after re-pin'
+printf 'ok rotated SSH host key re-pins only with interactive consent and a matching guest\n'

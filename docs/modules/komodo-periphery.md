@@ -34,6 +34,24 @@ checking, and disables agent and connection forwarding. Every SSH transfer comma
 the DMI UUID in that same connection; each staged chunk also checks the guest
 machine ID. A changed key or mismatched guest identity stops staging.
 
+The toolbox also records the pinned key's fingerprint (`KP_HOST_FINGERPRINT`).
+If a guest's host key is legitimately rotated, `status`, `check` and `doctor`
+fail for that VM until an operator reviews the new key. To accept it:
+
+1. Verify the guest's new host key through your trusted provisioning process,
+   then replace the entry in the dedicated known-hosts file on the PVE host.
+2. Run `pve-toolbox update komodo-periphery` (or `install` / `uninstall`)
+   **as root on the PVE host, interactively and without `-y`**, and select the VM.
+3. The flow shows the pinned and the new `SHA256:` fingerprints and warns that
+   an unexpected change can indicate a man-in-the-middle attack. Answer `y`
+   only if the new fingerprint matches the key you verified. The default is no.
+
+Accepting the key does not skip guest identity checks. The guest must still
+prove its PVE `smbios1` UUID and recorded machine ID. The new fingerprint is
+recorded only when you confirm and apply the operation. Under `-y`, at end of
+input, and in `status`, `check` or `doctor`, the key is never accepted and the
+VM stays unchanged.
+
 For a new installation, have the Core HTTP or HTTPS URL, a server name and a Core v2
 onboarding key ready. Create the onboarding key in Core. The prompt hides the
 key and transfers it in a protected file. The new agent connects outward to
