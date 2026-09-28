@@ -329,14 +329,21 @@ module_install() {
     step "Save configuration"
     conf_set "$MODULE_NAME" DISCORD_WEBHOOK "$ZFS_REPL_WEBHOOK" || return 1
     conf_set "$MODULE_NAME" LOG_DIR "$ZR_LOG_DIR" || return 1
-    for job in "${kept[@]}"; do
-        _zr_save_job "$job" || return 1
-    done
-
-    local notify_start=0
+    local notify_start=0 failed=0
     [[ $ZFS_REPL_NOTIFY_START == y ]] && notify_start=1
-    conf_set "$MODULE_NAME" NOTIFY_START "$notify_start" || return 1
-    conf_set "$MODULE_NAME" JOBS "${kept[*]}" || return 1
+    for job in "${kept[@]}"; do
+        _zr_save_job "$job" || { failed=1; break; }
+    done
+    if ((failed == 0)); then
+        conf_set "$MODULE_NAME" NOTIFY_START "$notify_start" \
+            && conf_set "$MODULE_NAME" JOBS "${kept[*]}" || failed=1
+    fi
+    # _zr_save_job writes each job's timer: a reinstall has replaced timers
+    # systemd already runs, so reload before failing.
+    if ((failed == 1)); then
+        systemctl daemon-reload || warn "systemctl daemon-reload failed"
+        return 1
+    fi
 
     step "Install"
     install_toolbox_lib discord.sh
@@ -345,7 +352,7 @@ module_install() {
     mkdir -p "$ZR_LOG_DIR"
     chmod 0750 "$ZR_LOG_DIR"
     _zr_write_service
-    systemctl daemon-reload
+    systemctl daemon-reload || { warn "systemctl daemon-reload failed"; return 1; }
     for job in "${kept[@]}"; do
         _zr_enable "$job" || die "could not enable the timer for $job"
     done
@@ -427,37 +434,47 @@ module_update() {
         return 0
     fi
 
+    # Every question comes before the first change, as in install: answers
+    # that run out, or an invalid one, must stop the update before any unit
+    # file is rewritten.
+    local drops=() drop
+    if [[ ${#stale[@]} -gt 0 ]]; then
+        step "Timers with no job"
+        for j in "${stale[@]}"; do
+            drop=y
+            ask_yn drop "  remove the timer for $j" "y"
+            [[ $drop == n ]] || drops+=("$j")
+        done
+    fi
+    local repair=("${missing[@]}" "${invalid[@]}") answered=()
+    local -A ZR_ANS_SRC=() ZR_ANS_DST=() ZR_ANS_OPTS=() ZR_ANS_CHOWN=() \
+             ZR_ANS_CHMOD=() ZR_ANS_PATH=() ZR_ANS_SCHED=()
+    if [[ ${#repair[@]} -gt 0 ]]; then
+        step "Jobs needing a timer"
+        for j in "${repair[@]}"; do
+            [[ -n $j ]] || continue
+            _zr_ask_job "$j" && answered+=("$j")
+        done
+    fi
+
     step "Runner and units"
     install_toolbox_lib discord.sh
     install -m 0755 "$src" "$dst"
     ok "installed $dst"
     _zr_write_service
+    for j in "${drops[@]}"; do
+        _zr_remove_timer "$j"
+        ok "removed $ZR_UNIT@$j.timer"
+    done
+    local failed=0
+    for j in "${answered[@]}"; do
+        _zr_save_job "$j" || { failed=1; break; }
+    done
 
-    if [[ ${#stale[@]} -gt 0 ]]; then
-        step "Timers with no job"
-        for j in "${stale[@]}"; do
-            local drop=y
-            ask_yn drop "  remove the timer for $j" "y"
-            if [[ $drop == y ]]; then
-                _zr_remove_timer "$j"
-                ok "removed $ZR_UNIT@$j.timer"
-            fi
-        done
-    fi
-    local repair=("${missing[@]}" "${invalid[@]}")
-    if [[ ${#repair[@]} -gt 0 ]]; then
-        step "Jobs needing a timer"
-        # Each job is saved as soon as it is answered, as update always has.
-        local -A ZR_ANS_SRC=() ZR_ANS_DST=() ZR_ANS_OPTS=() ZR_ANS_CHOWN=() \
-                 ZR_ANS_CHMOD=() ZR_ANS_PATH=() ZR_ANS_SCHED=()
-        for j in "${repair[@]}"; do
-            [[ -n $j ]] || continue
-            _zr_ask_job "$j" || continue
-            _zr_save_job "$j" || return 1
-        done
-    fi
-
-    systemctl daemon-reload
+    # Units were rewritten above: reload even when a save failed, so no unit
+    # file on disk differs from what systemd runs.
+    systemctl daemon-reload || { warn "systemctl daemon-reload failed"; failed=1; }
+    ((failed == 0)) || return 1
     _zr_scheduled
     for j in "${ZR_SCHEDULED[@]}"; do
         _zr_enable "$j" || die "could not enable the timer for $j"
