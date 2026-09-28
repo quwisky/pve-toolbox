@@ -10,6 +10,12 @@ change VM power, network, or migration settings. Docker workloads require a
 separately configured Docker installation.
 Core must already exist; choose a Periphery release compatible with your Core.
 
+!!! warning "VM support is experimental"
+    Installing into a QEMU VM, over QGA or SSH, has so far been tested only
+    against controlled PVE and guest doubles, not a live PVE 9 node (see
+    [Validation limits](#validation-limits)). Try it on a disposable VM before
+    relying on it. LXC support is not affected.
+
 ## Prerequisites
 
 The guest must be running, unlocked, and use systemd. It needs Bash, jq,
