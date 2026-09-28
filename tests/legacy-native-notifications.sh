@@ -235,6 +235,22 @@ _nt_configure >/dev/null || fail "repeated configuration failed"
 [[ $(<"$TEST_COUNT_FILE") == 2 ]] || fail "repeated install skipped delivery testing"
 pass "repeated configuration is idempotent"
 
+# A configuration file conf_set refuses fails the install instead of recording
+# state and reporting it configured with nothing saved.
+conf_before=$(<"$(conf_file native-notifications)")
+state_before=$(<"$TOOLBOX_STATE_DIR/native-notifications.state")
+count_before=$(<"$TEST_COUNT_FILE")
+printf "b'\n" >> "$(conf_file native-notifications)"
+rc=0; out=$( _nt_configure 2>&1 ) || rc=$?
+[[ $rc -ne 0 ]] || fail "configuration into a refused file reported success: $out"
+[[ $out == *'was not saved'* && $out != *'configured and tested'* ]] \
+    || fail "refused configuration save was not reported: $out"
+[[ $(<"$TOOLBOX_STATE_DIR/native-notifications.state") == "$state_before" ]] \
+    || fail "state was recorded although the configuration was not saved"
+printf '%s\n' "$conf_before" > "$(conf_file native-notifications)"
+printf '%s\n' "$count_before" > "$TEST_COUNT_FILE"
+pass "a configuration that cannot be saved fails without recording state"
+
 before_target=$(<"$API_ROOT/endpoints/webhook.pve-toolbox-discord.json")
 before_matcher=$(<"$API_ROOT/matchers/pve-toolbox-discord.json")
 for file in "${NT_TEMPLATE_FILES[@]}"; do

@@ -145,8 +145,9 @@ See [State versus config](../writing-a-module.md#state-versus-config).
 
 `conf_file` `conf_get` `conf_set` `conf_load` `conf_clear` `conf_exists`
 : `0600`, `KEY='value'`, sourceable. `conf_load` sources every key into the
-  caller. `conf_set` warns and returns `1`, leaving the file unchanged, when it
-  cannot save the key; module code checks it (`|| return 1`).
+  caller. `conf_set` returns non-zero when it cannot save the key. It warns
+  and leaves the file unchanged when it refuses (a quote that never closes,
+  an unreadable file); module code checks it (`|| return 1`).
 
 ## GitHub releases
 

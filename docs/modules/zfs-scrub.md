@@ -148,7 +148,9 @@ invalid timer schedules are surfaced by status and repaired through update.
 
 `zfsutils-linux` ships its own `zfs-scrub-monthly@<pool>.timer`. Install
 detects an enabled one and offers to disable it, so a pool is not scrubbed on
-two schedules. The package files are never deleted, only disabled.
+two schedules. The package files are never deleted, only disabled. The
+configuration is saved first: if it cannot be saved, install fails and the
+package timers stay enabled.
 
 ## Operating it
 

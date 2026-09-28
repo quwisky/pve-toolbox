@@ -125,9 +125,11 @@ pass "conf_set and state_set do not use TMPDIR"
 
 # Modules run as a condition (`if ! run_module ...`), where bash ignores
 # set -e, so an unchecked conf_set failure is dropped and install goes on to
-# report success. Every call in a module checks its status: || or && on the
-# same line, or a trailing \ into the rest of an && chain.
-unchecked=$(grep -rn --include='*.sh' -E '(^|[;&|({[:space:]])conf_set[[:space:]]' "$ROOT/modules" \
+# report success. Every call in a module (including the packaged legacy
+# modules) checks its status: || or && on the same line, or a trailing \ into
+# the rest of an && chain. A line-based heuristic: it catches a bare call, not
+# `|| true` or a chain whose own status is dropped.
+unchecked=$(grep -rn --include='*.sh' -E '(^|[;&|({[:space:]])conf_set[[:space:]]' "$ROOT/modules" "$ROOT/debian/legacy" \
     | grep -Ev '^[^:]+:[0-9]+:[[:space:]]*#' \
     | grep -Ev '(\|\||&&)|\\$' || true)
 [[ -z $unchecked ]] || fail "conf_set calls that ignore a failure:

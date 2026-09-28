@@ -487,6 +487,33 @@ pass "zfs-replication update rewrites missing job timers with the module default
 ) || exit 1
 pass "zfs-scrub rejects unsafe timers and preserves native ownership"
 
+# The configuration is saved before the distro's scrub timers are disabled: a
+# save that fails must not leave the pools with no scrub schedule at all.
+(
+    export TOOLBOX_BIN_DIR="$WORK/zs2-bin" TOOLBOX_LIB_DIR="$WORK/zs2-lib"
+    export TOOLBOX_CONF_DIR="$WORK/zs2-conf" TOOLBOX_STATE_DIR="$WORK/zs2-state"
+    export TOOLBOX_SYSTEMD_DIR="$WORK/zs2-systemd"
+    mkdir -p "$TOOLBOX_BIN_DIR" "$TOOLBOX_LIB_DIR" "$TOOLBOX_CONF_DIR" \
+             "$TOOLBOX_STATE_DIR" "$TOOLBOX_SYSTEMD_DIR"
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/zfs-scrub/module.sh
+    source "$ROOT/modules/zfs-scrub/module.sh"
+    require_root() { :; }; require_pve() { :; }; have_zfs() { :; }; pkg_ensure() { :; }
+    zpool() { printf 'tank\n'; }
+    systemd-analyze() { :; }
+    systemctl() { printf '%s\n' "$*" >> "$WORK/zs2-systemctl.log"; [[ $1 == is-enabled ]]; }
+    printf "POLL_INTERVAL='60'\nb'\n" > "$TOOLBOX_CONF_DIR/zfs-scrub.conf"
+    if out=$(ASSUME_YES=1 ZFS_SCRUB_POOLS=tank \
+        ZFS_SCRUB_WEBHOOK=https://discord.com/api/webhooks/1/abc module_install 2>&1); then
+        fail "zfs-scrub install into a refused configuration file reported success: $out"
+    fi
+    [[ $out == *'never closed'* ]] || fail "zfs-scrub install did not say why it failed: $out"
+    ! grep -q '^disable' "$WORK/zs2-systemctl.log" \
+        || fail "zfs-scrub disabled the distro scrub timers before its configuration was saved"
+) || exit 1
+pass "zfs-scrub saves its configuration before disabling the distro timers"
+
 # --- scrutiny collector install and update transactions --------------------
 
 (

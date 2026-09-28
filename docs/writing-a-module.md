@@ -93,11 +93,10 @@ state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"      # 0644
 ```
 
 Module functions run with `set -e` off, because the launcher calls them as a
-condition. `conf_set` warns and returns non-zero, leaving the file unchanged,
-when it cannot save the key (for example into a file whose quoting never
-closes), so check every call with `|| return 1` or an `&&` chain. Otherwise
-install carries on and reports success with nothing saved. `tests/lib.sh`
-fails on a `conf_set` call in `modules/` that does neither.
+condition. `conf_set` returns non-zero when it cannot save the key, for example
+into a file whose quoting never closes, so check every call with `|| return 1`
+or an `&&` chain. Otherwise install carries on and reports success with nothing
+saved. `tests/lib.sh` fails on a bare `conf_set` call in a module.
 
 Config values are single-quoted with `'\''` escaping, so any value round-trips
 and the file stays sourceable by a plain script:
