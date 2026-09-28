@@ -72,6 +72,57 @@ conf_set overwrite OTHER "kept"
     || fail "conf_set left a duplicate KEY line"
 pass "conf_set overwrites in place"
 
+# A stored value can span lines. Re-setting it used to replace only the first
+# one and leave the rest behind as stray lines no parser accepts.
+for new in 300 $'x\ny' "it's"$'\n'"z"; do
+    conf_set multiline KEY $'a\nb'
+    conf_set multiline OTHER "kept"
+    conf_set multiline KEY "$new"
+    [[ $(conf_get multiline KEY) == "$new" ]] \
+        || fail "conf_set did not replace a multi-line value with [$new]"
+    [[ $(conf_get multiline OTHER) == kept ]] \
+        || fail "conf_set lost the key after a multi-line value"
+    expected=$(printf "# managed by pve-toolbox / multiline\nKEY=%s\nOTHER='kept'" \
+        "$(_conf_quote "$new")")
+    [[ $(< "$(conf_file multiline)") == "$expected" ]] \
+        || fail "conf_set left stray lines: $(< "$(conf_file multiline)")"
+    conf_clear multiline
+done
+pass "conf_set replaces every line of a multi-line value"
+
+# Only the start of a stored line names a key; a continuation line that looks
+# like one is part of the value before it.
+conf_set lookalike KEY $'a\nOTHER=inside'
+conf_set lookalike OTHER "real"
+[[ $(conf_get lookalike KEY) == $'a\nOTHER=inside' ]] \
+    || fail "conf_set rewrote a continuation line as a key"
+[[ $(conf_get lookalike OTHER) == real ]] || fail "conf_set did not add OTHER"
+conf_clear lookalike
+pass "conf_set matches keys only at the start of a stored line"
+
+# A file an older version already broke (a stray continuation line leaves a
+# quote open) is refused untouched rather than written into the open quote.
+conf_set broken KEY "300"
+printf "b'\nOTHER='x'\n" >> "$(conf_file broken)"
+before=$(< "$(conf_file broken)")
+out=$(conf_set broken OTHER "y" 2>&1) && fail "conf_set wrote into a file with an open quote"
+[[ $out == *"never closed"* ]] || fail "conf_set refused without saying why: $out"
+[[ $(< "$(conf_file broken)") == "$before" ]] || fail "conf_set changed a file it refused"
+conf_clear broken
+pass "conf_set refuses a file with an unclosed quote"
+
+# conf and state are written as root; a temporary file under a TMPDIR someone
+# else can write is a file they can swap. Neither may depend on TMPDIR.
+(
+    export TMPDIR=$WORK/no-such-dir
+    conf_set notmp KEY "v" && [[ $(conf_get notmp KEY) == v ]] \
+        || fail "conf_set depends on TMPDIR"
+    state_set notmp KEY "v" && [[ $(state_get notmp KEY) == v ]] \
+        || fail "state_set depends on TMPDIR"
+)
+conf_clear notmp; state_clear notmp
+pass "conf_set and state_set do not use TMPDIR"
+
 # The documented promise: a helper script installed into TOOLBOX_BIN_DIR can
 # source the file directly rather than depending on this library.
 conf_set sourceable WEBHOOK "https://example.invalid/a'b\$c"

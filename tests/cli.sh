@@ -1322,6 +1322,23 @@ else
         || fail "config show --json did not carry a 300 KB public value"
     pass "config show handles a public value larger than a command-line argument"
 
+    # What conf_set writes is what config show parses: re-setting a value
+    # that spanned several lines leaves a file it accepts, with the new value.
+    dir=$(tmp)
+    (
+        export TOOLBOX_CONF_DIR=$dir
+        # shellcheck source=lib/common.sh
+        source "$conf_root/lib/common.sh"
+        conf_set e-conf E_DIR $'/srv/a\nOTHER=b'
+        conf_set e-conf E_DIR /srv/new
+    ) >/dev/null
+    json=$(conf_launch "$dir" config show --json e-conf 2>&1) \
+        || fail "config show refused a file conf_set re-set: $json"
+    [[ $(jq -r '.files[0].keys | map(.key) | join(" ")' <<<"$json") == E_DIR \
+        && $(jq -r '.files[0].keys[0].value' <<<"$json") == /srv/new ]] \
+        || fail "config show did not see conf_set's new value: $json"
+    pass "config show accepts a file after conf_set re-sets a multi-line value"
+
     # --- the parser: exactly the format conf_set writes
     conf_value() { # conf_value <conf-dir> <key> -> the JSON value config show gives <key> in e-conf
         conf_launch "$1" config show --json e-conf \
