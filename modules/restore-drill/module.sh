@@ -6,6 +6,8 @@ MODULE_TITLE="Restore drill"
 MODULE_DESC="guarded, isolated VM and container backup restore validation"
 MODULE_TAGS="backup restore audit isolation notify"
 MODULE_HOST_ONLY=1
+# config show may print these; every other key stays hidden.
+MODULE_CONFIG_PUBLIC="RD_STORAGE RD_VMID_START RD_BOOT_PROBE RD_BOOT_TIMEOUT RD_ALLOW_UNATTENDED"
 
 RD_BIN="pve-toolbox-restore-drill"
 RD_CONF_KEYS=(RD_STORAGE RD_VMID_START RD_BOOT_PROBE RD_BOOT_TIMEOUT RD_ALLOW_UNATTENDED)

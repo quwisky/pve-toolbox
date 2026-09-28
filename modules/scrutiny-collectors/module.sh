@@ -10,6 +10,7 @@ MODULE_TITLE="Scrutiny collectors"
 MODULE_DESC="SMART / ZFS / MDADM collectors reporting to a remote Scrutiny web instance"
 MODULE_TAGS="storage monitoring smart zfs"
 MODULE_HOST_ONLY=1        # must run on the PVE host, not in an LXC
+# No MODULE_CONFIG_PUBLIC: this module keeps no toolbox configuration file.
 
 REPO="Starosdev/scrutiny"
 CONFIG_DIR="/opt/scrutiny/config"

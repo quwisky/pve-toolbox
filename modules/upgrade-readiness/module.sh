@@ -6,6 +6,8 @@ MODULE_TITLE="Upgrade readiness"
 MODULE_DESC="read-only PVE upgrade blocker and risk preflight"
 MODULE_TAGS="upgrade audit monitoring backup apt"
 MODULE_HOST_ONLY=1
+# config show may print these; every other key stays hidden.
+MODULE_CONFIG_PUBLIC="UR_POLICY UR_BACKUP_HOURS UR_MIN_FREE_MB"
 
 UR_CONF_KEYS=(UR_POLICY UR_BACKUP_HOURS UR_MIN_FREE_MB)
 UR_JSON=""

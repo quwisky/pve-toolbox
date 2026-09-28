@@ -11,6 +11,8 @@ MODULE_TITLE="Backup audit"
 MODULE_DESC="read-only guest backup coverage, freshness, retention, and storage audit"
 MODULE_TAGS="backup audit monitoring"
 MODULE_HOST_ONLY=1
+# config show may print these; every other key stays hidden.
+MODULE_CONFIG_PUBLIC="BA_FRESHNESS_HOURS BA_STORAGE_WARN BA_STORAGE_FAIL BA_MIN_KEEP_LAST"
 
 BA_CONF_KEYS=(BA_FRESHNESS_HOURS BA_STORAGE_WARN BA_STORAGE_FAIL BA_MIN_KEEP_LAST)
 BA_CONFIG_ERROR=""

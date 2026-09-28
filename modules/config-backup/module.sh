@@ -23,6 +23,12 @@ MODULE_TITLE="PVE config backup"
 MODULE_DESC="timestamped snapshots of /etc/pve and host config, reported to Discord"
 MODULE_TAGS="backup config notify"
 MODULE_HOST_ONLY=1        # needs pmxcfs and the host's own view of the network
+# config show may print these. The webhook, the age recipient, the git remote
+# (it can embed a credential) and the deploy key and token file paths stay hidden.
+MODULE_CONFIG_PUBLIC="CB_ARCHIVE_DIR CB_RETENTION_COUNT CB_RETENTION_DAYS"
+MODULE_CONFIG_PUBLIC+=" CB_NOTIFY_ON_CHANGE CB_INCLUDE_SECRETS CB_VOLATILE_SECTIONS CB_SECRET_ALLOW"
+MODULE_CONFIG_PUBLIC+=" CB_LOCAL_ENABLED CB_GIT_ENABLED CB_GIT_DIR CB_GIT_BRANCH CB_GIT_PUSH"
+MODULE_CONFIG_PUBLIC+=" CB_GIT_AUTHOR_NAME CB_GIT_AUTHOR_EMAIL"
 
 CB_BIN="pve-config-backup"
 CB_UNIT="pve-toolbox-config-backup"

@@ -919,6 +919,170 @@ if grep -nE '<<' <<<"$config_code" | grep -vE '^[0-9]+: *#'; then
 fi
 pass "config show code uses no here-string or here-document"
 
+# --- which keys each module declares public ----------------------------------------
+#
+# config show prints the value of every key a module's MODULE_CONFIG_PUBLIC
+# matches, so a wrong declaration leaks a webhook, a token or a credential.
+# The audit collects the keys every module writes -- conf_set with a literal
+# key, the *_CONF_KEYS arrays however many lines they span, and
+# zfs-replication's JOB_<name>_<field> keys, sampled with job names chosen
+# to trip a careless pattern -- and holds them to the hidden lists below,
+# which mirror the declaration table. Every key a module writes is either
+# public by its declaration or listed here as hidden, so a new key cannot
+# arrive unclassified, and no public pattern may match a hidden key.
+declare -A audit_hidden=(
+    [backup-audit]=""
+    [certificate-watch]=""
+    [config-backup]="DISCORD_WEBHOOK CB_AGE_RECIPIENT CB_GIT_REMOTE CB_GIT_SSH_KEY CB_GIT_TOKEN_FILE"
+    [komodo-periphery]="KP_KEY_FILE KP_KNOWN_HOSTS"
+    [lxc-update]="DISCORD_WEBHOOK"
+    [restore-drill]=""
+    [scrutiny-collectors]=""
+    [storage-hygiene]=""
+    [upgrade-readiness]=""
+    [zfs-replication]="DISCORD_WEBHOOK JOB_A_OPTS JOB_SRC_OPTS JOB_A_SRC_OPTS JOB_PATH_OPTS JOB_A_PATH_OPTS JOB_DST_OPTS"
+    [zfs-scrub]="DISCORD_WEBHOOK"
+)
+# Modules that keep no toolbox configuration file at all.
+audit_noconf=" scrutiny-collectors "
+# Key names that say they hold a secret or point at one. None may be public,
+# whatever the table says.
+audit_secretish='(TOKEN|WEBHOOK|PASSW|REMOTE|_KEY|KEY_|RECIPIENT|OPTS|KNOWN_HOSTS|CREDENTIAL)'
+
+audit_keys() { # audit_keys <module> -> AUDIT_KEYS, every key the module writes
+    local m=$1 f line rest key
+    local -a arrays=() files=()
+    AUDIT_KEYS=()
+    mapfile -t files < <(find "$ROOT/modules/$m" -type f | sort)
+    # *_CONF_KEYS=( ... ), on one line or many.
+    mapfile -t arrays < <(awk '
+        /^[[:space:]]*[A-Z][A-Z0-9_]*_CONF_KEYS=\(/ { on = 1; sub(/^[^(]*\(/, "") }
+        on { line = $0; done = sub(/\).*$/, "", line); print line; if (done) on = 0 }
+    ' "${files[@]}" | tr -s ' \t' '\n\n' | sed '/^$/d')
+    for key in "${arrays[@]}"; do
+        [[ $key =~ ^[A-Z][A-Z0-9_]*$ ]] || fail "audit: $m has a *_CONF_KEYS entry that is not a key name: $key"
+        AUDIT_KEYS+=("$key")
+    done
+    for f in "${files[@]}"; do
+        while IFS= read -r line; do
+            [[ $line =~ ^[[:space:]]*# ]] && continue
+            while [[ $line == *conf_set* ]]; do
+                line=${line#*conf_set}
+                [[ $line =~ ^[[:space:]]+ ]] || continue
+                rest=${line#"${BASH_REMATCH[0]}"}
+                # The record: "..." or a bare word.
+                if [[ $rest =~ ^\"[^\"]*\"[[:space:]]+ || $rest =~ ^[^[:space:]\"]+[[:space:]]+ ]]; then
+                    rest=${rest#"${BASH_REMATCH[0]}"}
+                else
+                    fail "audit: $m: cannot read the record of a conf_set call in ${f#"$ROOT"/}: conf_set$line"
+                fi
+                if [[ $rest =~ ^([A-Z][A-Z0-9_]*)([[:space:]]|$) ]]; then
+                    AUDIT_KEYS+=("${BASH_REMATCH[1]}")
+                elif [[ $rest =~ ^\"\$\(_zr_key\ \"\$job\"\ ([A-Z]+)\)\" ]]; then
+                    key=${BASH_REMATCH[1]}
+                    AUDIT_KEYS+=("JOB_A_$key" "JOB_SRC_$key" "JOB_A_SRC_$key" "JOB_PATH_$key" "JOB_A_PATH_$key" "JOB_DST_$key")
+                elif [[ $rest =~ ^\"\$(key|k)\" ]] && ((${#arrays[@]})); then
+                    : # a loop over the module's *_CONF_KEYS, collected above
+                else
+                    fail "audit: $m: unrecognised conf_set key in ${f#"$ROOT"/}: conf_set$line"
+                fi
+            done
+        done <"$f"
+    done
+}
+
+audit_public() { # audit_public <module> -> AUDIT_PUBLIC, its MODULE_CONFIG_PUBLIC words
+    local - raw
+    set -f
+    raw=$(TOOLBOX_ROOT=$ROOT bash -c 'set +u; source "$1" >/dev/null 2>&1; printf "%s" "${MODULE_CONFIG_PUBLIC-}"' _ \
+        "$ROOT/modules/$1/module.sh")
+    [[ $raw != *[$'\t\n']* ]] || fail "audit: $1's MODULE_CONFIG_PUBLIC is not space-separated"
+    # shellcheck disable=SC2206 # the declaration is space-separated by contract
+    AUDIT_PUBLIC=($raw)
+}
+
+audit_matches() { # audit_matches <key> <pattern>... -> true when any pattern matches
+    local key=$1 p
+    shift
+    for p in "$@"; do
+        # shellcheck disable=SC2053 # the patterns are globs on purpose
+        [[ $key != $p ]] || return 0
+    done
+    return 1
+}
+
+audit_modules=()
+for d in "$ROOT"/modules/*/; do
+    d=${d%/}; d=${d##*/}
+    [[ $d == _* ]] || audit_modules+=("$d")
+done
+[[ ${#audit_modules[@]} -gt 0 ]] || fail "audit: found no modules"
+for m in "${audit_modules[@]}"; do
+    [[ -n ${audit_hidden[$m]+x} ]] \
+        || fail "audit: module $m is not in the declaration audit; classify every key it writes"
+    audit_keys "$m"
+    audit_public "$m"
+    read -r -a hidden <<<"${audit_hidden[$m]}"
+    if [[ $audit_noconf == *" $m "* ]]; then
+        [[ ${#AUDIT_KEYS[@]} -eq 0 ]] || fail "audit: $m is listed as keeping no configuration but writes ${AUDIT_KEYS[*]}"
+        [[ ${#AUDIT_PUBLIC[@]} -eq 0 ]] || fail "audit: $m keeps no configuration but declares ${AUDIT_PUBLIC[*]} public"
+        continue
+    fi
+    [[ ${#AUDIT_KEYS[@]} -gt 0 ]] || fail "audit: found no keys written by $m"
+    [[ ${#AUDIT_PUBLIC[@]} -gt 0 ]] || fail "audit: $m declares no MODULE_CONFIG_PUBLIC"
+    for p in "${AUDIT_PUBLIC[@]}"; do
+        # A letter first and only * as a wildcard: no bare *, no ? or [...].
+        [[ $p =~ ^[A-Z][A-Z0-9_]*(\*[A-Z0-9_]*)*$ ]] \
+            || fail "audit: $m declares a public pattern that is not a key name or a simple glob: $p"
+        audit_matches DISCORD_WEBHOOK "$p" && fail "audit: $m's public pattern $p matches DISCORD_WEBHOOK"
+        found=0
+        for key in "${AUDIT_KEYS[@]}"; do
+            audit_matches "$key" "$p" && { found=1; break; }
+        done
+        [[ $found -eq 1 ]] || fail "audit: $m's public pattern $p matches no key the module writes"
+    done
+    for key in "${hidden[@]}"; do
+        audit_matches "$key" "${AUDIT_PUBLIC[@]}" && fail "audit: $m's MODULE_CONFIG_PUBLIC matches the hidden key $key"
+    done
+    for key in "${AUDIT_KEYS[@]}"; do
+        if audit_matches "$key" "${AUDIT_PUBLIC[@]}"; then
+            [[ ! $key =~ $audit_secretish ]] || fail "audit: $m declares $key public, but its name says it holds a secret"
+        else
+            [[ " ${audit_hidden[$m]} " == *" $key "* ]] \
+                || fail "audit: $m writes $key, which is neither public nor in the audit's hidden list"
+        fi
+    done
+done
+pass "every module's MODULE_CONFIG_PUBLIC matches only keys it writes that hold no secret"
+
+# komodo-periphery keeps a record per managed guest in files of their own,
+# which its module_config_files names from the ID lists: read-only, with
+# conf_get only, digits-only IDs, invalid ones skipped.
+(
+    TOOLBOX_CONF_DIR=$(tmp)
+    export TOOLBOX_CONF_DIR
+    # shellcheck source=lib/common.sh
+    source "$ROOT/lib/common.sh"
+    # shellcheck source=modules/komodo-periphery/module.sh
+    source "$ROOT/modules/komodo-periphery/module.sh"
+    declare -F module_config_files >/dev/null || fail "komodo-periphery has no module_config_files"
+    out=$(module_config_files) || fail "komodo-periphery module_config_files failed with no configuration"
+    [[ $out == komodo-periphery-qemu ]] \
+        || fail "komodo-periphery module_config_files with no configuration printed: $out"
+    conf_set komodo-periphery KP_IDS '101 abc 102 -5 1e3 0x1 ../x *'
+    conf_set komodo-periphery-qemu KP_VM_IDS $'201 x/y\n202 [0-9]*'
+    # A saved * or [0-9]* must not match a file name in the working directory.
+    cd "$(tmp)"
+    : >"555"
+    before=$(find "$TOOLBOX_CONF_DIR" -printf '%p %m %s %T@\n' | sort)
+    out=$(module_config_files 2>&1) || fail "komodo-periphery module_config_files failed: $out"
+    want=$'komodo-periphery-qemu\nkomodo-periphery-101\nkomodo-periphery-102\nkomodo-periphery-qemu-201\nkomodo-periphery-qemu-202'
+    [[ $out == "$want" ]] || fail "komodo-periphery module_config_files printed '$out', want '$want'"
+    [[ $(find "$TOOLBOX_CONF_DIR" -printf '%p %m %s %T@\n' | sort) == "$before" ]] \
+        || fail "komodo-periphery module_config_files changed the configuration directory"
+)
+pass "komodo-periphery lists its per-guest configuration files, skipping invalid IDs"
+
 if [[ $EUID -ne 0 ]]; then
     dir=$(tmp); conf_plant "$dir"
     rc=0; out=$(conf_launch "$dir" config show e-conf 2>&1) || rc=$?
@@ -1383,4 +1547,110 @@ else
     dir=$(tmp); conf_write "$dir" i-fails "I_TOKEN='SECRET12'"
     expect_config_fail "a failing module_config_files" "i-fails" "$dir" config show i-fails
     pass "config show refuses unsafe configuration files and directories, naming them"
+
+    # --- the real modules' declarations, on configuration conf_set wrote
+    real_launch() { # real_launch <conf-dir> [args...] -> the repository's launcher
+        local dir=$1; shift
+        TOOLBOX_BIN_DIR=$(tmp) TOOLBOX_STATE_DIR=$(tmp) TOOLBOX_SYSTEMD_DIR=$(tmp) \
+        TOOLBOX_CONF_DIR=$dir "$ROOT/pve-toolbox" "$@"
+    }
+    real_hidden() { # real_hidden <what> <text> <json> <key>... -> each is set and hidden
+        local what=$1 text=$2 json=$3 key
+        shift 3
+        for key in "$@"; do
+            grep -Eq "^  $key +\(set, hidden\)$" <<<"$text" \
+                || fail "$what: $key is not shown as (set, hidden): $text"
+            jq -e --arg k "$key" '[.files[].keys[] | select(.key == $k)] | length > 0
+                and all(.set and .hidden and (has("value") | not))' <<<"$json" >/dev/null \
+                || fail "$what: --json does not hide $key: $json"
+        done
+    }
+    real_public() { # real_public <what> <text> <json> <key> <value> -> shown as stored
+        local what=$1 text=$2 json=$3 key=$4 value=$5
+        grep -Fqx -- "$(printf '  %-28s %s' "$key" "$value")" <<<"$text" \
+            || fail "$what: $key is not shown as $value: $text"
+        jq -e --arg k "$key" --arg v "$value" '[.files[].keys[] | select(.key == $k)] | length > 0
+            and all(.hidden == false and .value == $v)' <<<"$json" >/dev/null \
+            || fail "$what: --json does not show $key as $value: $json"
+    }
+
+    # config-backup: the webhook, the remote with a credential in it, the age
+    # recipient, the deploy key and the token file stay hidden.
+    dir=$(tmp)
+    (
+        TOOLBOX_CONF_DIR=$dir
+        # shellcheck source=lib/common.sh
+        source "$ROOT/lib/common.sh"
+        conf_set config-backup DISCORD_WEBHOOK 'https://discord.com/api/webhooks/123/LEAKwebhookabcdefghijklmnop'
+        conf_set config-backup CB_ARCHIVE_DIR /var/lib/pve-toolbox/config-backup
+        conf_set config-backup CB_RETENTION_COUNT 30
+        conf_set config-backup CB_AGE_RECIPIENT age1leakrecipientLEAKvalue
+        conf_set config-backup CB_SECRET_ALLOW 'pve/user.cfg:credential derived/dpkg-selections.txt:credential'
+        conf_set config-backup CB_GIT_DIR /var/lib/pve-toolbox/config-backup.git
+        conf_set config-backup CB_GIT_REMOTE 'https://user:tok@host/x'
+        conf_set config-backup CB_GIT_BRANCH master
+        conf_set config-backup CB_GIT_SSH_KEY /root/.ssh/LEAK-deploy-key
+        conf_set config-backup CB_GIT_TOKEN_FILE /root/LEAK-token-file
+    )
+    out=$(real_launch "$dir" config show config-backup) || fail "config show config-backup failed: $out"
+    json=$(real_launch "$dir" config show --json config-backup) || fail "config show --json config-backup failed: $json"
+    # CB_SECRET_ALLOW is a key name here, so the planted values carry LEAK.
+    for text in "$out" "$json"; do
+        for leak in LEAK user:tok tok@ host/x webhooks age1; do
+            [[ $text != *"$leak"* ]] || fail "config show config-backup leaked '$leak': $text"
+        done
+    done
+    real_hidden "config show config-backup" "$out" "$json" \
+        DISCORD_WEBHOOK CB_AGE_RECIPIENT CB_GIT_REMOTE CB_GIT_SSH_KEY CB_GIT_TOKEN_FILE
+    real_public "config show config-backup" "$out" "$json" CB_ARCHIVE_DIR /var/lib/pve-toolbox/config-backup
+    real_public "config show config-backup" "$out" "$json" CB_RETENTION_COUNT 30
+    real_public "config show config-backup" "$out" "$json" CB_GIT_DIR /var/lib/pve-toolbox/config-backup.git
+    real_public "config show config-backup" "$out" "$json" CB_GIT_BRANCH master
+    real_public "config show config-backup" "$out" "$json" CB_SECRET_ALLOW \
+        'pve/user.cfg:credential derived/dpkg-selections.txt:credential'
+    pass "config show config-backup hides the webhook, the remote, the recipient and the key and token paths"
+
+    # komodo-periphery: the per-guest records are shown after the ID lists,
+    # an invalid ID names no file, and the SSH key and known-hosts paths
+    # stay hidden.
+    dir=$(tmp)
+    identity=$(printf '%064d' 7)
+    (
+        TOOLBOX_CONF_DIR=$dir
+        # shellcheck source=lib/common.sh
+        source "$ROOT/lib/common.sh"
+        conf_set komodo-periphery KP_IDS '101 abc 102'
+        conf_set komodo-periphery-abc KP_KEY_FILE /root/SECRET-abc
+        conf_set komodo-periphery-101 KP_PENDING ''
+        conf_set komodo-periphery-101 KP_IDENTITY "$identity"
+        conf_set komodo-periphery-101 KP_VERSION 2.3.3
+        conf_set komodo-periphery-qemu KP_VM_IDS '201 x/y'
+        conf_set komodo-periphery-qemu-201 KP_TRANSPORT ssh
+        conf_set komodo-periphery-qemu-201 KP_ADDRESS vm201.example
+        conf_set komodo-periphery-qemu-201 KP_PORT 2222
+        conf_set komodo-periphery-qemu-201 KP_KEY_FILE /root/.ssh/SECRET-periphery-key
+        conf_set komodo-periphery-qemu-201 KP_KNOWN_HOSTS /root/.ssh/SECRET-known-hosts
+        conf_set komodo-periphery-qemu-201 KP_HOST_FINGERPRINT SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG
+        conf_set komodo-periphery-qemu-201 KP_VERSION 2.3.3
+    )
+    out=$(real_launch "$dir" config show komodo-periphery) || fail "config show komodo-periphery failed: $out"
+    json=$(real_launch "$dir" config show --json komodo-periphery) || fail "config show --json komodo-periphery failed: $json"
+    no_secret "config show komodo-periphery" "$out"
+    no_secret "config show --json komodo-periphery" "$json"
+    [[ $out == "komodo-periphery ("*$'\n'"komodo-periphery-qemu ("*$'\n'"komodo-periphery-101 ("*$'\n'"komodo-periphery-qemu-201 ("* ]] \
+        || fail "config show komodo-periphery did not show the ID lists and then each record: $out"
+    [[ $out != *komodo-periphery-abc* && $out != *komodo-periphery-102* ]] \
+        || fail "config show komodo-periphery showed a file for an invalid or absent ID: $out"
+    jq -e '[.files[].name] == ["komodo-periphery","komodo-periphery-qemu","komodo-periphery-101","komodo-periphery-qemu-201"]' \
+        <<<"$json" >/dev/null || fail "config show --json komodo-periphery files wrong: $json"
+    real_hidden "config show komodo-periphery" "$out" "$json" KP_KEY_FILE KP_KNOWN_HOSTS
+    real_public "config show komodo-periphery" "$out" "$json" KP_IDS '101 abc 102'
+    real_public "config show komodo-periphery" "$out" "$json" KP_VM_IDS '201 x/y'
+    real_public "config show komodo-periphery" "$out" "$json" KP_IDENTITY "$identity"
+    real_public "config show komodo-periphery" "$out" "$json" KP_ADDRESS vm201.example
+    real_public "config show komodo-periphery" "$out" "$json" KP_PORT 2222
+    real_public "config show komodo-periphery" "$out" "$json" KP_HOST_FINGERPRINT \
+        SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG
+    grep -Eq '^  KP_PENDING +\(not set\)$' <<<"$out" || fail "config show komodo-periphery: KP_PENDING not (not set): $out"
+    pass "config show komodo-periphery shows each guest record and hides the SSH key and known-hosts paths"
 fi

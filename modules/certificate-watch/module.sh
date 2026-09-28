@@ -7,6 +7,8 @@ MODULE_TITLE="Certificate watch"
 MODULE_DESC="read-only cluster TLS expiry, hostname, chain, and ACME renewal health"
 MODULE_TAGS="monitoring tls certificate acme notify"
 MODULE_HOST_ONLY=1
+# config show may print these; every other key stays hidden.
+MODULE_CONFIG_PUBLIC="CW_WARN_DAYS CW_FAIL_DAYS CW_ACME_STALE_DAYS"
 
 CW_CONF_KEYS=(CW_WARN_DAYS CW_FAIL_DAYS CW_ACME_STALE_DAYS)
 CW_JSON=""

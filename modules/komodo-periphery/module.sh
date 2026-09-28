@@ -7,6 +7,29 @@ MODULE_DESC="install or manage a systemd agent in a selected local container or 
 MODULE_TAGS="lxc vm qemu komodo periphery agent"
 MODULE_HOST_ONLY=1
 MODULE_EXPLICIT_UPDATE=1
+# config show may print these; the SSH private-key and known-hosts paths stay
+# hidden.
+MODULE_CONFIG_PUBLIC="KP_IDS KP_VM_IDS KP_VERSION KP_TRANSPORT KP_ADDRESS KP_PORT"
+MODULE_CONFIG_PUBLIC+=" KP_HOST_FINGERPRINT KP_PENDING KP_IDENTITY"
+
+# The per-guest records config show displays after komodo-periphery.conf:
+# the VM index, then one record per saved container and VM ID. Read-only,
+# conf_get only; an ID that is not all digits names no file. The lists split
+# on whitespace with globbing off, so a saved * never matches a file name.
+module_config_files() {
+    local -
+    set -f
+    local IFS=$' \t\n' ids id
+    printf '%s\n' komodo-periphery-qemu
+    ids=$(conf_get komodo-periphery KP_IDS) || return 1
+    for id in $ids; do
+        if [[ $id =~ ^[0-9]+$ ]]; then printf 'komodo-periphery-%s\n' "$id"; fi
+    done
+    ids=$(conf_get komodo-periphery-qemu KP_VM_IDS) || return 1
+    for id in $ids; do
+        if [[ $id =~ ^[0-9]+$ ]]; then printf 'komodo-periphery-qemu-%s\n' "$id"; fi
+    done
+}
 
 _kp_load() {
     # shellcheck source=modules/komodo-periphery/host.sh
