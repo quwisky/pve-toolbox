@@ -469,6 +469,9 @@ elif command -v setpriv >/dev/null 2>&1 \
         || fail "_man did not print a .TH line for an unprivileged user: $out"
     pass "_man works as an unprivileged user while the suite runs as root"
 else
+    if [[ ${CLI_ROOT_TEST_REQUIRED:-0} -eq 1 ]]; then
+        fail "_man unprivileged check required but cannot switch to uid 65534 (setpriv missing or the uid is unmapped in this namespace)"
+    fi
     printf 'skip _man unprivileged check, cannot switch to uid 65534 (setpriv missing or the uid is unmapped in this namespace)\n'
 fi
 
@@ -1146,6 +1149,9 @@ else
         no_secret "config show as uid 65534" "$out"
         pass "config show needs root (checked as uid 65534)"
     else
+        if [[ ${CLI_ROOT_TEST_REQUIRED:-0} -eq 1 ]]; then
+            fail "config show unprivileged check required but cannot switch to uid 65534 (setpriv missing or the uid is unmapped in this namespace)"
+        fi
         printf 'skip config show unprivileged check, cannot switch to uid 65534 (setpriv missing or the uid is unmapped in this namespace)\n'
     fi
 
@@ -1244,6 +1250,25 @@ else
         || fail "config show --json mangled a public value: $json"
     pass "config show cleans public values"
 
+    # The UTF-8 encoding of a C1 control character (U+009B, CSI) is replaced
+    # with ? in both text and --json, regardless of the caller's own locale.
+    # [[:cntrl:]] only reaches it depending on locale (it does not match at
+    # all under LC_ALL=C), and jq does not JSON-escape U+0080-U+009F at all,
+    # so config show must strip it itself before either output sees it.
+    dir=$(tmp)
+    c1=$'\xc2\x9b'
+    conf_write "$dir" e-conf "E_DIR='A${c1}B'"
+    out=$(LC_ALL=C conf_launch "$dir" config show e-conf) || fail "config show under LC_ALL=C failed: $out"
+    [[ $out != *"$c1"* ]] || fail "config show under LC_ALL=C printed a raw C1 control byte: $out"
+    grep -Eq '^  E_DIR +A\?B$' <<<"$out" \
+        || fail "config show under LC_ALL=C did not replace the C1 control byte with ?: $out"
+    json=$(LC_ALL=C conf_launch "$dir" config show --json e-conf) \
+        || fail "config show --json under LC_ALL=C failed: $json"
+    [[ $json != *"$c1"* ]] || fail "config show --json under LC_ALL=C printed a raw C1 control byte: $json"
+    [[ $(jq -r '.files[0].keys[0].value' <<<"$json") == "A?B" ]] \
+        || fail "config show --json under LC_ALL=C did not replace the C1 control byte with ?: $json"
+    pass "config show replaces the UTF-8 C1 control range with ? regardless of the caller's locale"
+
     # A public value far larger than one command-line argument may be is
     # shown in full, in text and in JSON: nothing passes it through argv.
     dir=$(tmp)
@@ -1299,14 +1324,16 @@ else
     pass "config show shows stored values literally, never expanded"
 
     # Everything else is refused: exit 1, the file and the line named, and
-    # no planted secret anywhere. Line 3 is the offending line in each.
-    printf_fn='printf() { if [[ $1 == '"'"'ok\0'"'"' ]]; then builtin printf '"'"'ok\0'"'"'; else builtin printf '"'"'%s\0%s\0%s\0%s\0'"'"' "$2" 1 1 "${!2}"; fi; }'
+    # no planted secret anywhere. Line 3 is the offending line in each. The
+    # parser never runs the file, so each of these fails for the same plain
+    # reason -- it is not a comment, blank, or a KEY='value' line -- and none
+    # needs the elaborate sourcing-sandbox payloads (forged NUL-separated
+    # records, an 'ok' sentinel, a $_cfgscan_* name) that earlier rounds used
+    # to probe a subshell-sourcing design this codebase no longer has.
     esc=$'\e'
-    for bad in "$printf_fn" \
-        'declare() { builtin printf '"'"'%s'"'"' "$_cfgscan_functions"; }' \
+    for bad in 'printf "%s\n" "$E_WEBHOOK"' \
         'builtin() { :; }' 'command() { :; }' 'function helper { :; }' 'readonly -f conf_file' \
-        "trap 'printf \"%s\\0\" E_DIR 1 1 \"\$E_WEBHOOK\" ok' EXIT" \
-        "trap 'printf \"%s\\0\" E_DIR 1 1 \"\$E_WEBHOOK\"' DEBUG" \
+        "trap ':' EXIT" "trap ':' DEBUG" \
         'shopt -s nocasematch' 'declare -n E_DIR=E_WEBHOOK' 'export E_DIR' \
         'echo "$E_WEBHOOK"' 'echo "$E_WEBHOOK" >&2' \
         'E_DIR=$(printf %s "$E_WEBHOOK")' 'E_DIR=`echo "$E_WEBHOOK"`' 'E_DIR="/srv/$E_WEBHOOK"' \
@@ -1459,6 +1486,14 @@ else
     conf_write "$dir" o-ignores-y "O_Y='1'"
     expect_config_fail "a refusal the module ignored" "$dir/o-ignores-x.conf: line 2: " \
         "$dir" config show o-ignores
+    # fd 3 is write-only inside the module: a module that tries to read from
+    # it after triggering a refusal, to see and drain it, cannot suppress it.
+    conf_module p-drains 'module_config_files() { conf_get p-drains-x K >/dev/null || true; if read -r -t 0 -u 3 2>/dev/null; then read -r -u 3 x 2>/dev/null; fi; printf "p-drains-y\n"; }'
+    conf_write "$dir" p-drains "P_A='1'"
+    conf_write "$dir" p-drains-x "K='SECRETB6'" "junk line"
+    conf_write "$dir" p-drains-y "P_Y='1'"
+    expect_config_fail "a module that tries to read fd 3 after a refusal" "$dir/p-drains-x.conf: line 2: " \
+        "$dir" config show p-drains
     pass "config show takes refusals only from its own channel"
 
     # config show needs no temporary file: it works, and still refuses what
@@ -1486,24 +1521,52 @@ else
     done
     pass "config show works without a usable TMPDIR"
 
-    # The parser is linear: each line is split on its quotes once, so 20000
-    # keys, or 20000 escaped quotes on one line, parse well within the bound.
+    # The parser is linear: each line is split on its quotes once. Proven by
+    # a ratio between two input sizes rather than an absolute wall-clock
+    # bound, so a slow or busy test runner cannot flake it: quadratic growth
+    # would take about 16x as long for 4x the input, so a generous 10x bound
+    # still catches a real regression while tolerating an ordinary slow
+    # machine. $SECONDS is too coarse (whole seconds) for a small input, so
+    # elapsed time is measured in milliseconds with the wall clock instead,
+    # and a floor keeps a near-instant small run from making the ratio
+    # unstable on its own.
+    ms_now() { date +%s%N; }
+    ms_ratio_ok() { # ms_ratio_ok <small-ms> <big-ms> -> true unless big grew worse than 10x a floored small
+        local floor=$1
+        ((floor >= 20)) || floor=20
+        (($2 <= floor * 10))
+    }
     dir=$(tmp)
-    ( umask 077; for ((i = 0; i < 20000; i++)); do printf "E_K_%s='value %s'\n" "$i" "$i"; done > "$dir/e-conf.conf" )
-    start=$SECONDS
-    out=$(conf_launch "$dir" config show e-conf) || fail "config show of 20000 keys failed"
-    elapsed=$((SECONDS - start))
-    [[ $(grep -c '^  E_K_' <<<"$out") -eq 20000 ]] || fail "config show of 20000 keys did not show them all"
-    [[ $elapsed -lt 10 ]] || fail "config show of 20000 keys took ${elapsed}s"
-    printf -v big "a'%.0s" {1..20000}
-    ( umask 077; { printf "E_DIR='"; printf "a'\\\\''%.0s" {1..20000}; printf "'\n"; } > "$dir/e-conf.conf" )
-    start=$SECONDS
-    out=$(conf_launch "$dir" config show --json e-conf) || fail "config show of 20000 escaped quotes failed"
-    elapsed2=$((SECONDS - start))
-    [[ $(jq -r '.files[0].keys[0].value' <<<"$out") == "$big" ]] \
-        || fail "config show of 20000 escaped quotes did not return the stored value"
-    [[ $elapsed2 -lt 10 ]] || fail "config show of 20000 escaped quotes on one line took ${elapsed2}s"
-    pass "config show parses 20000 keys in ${elapsed}s and 20000 escaped quotes on one line in ${elapsed2}s"
+    ( umask 077; for ((i = 0; i < 1000; i++)); do printf "E_K_%s='value %s'\n" "$i" "$i"; done > "$dir/e-conf.conf" )
+    start=$(ms_now)
+    out=$(conf_launch "$dir" config show e-conf) || fail "config show of 1000 keys failed"
+    small=$((($(ms_now) - start) / 1000000))
+    [[ $(grep -c '^  E_K_' <<<"$out") -eq 1000 ]] || fail "config show of 1000 keys did not show them all"
+    dir=$(tmp)
+    ( umask 077; for ((i = 0; i < 4000; i++)); do printf "E_K_%s='value %s'\n" "$i" "$i"; done > "$dir/e-conf.conf" )
+    start=$(ms_now)
+    out=$(conf_launch "$dir" config show e-conf) || fail "config show of 4000 keys failed"
+    big=$((($(ms_now) - start) / 1000000))
+    [[ $(grep -c '^  E_K_' <<<"$out") -eq 4000 ]] || fail "config show of 4000 keys did not show them all"
+    ms_ratio_ok "$small" "$big" \
+        || fail "config show of 4000 keys took ${big}ms against ${small}ms for 1000: parsing looks worse than linear"
+    pass "config show parses 4000 keys in ${big}ms against ${small}ms for 1000 (linear, not quadratic)"
+
+    dir=$(tmp)
+    printf -v big_value "a'%.0s" $(seq 1 4000)
+    ( umask 077; { printf "E_DIR='"; printf "a'\\\\''%.0s" $(seq 1 1000); printf "'\n"; } > "$dir/e-conf.conf" )
+    start=$(ms_now)
+    out=$(conf_launch "$dir" config show --json e-conf) || fail "config show of 1000 escaped quotes failed"
+    small2=$((($(ms_now) - start) / 1000000))
+    ( umask 077; { printf "E_DIR='"; printf "a'\\\\''%.0s" $(seq 1 4000); printf "'\n"; } > "$dir/e-conf.conf" )
+    start=$(ms_now)
+    out=$(conf_launch "$dir" config show --json e-conf) || fail "config show of 4000 escaped quotes failed"
+    big2=$((($(ms_now) - start) / 1000000))
+    [[ $(jq -r '.files[0].keys[0].value' <<<"$out") == "$big_value" ]] \
+        || fail "config show of 4000 escaped quotes did not return the stored value"
+    ms_ratio_ok "$small2" "$big2" \
+        || fail "config show of 4000 escaped quotes on one line took ${big2}ms against ${small2}ms for 1000: parsing looks worse than linear"
+    pass "config show parses 4000 escaped quotes on one line in ${big2}ms against ${small2}ms for 1000 (linear, not quadratic)"
 
     # --- what it refuses (P4-2): each names the file, exits 1 and prints
     # nothing from any file, including the ones that were fine.
@@ -1540,6 +1603,9 @@ else
         chown 65534 "$dir"
         expect_config_fail "a directory owned by another user" "$dir" "$dir" config show e-conf
     else
+        if [[ ${CLI_ROOT_TEST_REQUIRED:-0} -eq 1 ]]; then
+            fail "config show wrong-owner cases required but cannot chown to uid 65534 (unmapped in this namespace)"
+        fi
         printf 'skip config show wrong-owner cases, cannot chown to uid 65534 (unmapped in this namespace)\n'
     fi
     # The owner check itself, wherever chown cannot run: a stat that reports

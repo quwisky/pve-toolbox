@@ -200,7 +200,7 @@ declare -A CLI_DESC=(
     [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Use --dry-run for a cached preview, --allow-removals to enable package removals and cleanup, and --notify for a Discord report. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades. Package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local systemd schedule. Scheduled runs update every eligible local container with the non-removing policy, never catch up after downtime, and can report every batch to Discord when explicitly enabled. Use 'pve-toolbox status lxc-update' to inspect timer health and recent results."
     [doctor]="The audit covers host, cluster, storage and installed modules. Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
     [link]="Packaged installs refuse this command."
-    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, tabs and newlines flattened; any other control character shown as ? in text and JSON-escaped in --json); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
+    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, tabs and newlines flattened; any other control character shown as ? in text; --json JSON-escapes the ones JSON requires and also shows the rest, including the C1 range U+0080-U+009F that JSON does not require escaping, as ? too); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
 )
 declare -A CLI_EXAMPLES=(
     [list]=$'pve-toolbox list\npve-toolbox list storage\npve-toolbox list --json'
@@ -945,10 +945,17 @@ _config_safe_get() { # _config_safe_get <name> <key>
     return 1
 }
 
-# Writes one refusal code to the channel on fd 3, unless one is already
-# waiting there.
+# Writes one refusal code to the channel on fd 3, unless one has already
+# been written during this call. The single write is tracked with a
+# readonly marker rather than by peeking at fd 3 itself (the old "read -t 0
+# -u 3" guard): fd 3 is write-only inside the module's subshell (see
+# _config_module_files), precisely so that nothing running there, module
+# code included, can read what has already been sent, and a read-only guard
+# has to work without reading it either.
 _config_refusal() { # _config_refusal <code>
-    read -r -t 0 -u 3 2>/dev/null || printf '%s\n' "$1" >&3
+    [[ -v _CONFIG_REFUSAL_SENT ]] && return
+    readonly _CONFIG_REFUSAL_SENT=1
+    printf '%s\n' "$1" >&3
 }
 
 # Runs <module>'s module_config_files, setting CONFIG_LISTED to the lines it
@@ -957,12 +964,19 @@ _config_refusal() { # _config_refusal <code>
 # _config_safe_get and conf_load refused, both readonly so nothing the module
 # sources later can put the originals back.
 #
-# The refusal channel is an anonymous pipe, opened for reading and writing
-# on one descriptor: no path, so nothing in TMPDIR or anywhere else can be
-# swapped for it or left behind, and it is not the module's stdout, so no
-# value a module prints can pose as a refusal. The module gets it as fd 3
-# and nothing else of it. A code is one short line, far below the pipe's
-# buffer, and it is read only once it is waiting, so nothing blocks.
+# The refusal channel is an anonymous pipe: no path, so nothing in TMPDIR or
+# anywhere else can be swapped for it or left behind, and it is not the
+# module's stdout, so no value a module prints can pose as a refusal. The
+# parent keeps its own end, $c, open for both reading and writing. The
+# module's copy, fd 3, is not a dup of $c: a dup would share $c's read-write
+# access mode, and a module (or code it calls, including _config_safe_get's
+# own checks) could then "read -u 3" to see, and drain, a refusal that has
+# already been sent, or fill the pipe with extra lines. Opening /dev/fd/$c
+# again, instead, gives a fresh, write-only open file description on the
+# same pipe: a write through it still reaches the parent's read end, but a
+# read on fd 3 fails outright ("Bad file descriptor"; tests/cli.sh proves a
+# module gains nothing by trying). A code is one short line, far below the
+# pipe's buffer, so nothing blocks.
 CONFIG_LISTED=()
 CONFIG_REFUSAL=""
 _config_module_files() { # _config_module_files <module>
@@ -975,7 +989,7 @@ _config_module_files() { # _config_module_files <module>
         die "cannot open the refusal channel for module $1"
     fi
     out=$(
-        exec 3>&"$c" {c}>&- 2>/dev/null
+        exec 3>"/dev/fd/$c" {c}>&- 2>/dev/null
         # shellcheck source=/dev/null
         source "$MODULE_DIR/$1/module.sh"
         conf_get() { _config_safe_get "$@"; }
@@ -1019,7 +1033,12 @@ _config_public() { # _config_public <key> <pattern>...
 }
 
 cmd_config() { # cmd_config show <module>
-    local sub=${1:-} mod=${2:-} name f i key value display line text="" rc
+    # LC_ALL=C makes every glob and [[:cntrl:]] match below depend only on
+    # byte values, never on the caller's own locale (bash re-reads a locale
+    # variable as soon as it is assigned, whatever process it came from, but
+    # this assignment is never exported, so jq's own JSON escaping below is
+    # unaffected).
+    local sub=${1:-} mod=${2:-} name f i key value display line text="" rc LC_ALL=C
     local -a s=() names=() files=() patterns=() stream=()
     case $sub in
         show) ;;
@@ -1102,7 +1121,13 @@ cmd_config() { # cmd_config show <module>
             if [[ ${CONFIG_RECORDS[i + 2]} == 1 ]]; then
                 value=$(report_clean_text "${CONFIG_RECORDS[i + 3]}")
                 # Cleaned text can still hold escape sequences; a terminal
-                # gets none of them.
+                # gets none of them. [[:cntrl:]] only ever reaches the C0
+                # range (0x00-0x1F, 0x7F); the UTF-8 encoding of the C1
+                # range (U+0080-U+009F, bytes \xc2\x80-\xc2\x9f) is replaced
+                # explicitly, in both modes, because it is not JSON syntax
+                # that jq must escape and would otherwise pass it through
+                # raw in --json too.
+                value=${value//$'\xc2'[$'\x80'-$'\x9f']/?}
                 display=${value//[[:cntrl:]]/?}
                 [[ ${CONFIG_RECORDS[i + 1]} == 1 ]] || display="(not set)"
             else
