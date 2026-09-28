@@ -35,10 +35,21 @@ NOTIFY_START='0'
 JOB_APPDATA_SRC='fast-data-pool/appdata'
 JOB_APPDATA_DST='data-pool/appdata-backup'
 JOB_APPDATA_OPTS='--recursive --compress=zstd-fast'
-JOB_APPDATA_CHOWN='102105:102105'   # optional
-JOB_APPDATA_CHMOD='775'             # optional
-JOB_APPDATA_PATH=''                 # blank = the target's own mountpoint
+JOB_APPDATA_CHOWN='102105:102105'
+JOB_APPDATA_CHMOD='775'
+JOB_APPDATA_PATH=''
 ```
+
+`JOB_*_CHOWN` and `JOB_*_CHMOD` are optional; leave them unset to skip the
+post-run ownership fixup. `JOB_*_PATH` left blank, as above, applies it to
+the target dataset's own mountpoint (see
+[Behaviour worth knowing](#behaviour-worth-knowing)).
+
+Run `pve-toolbox config show zfs-replication` as root to display `LOG_DIR`,
+`NOTIFY_START`, `JOBS`, and each job's `_SRC`, `_DST`, `_CHOWN`, `_CHMOD` and
+`_PATH` keys — a syncoid remote can be `user@host:dataset`, which is an
+identifier, not a credential. `DISCORD_WEBHOOK` and every job's `_OPTS` stay
+hidden: syncoid options can name an SSH key or carry ssh options.
 
 Job keys are the job name uppercased with anything non-alphanumeric turned
 into `_`. Job names must match `^[A-Za-z][A-Za-z0-9_.:-]*$`, because they

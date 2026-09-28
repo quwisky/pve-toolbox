@@ -7,6 +7,39 @@ MODULE_DESC="install or manage a systemd agent in a selected local container or 
 MODULE_TAGS="lxc vm qemu komodo periphery agent"
 MODULE_HOST_ONLY=1
 MODULE_EXPLICIT_UPDATE=1
+# config show may print these; the SSH private-key and known-hosts paths stay
+# hidden.
+MODULE_CONFIG_PUBLIC="KP_IDS KP_VM_IDS KP_VERSION KP_TRANSPORT KP_ADDRESS KP_PORT"
+MODULE_CONFIG_PUBLIC+=" KP_HOST_FINGERPRINT KP_PENDING KP_IDENTITY"
+
+# The container/VM ID rule module_config_files checks IDs read from
+# configuration against: no leading zero, 3-9 digits. It mirrors the rule
+# host.sh (kp_target_key, kp_valid_ctid, the saved-ID check) and
+# transport-qga.sh enforce on the same kind of ID, so "0", "007" and "1e3"
+# name no file here, exactly as those would refuse them there. Those files
+# keep their own literal copies rather than sourcing this one: their flows
+# are real-root, CI-only paths that may run without module.sh ever being
+# sourced. tests/cli.sh keeps the copies in step with this constant.
+KP_ID_RE='^[1-9][0-9]{2,8}$'
+
+# The per-guest records config show displays after komodo-periphery.conf:
+# the VM index, then one record per saved container and VM ID. Read-only,
+# conf_get only; an ID that does not match KP_ID_RE names no file. The lists
+# split on whitespace with globbing off, so a saved * never matches a file name.
+module_config_files() {
+    local -
+    set -f
+    local IFS=$' \t\n' ids id
+    printf '%s\n' komodo-periphery-qemu
+    ids=$(conf_get komodo-periphery KP_IDS) || return 1
+    for id in $ids; do
+        if [[ $id =~ $KP_ID_RE ]]; then printf 'komodo-periphery-%s\n' "$id"; fi
+    done
+    ids=$(conf_get komodo-periphery-qemu KP_VM_IDS) || return 1
+    for id in $ids; do
+        if [[ $id =~ $KP_ID_RE ]]; then printf 'komodo-periphery-qemu-%s\n' "$id"; fi
+    done
+}
 
 _kp_load() {
     # shellcheck source=modules/komodo-periphery/host.sh

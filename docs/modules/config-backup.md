@@ -391,13 +391,15 @@ in pmxcfs, and reusing that VMID is exactly what DR mode is for.
 
 ## Retention
 
-```
-CB_RETENTION_COUNT=30    # never prune below this, whatever the age
-CB_RETENTION_DAYS=90     # prune older than this, once COUNT is satisfied
+```ini title="/etc/pve-toolbox/config-backup.conf"
+CB_RETENTION_COUNT='30'
+CB_RETENTION_DAYS='90'
 ```
 
-In one sentence: **you always have the last 30 runs, and anything older than 90
-days beyond that is pruned.**
+`CB_RETENTION_COUNT` never prunes below this many runs, whatever their age;
+`CB_RETENTION_DAYS` prunes anything older than this once `COUNT` is
+satisfied. In one sentence: **you always have the last 30 runs, and anything
+older than 90 days beyond that is pruned.**
 
 Count is a floor, not a cap. An archive that is outside the newest 30 but
 younger than 90 days is kept — so on a frequent timer the directory can hold
@@ -426,6 +428,15 @@ CB_AGE_RECIPIENT=''
 CB_VOLATILE_SECTIONS='firewall-live/'
 CB_SECRET_ALLOW='pve/user.cfg:credential derived/dpkg-selections.txt:credential'
 ```
+
+Run `pve-toolbox config show config-backup` as root to display `CB_ARCHIVE_DIR`,
+`CB_RETENTION_COUNT`, `CB_RETENTION_DAYS`, `CB_NOTIFY_ON_CHANGE`,
+`CB_INCLUDE_SECRETS`, `CB_VOLATILE_SECTIONS`, `CB_SECRET_ALLOW`,
+`CB_LOCAL_ENABLED`, `CB_GIT_ENABLED`, `CB_GIT_DIR`, `CB_GIT_BRANCH`,
+`CB_GIT_PUSH`, `CB_GIT_AUTHOR_NAME` and `CB_GIT_AUTHOR_EMAIL` — the author
+email is personal data, not a secret, and it is already written into every
+commit. `DISCORD_WEBHOOK`, `CB_AGE_RECIPIENT`, `CB_GIT_REMOTE`,
+`CB_GIT_SSH_KEY` and `CB_GIT_TOKEN_FILE` stay hidden.
 
 A failed capture always reports. `CB_NOTIFY_ON_CHANGE=1` additionally reports
 when the configuration changed — off by default, because editing a guest is

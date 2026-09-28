@@ -92,6 +92,7 @@ pve-toolbox update [mod]...      update (all installed if none given)
 pve-toolbox check [mod]...       report available updates, change nothing
 pve-toolbox status [mod]         detailed status
 pve-toolbox doctor               read-only host and module health audit
+pve-toolbox config show <module> show a module's saved configuration
 pve-toolbox lxc-update [ID]...   update local running Debian/Ubuntu containers
 pve-toolbox uninstall <mod>...
 pve-toolbox self-update          git pull this checkout (git installs only)
@@ -106,8 +107,16 @@ what was probably meant.
 Flags: `-y` non-interactive (modules read their env vars instead of prompting),
 `-f` force, `--json` versioned output, `--quiet` exit-status-only output,
 `--color=auto|always|never` colour output, `-V` version, `-h` help. JSON
-output applies to `status`, `check`, `doctor`, and `list`; quiet output
-applies to `status`, `check`, and `doctor`.
+output applies to `status`, `check`, `doctor`, `list`, and `config show`; quiet
+output applies to `status`, `check`, and `doctor`.
+
+`config show <module>` (root only, `/etc/pve-toolbox/*.conf` is root-readable)
+parses a module's saved configuration and prints a value only for the keys
+the module declares public; every other key shows only whether it is set.
+See the [automation guide](https://quwisky.github.io/pve-toolbox/automation/#config-show-json)
+for the `--json` schema and
+[Writing a module](https://quwisky.github.io/pve-toolbox/writing-a-module/#showing-configuration)
+for which keys each module shows.
 
 Use `pve-toolbox lxc-update --dry-run` as root on PVE 9 to preview container
 package updates. Execution requires a terminal and confirmation; `--allow-removals`

@@ -21,12 +21,15 @@ pve-toolbox install restore-drill
 ```
 
 ```ini title="/etc/pve-toolbox/restore-drill.conf"
-RD_STORAGE=local-lvm
-RD_VMID_START=900000
-RD_BOOT_PROBE=1
-RD_BOOT_TIMEOUT=60
-RD_ALLOW_UNATTENDED=0
+RD_STORAGE='local-lvm'
+RD_VMID_START='900000'
+RD_BOOT_PROBE='1'
+RD_BOOT_TIMEOUT='60'
+RD_ALLOW_UNATTENDED='0'
 ```
+
+Run `pve-toolbox config show restore-drill` as root to display all five
+settings — none of them can hold a secret.
 
 The helper takes the first free VMID among the 10000 starting at
 `RD_VMID_START`, never above 999999999, and never overwrites an existing guest.

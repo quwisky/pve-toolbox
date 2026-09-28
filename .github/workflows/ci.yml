@@ -130,6 +130,7 @@ jobs:
           PACKAGING_TEST_REQUIRED: '1'
           PACKAGING_INSTALL_TEST_REQUIRED: '1'
           REPOSITORY_TEST_REQUIRED: '1'
+          CLI_ROOT_TEST_REQUIRED: '1'
           PACKAGE_DEB: ${{ steps.package.outputs.path }}
           PACKAGE_DEB_SHA256: ${{ steps.package.outputs.sha256 }}
         run: make test

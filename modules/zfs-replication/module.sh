@@ -16,6 +16,10 @@ MODULE_TITLE="ZFS replication + Discord"
 MODULE_DESC="syncoid jobs on a timer, Discord message with duration and size on each run"
 MODULE_TAGS="storage zfs backup replication notify"
 MODULE_HOST_ONLY=1        # needs the host's zfs, not an LXC view of it
+# config show may print these. The webhook and every JOB_<name>_OPTS stay
+# hidden: syncoid options can name an SSH key or carry ssh options.
+MODULE_CONFIG_PUBLIC="LOG_DIR NOTIFY_START JOBS JOB_*_SRC JOB_*_DST JOB_*_CHOWN"
+MODULE_CONFIG_PUBLIC+=" JOB_*_CHMOD JOB_*_PATH"
 
 ZR_BIN="pve-toolbox-zfs-sync"
 ZR_UNIT="pve-toolbox-zfs-sync"

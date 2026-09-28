@@ -130,7 +130,7 @@ cli_unknown_module() { # cli_unknown_module <name> -> exits 64 with suggestions
 # suggestions, completions and the generated man page all read these; add a
 # command here first. Data only: nothing runs while it is defined.
 
-CLI_COMMANDS=(menu ui list install update check status doctor lxc-update uninstall link self-update help)
+CLI_COMMANDS=(menu ui list install update check status doctor config lxc-update uninstall link self-update help)
 # Internal commands the completion scripts (and the packaging build, for
 # _man) call. Never shown or suggested, but not unknown either.
 CLI_HIDDEN=(_complete _man)
@@ -159,6 +159,7 @@ declare -A CLI_SUMMARY=(
     [check]="report available updates, change nothing"
     [status]="show detailed module status"
     [doctor]="read-only host and module health audit"
+    [config]="show a module's saved configuration, secrets hidden"
     [lxc-update]="update running Debian/Ubuntu containers on this node"
     [uninstall]="remove modules after confirmation"
     [link]="link a git checkout into /usr/local/bin and completions"
@@ -174,6 +175,7 @@ declare -A CLI_USAGE=(
     [check]="check [--json|--quiet] [module]..."
     [status]="status [--json|--quiet] [module]..."
     [doctor]="doctor [--json|--quiet]"
+    [config]="config show [--json] <module>"
     [lxc-update]="lxc-update [--dry-run] [--allow-removals] [--notify] [ID]..."
     [uninstall]="uninstall <module>..."
     [link]="link"
@@ -185,6 +187,7 @@ declare -A CLI_FLAGS=(
     [check]="--json --quiet"
     [status]="--json --quiet"
     [doctor]="--json --quiet"
+    [config]="--json"
     [lxc-update]="--dry-run --allow-removals --notify"
 )
 # Global flags a command's own runner refuses (lxc-update execution needs an
@@ -192,11 +195,12 @@ declare -A CLI_FLAGS=(
 # completion leave them out; the launcher still accepts and passes them, so
 # the runner remains the one that explains the refusal.
 declare -A CLI_NO_GLOBALS=([lxc-update]="-y|--yes -f|--force")
-declare -A CLI_ROOT=([install]=1 [update]=1 [uninstall]=1 [lxc-update]=1 [link]=1)
+declare -A CLI_ROOT=([install]=1 [update]=1 [uninstall]=1 [lxc-update]=1 [link]=1 [config]=1)
 declare -A CLI_DESC=(
     [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Use --dry-run for a cached preview, --allow-removals to enable package removals and cleanup, and --notify for a Discord report. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades. Package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local systemd schedule. Scheduled runs update every eligible local container with the non-removing policy, never catch up after downtime, and can report every batch to Discord when explicitly enabled. Use 'pve-toolbox status lxc-update' to inspect timer health and recent results."
     [doctor]="The audit covers host, cluster, storage and installed modules. Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
     [link]="Packaged installs refuse this command."
+    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, tabs and newlines flattened; any other control character, including DEL, shown as ? in text and JSON-escaped in --json, except the C1 range U+0080-U+009F, which JSON does not require escaping and --json does not either, so it is shown as ? there too); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
 )
 declare -A CLI_EXAMPLES=(
     [list]=$'pve-toolbox list\npve-toolbox list storage\npve-toolbox list --json'
@@ -204,6 +208,7 @@ declare -A CLI_EXAMPLES=(
     [status]=$'pve-toolbox status\npve-toolbox status --json zfs-scrub'
     [check]='pve-toolbox check --quiet'
     [doctor]='pve-toolbox doctor --json'
+    [config]=$'pve-toolbox config show zfs-scrub\npve-toolbox config show --json config-backup'
     [lxc-update]='pve-toolbox lxc-update --dry-run 101 102'
     [help]='pve-toolbox help status'
 )
@@ -237,7 +242,7 @@ cli_help_overview() {
     for c in "${CLI_COMMANDS[@]}"; do printf '  %-12s %s\n' "$c" "${CLI_SUMMARY[$c]}"; done
     printf '\nOptions:\n'
     for spec in "${CLI_GLOBAL_FLAGS[@]}"; do cli_print_option "${spec//|/, }" "${CLI_GLOBAL_DESC[$spec]}"; done
-    cli_print_option "--json, --quiet" "machine-readable output (status, check, doctor); --json also for list; see 'pve-toolbox help status'"
+    cli_print_option "--json, --quiet" "machine-readable output (status, check, doctor); --json also for list and config; see 'pve-toolbox help status'"
     printf "\nRun 'pve-toolbox help <command>' for details.\n"
 }
 
@@ -749,6 +754,433 @@ cmd_doctor() {
     doctor_render
 }
 
+# ---------------------------------------------------------- config show --
+#
+# Displays a module's saved configuration. Those files hold webhook URLs,
+# tokens and credentials, so a value is shown only for a key the module
+# declares public in MODULE_CONFIG_PUBLIC; every other key shows only
+# whether it is set. Files are parsed, never run (see _config_parse), and
+# module_config_files reads them through the same parser.
+# Nothing is read until the directory and every file to be shown have
+# passed _config_check_path, and nothing is printed until every file has
+# been parsed, so a refusal never follows partial output.
+
+# A configuration name: the <name> of TOOLBOX_CONF_DIR/<name>.conf, for a
+# module or for an extra file its module_config_files lists. No '/', and no
+# leading '.' or '-'.
+CONFIG_NAME_RE='^[a-z0-9][a-z0-9-]*$'
+
+# Refuses a path another user could have planted or swapped: a symbolic
+# link, the wrong type, not owned by root, or writable by group or others.
+# The message names the path and the reason, never anything read from it.
+_config_check_path() { # _config_check_path <file|directory> <path>
+    local kind=$1 path=$2 what info owner mode
+    what="configuration $kind $path"
+    [[ ! -L $path ]] || die "refusing $what: it is a symbolic link"
+    if [[ $kind == directory ]]; then
+        [[ -d $path ]] || die "refusing $what: not a directory"
+    else
+        [[ -f $path ]] || die "refusing $what: not a regular file"
+    fi
+    info=$(stat -c '%u %a' -- "$path") || die "refusing $what: cannot read its owner and mode"
+    owner=${info%% *}
+    mode=${info#* }
+    [[ $owner == 0 ]] || die "refusing $what: not owned by root"
+    [[ $mode =~ ^[0-7]+$ ]] || die "refusing $what: cannot read its mode"
+    (((8#$mode & 8#022) == 0)) || die "refusing $what: writable by group or others"
+}
+
+# Parses one checked configuration file into CONFIG_ORDER (its keys, in
+# first-appearance order) and CONFIG_VALUES (key -> value), or dies.
+#
+# The file is parsed, never run: config show accepts exactly the format
+# conf_set writes, the only one the toolbox has ever written. That is blank
+# lines, lines starting with '#', and KEY='value' lines, where a value is
+# single-quoted segments joined by \' (conf_set writes a quote inside a
+# value as '\'') and a segment may span lines. The last assignment of a key
+# wins, as it would for the shell. Anything else refuses the file with the
+# line number and the reason, never the line itself. Values are therefore
+# exactly what was stored: nothing is expanded, and nothing in the file can
+# run. One pass over the lines; each line is split on its quotes once.
+#
+# No code in this section, nor report_clean_text, uses a here-string, a
+# here-document or a temporary file (tests/cli.sh checks): files are read
+# straight from their descriptor, so config show works, and refuses what it
+# must, whatever TMPDIR is and however full the disk behind it.
+CONFIG_ORDER=()
+declare -A CONFIG_VALUES=()
+_config_parse() { # _config_parse <file>
+    local LC_ALL=C
+    local file=$1 all size n i last start key value text state
+    local re_assign='^([A-Za-z_][A-Za-z0-9_]*)=(.*)$'
+    local -a lines=() pieces=()
+    CONFIG_ORDER=()
+    CONFIG_VALUES=()
+    # Byte-wise from here on. The lines keep their newlines until every
+    # byte is accounted for: bash drops a NUL byte, which a text file never
+    # holds, so a short count against the size refuses the file, and so
+    # does a failed or short read.
+    size=$(stat -c '%s' -- "$file") || die "could not read configuration file $file"
+    mapfile lines <"$file" || die "could not read configuration file $file"
+    printf -v all '%s' "${lines[@]}"
+    [[ ${#all} -eq $size ]] || die "refusing configuration file $file: it contains a NUL byte or could not be read"
+    all=""
+    lines=("${lines[@]%$'\n'}")
+    # state: out (between entries) or in (inside a quoted segment, which
+    # may continue on the next line).
+    state=out
+    for ((n = 0; n < ${#lines[@]}; n++)); do
+        text=${lines[n]}
+        if [[ $state == in ]]; then
+            value+=$'\n'
+            i=0
+        elif [[ -z $text || $text == '#'* ]]; then
+            continue
+        elif [[ $text =~ $re_assign ]]; then
+            start=$n
+            key=${BASH_REMATCH[1]}
+            text=${BASH_REMATCH[2]}
+            value=""
+            [[ $text == "'"* ]] || _config_refuse "$file" "$start" "the value is not single-quoted"
+            state=in
+            i=1
+        else
+            _config_refuse "$file" "$n" "not a comment or a KEY='value' line"
+        fi
+        # The text between quotes, in order: one more piece than the line
+        # has quotes (the quote appended keeps a trailing empty piece).
+        # Starting a value, i skips piece 0, the empty text before the
+        # opening quote.
+        _config_split "$text"
+        last=$((${#pieces[@]} - 1))
+        while :; do
+            # Inside a segment: its text runs to the next quote, or to the
+            # end of the line, and then continues on the next line.
+            value+=${pieces[i]}
+            ((i < last)) || break
+            # Past the closing quote: the end of the line ends the entry,
+            # and \'' is an escaped quote that opens the next segment.
+            i=$((i + 1))
+            if ((i == last)) && [[ -z ${pieces[i]} ]]; then
+                [[ -n ${CONFIG_VALUES[$key]+x} ]] || CONFIG_ORDER+=("$key")
+                CONFIG_VALUES[$key]=$value
+                state=out
+                break
+            elif ((i + 1 < last)) && [[ ${pieces[i]} == '\' && -z ${pieces[i + 1]} ]]; then
+                value+="'"
+                i=$((i + 2))
+            else
+                _config_refuse "$file" "$start" "unexpected text after the value"
+            fi
+        done
+    done
+    [[ $state == out ]] || _config_refuse "$file" "$start" "unterminated single quote"
+}
+
+# Splits <text> into pieces, the caller's array, at every quote: one more
+# piece than it has quotes, since a quote appended to it ends the last one.
+# Word splitting on IFS=' with globbing off, all local to this function.
+_config_split() { # _config_split <text>
+    local -
+    set -f
+    local IFS=\' text=$1\'
+    # shellcheck disable=SC2206 # the splitting is the point
+    pieces=($text)
+}
+
+# Refuses a file that is not in the conf_set format, naming the line where
+# the entry that failed starts. Never the line itself: it may hold a value.
+_config_refuse() { # _config_refuse <file> <0-based line> <reason>
+    die "refusing configuration file $1: line $(($2 + 1)): $3"
+}
+
+# Reads one checked configuration file into CONFIG_RECORDS: four fields per
+# key, in first-appearance order and once each: the key, 1 or 0 for set
+# (non-empty), 1 or 0 for public, and the value, which is empty unless the
+# key is public.
+CONFIG_RECORDS=()
+_config_read() { # _config_read <file> <public pattern>...
+    local file=$1 key value set
+    shift
+    _config_parse "$file"
+    CONFIG_RECORDS=()
+    for key in "${CONFIG_ORDER[@]}"; do
+        value=${CONFIG_VALUES[$key]}
+        set=0
+        [[ -z $value ]] || set=1
+        if _config_public "$key" "$@"; then
+            CONFIG_RECORDS+=("$key" "$set" 1 "$value")
+        else
+            CONFIG_RECORDS+=("$key" "$set" 0 "")
+        fi
+    done
+    CONFIG_VALUES=()
+}
+
+# conf_get as config show gives it to module_config_files: the same checks
+# and parser, so the file is never run. Prints the stored value of <key>, or
+# nothing when the file or the key is absent. On a refusal the call fails
+# and writes to fd 3, config show's refusal channel, only which check
+# failed: "name", or "file <name>". config show repeats that check itself,
+# so every message the operator sees is built by config show from what it
+# knows (the file, the line and the reason), never from anything a module
+# printed or a file holds. Only the first refusal is written: a module that
+# ignores the failure and reads again cannot fill the channel.
+_config_safe_get() { # _config_safe_get <name> <key>
+    local f
+    if [[ ! ${1:-} =~ $CONFIG_NAME_RE ]]; then
+        _config_refusal name
+        return 1
+    fi
+    f=$(conf_file "$1")
+    [[ -e $f || -L $f ]] || return 0
+    if (
+        _config_check_path file "$f"
+        _config_parse "$f"
+        [[ -z ${2:-} ]] || printf '%s' "${CONFIG_VALUES[$2]-}"
+    ) 2>/dev/null; then
+        return 0
+    fi
+    _config_refusal "file $1"
+    return 1
+}
+
+# Writes one refusal code to the channel on fd 3, unless one is already
+# waiting there. The peek is on the pipe itself, not on any shell state, so
+# it still sees a refusal written by an earlier, already-exited subshell:
+# every "x=$(conf_get ...)" call in module_config_files forks its own
+# subshell, and a shell variable set there would not survive it, but fd 3 is
+# inherited from the same pipe each time, so the kernel-held buffer is what
+# every call actually checks.
+_config_refusal() { # _config_refusal <code>
+    read -r -t 0 -u 3 2>/dev/null || printf '%s\n' "$1" >&3
+}
+
+# Runs <module>'s module_config_files, setting CONFIG_LISTED to the lines it
+# printed and CONFIG_REFUSAL to the first code on the refusal channel, and
+# returns its status. Its stderr is discarded. conf_get is replaced by
+# _config_safe_get and conf_load refused, both readonly so nothing the module
+# sources later can put the originals back.
+#
+# The refusal channel is an anonymous pipe, opened for reading and writing
+# on one descriptor: no path, so nothing in TMPDIR or anywhere else can be
+# swapped for it or left behind, and it is not the module's stdout, so no
+# value a module prints can pose as a refusal. The module gets it as fd 3
+# and nothing else of it. A code is one short line, far below the pipe's
+# buffer, and it is read only once it is waiting, so nothing blocks.
+#
+# fd 3 is read-write for the module, the same as for _config_refusal above:
+# module code (or code it calls) could in principle read, and so drain or
+# hide, its own refusal before this function ever sees it. That is not
+# treated as a bypass: module_config_files is root-owned code the contract
+# already asks to stay read-only (see writing-a-module.md), the same trust
+# boundary conf_load's own file already crosses, and a module can defeat it
+# just as easily by opening /dev/fd/3 again under its own access mode, so a
+# write-only fd 3 would not actually close it either. A module that hides
+# its own refusal only loses information about its own listing; it can
+# never turn a hidden value into a shown one, because config show never
+# reads a hidden record's value in the first place.
+CONFIG_LISTED=()
+CONFIG_REFUSAL=""
+_config_module_files() { # _config_module_files <module>
+    local c out rc=0
+    CONFIG_LISTED=()
+    CONFIG_REFUSAL=""
+    exec {c}<> <(:) || die "cannot open the refusal channel for module $1"
+    if [[ ! -p /dev/fd/$c ]]; then
+        exec {c}>&-
+        die "cannot open the refusal channel for module $1"
+    fi
+    out=$(
+        exec 3>&"$c" {c}>&- 2>/dev/null
+        # shellcheck source=/dev/null
+        source "$MODULE_DIR/$1/module.sh"
+        conf_get() { _config_safe_get "$@"; }
+        conf_load() {
+            _config_refusal load
+            return 1
+        }
+        readonly -f conf_get conf_load
+        module_config_files
+    ) || rc=$?
+    if read -r -t 0 -u "$c"; then
+        IFS= read -r -t 1 -u "$c" CONFIG_REFUSAL || CONFIG_REFUSAL=${CONFIG_REFUSAL:-unreadable}
+    fi
+    exec {c}>&-
+    _config_words $'\n' "$out"
+    CONFIG_LISTED=("${CONFIG_WORDS[@]}")
+    return "$rc"
+}
+
+# Splits <text> into CONFIG_WORDS at any of the whitespace characters in
+# <separators>, dropping empty words, with globbing off.
+CONFIG_WORDS=()
+_config_words() { # _config_words <separators> <text>
+    local -
+    set -f
+    local IFS=$1
+    # shellcheck disable=SC2206 # the splitting is the point
+    CONFIG_WORDS=($2)
+}
+
+# True when <key> matches one of the module's public patterns.
+_config_public() { # _config_public <key> <pattern>...
+    local key=$1 p
+    shift
+    for p in "$@"; do
+        # Intentional glob match: MODULE_CONFIG_PUBLIC may hold patterns.
+        # shellcheck disable=SC2053
+        [[ $key != $p ]] || return 0
+    done
+    return 1
+}
+
+# Cleans an already-redacted public value for display, deterministically
+# regardless of the caller's own locale: LC_ALL=C is local to this call
+# alone, the same way it is in _config_parse. A plain "local LC_ALL=C" at
+# the top of cmd_config once looked like it would do the same thing without
+# this separate function, but it does not: when the caller's own LC_ALL was
+# already exported (an ordinary environment, not a hostile one), a later
+# local of the same name inherits that export attribute, so it would have
+# reached the sed inside report_clean_text and the jq pipeline further down
+# cmd_config too, silently changing their locale as well. Scoping it to a
+# function of its own, called between those two, keeps their behaviour
+# exactly as it was in every locale (checked: an exported or unexported
+# LC_ALL, LANG, or none of either, and LC_ALL=C, C.UTF-8, or POSIX).
+#
+# Sets CONFIG_JSON_VALUE (<value> with the UTF-8 encoding of the C1 control
+# range, U+0080-U+009F, replaced by ?; JSON does not require escaping that
+# range and jq does not escape it, so config show does) and CONFIG_DISPLAY
+# (CONFIG_JSON_VALUE with every other control character replaced by ? too,
+# for the terminal; --json keeps those and lets jq JSON-escape them).
+CONFIG_JSON_VALUE=""
+CONFIG_DISPLAY=""
+_config_display_clean() { # _config_display_clean <value>
+    local LC_ALL=C
+    CONFIG_JSON_VALUE=${1//$'\xc2'[$'\x80'-$'\x9f']/?}
+    CONFIG_DISPLAY=${CONFIG_JSON_VALUE//[[:cntrl:]]/?}
+}
+
+cmd_config() { # cmd_config show <module>
+    local sub=${1:-} mod=${2:-} name f i key value display line text="" rc
+    local -a s=() names=() files=() patterns=() stream=()
+    case $sub in
+        show) ;;
+        "")   cli_usage_error "config needs a subcommand: show" config ;;
+        *)    mapfile -t s < <(cli_suggest "$sub" show)
+              cli_usage_error "unknown config subcommand: $sub" config "${s[@]}" ;;
+    esac
+    [[ -n $mod ]] || cli_usage_error "config show needs a module name" config
+    (($# <= 2)) || cli_usage_error "config show takes one module name" config
+    discover
+    cli_in "$mod" "${MODULES[@]}" || cli_unknown_module "$mod"
+    [[ $EUID -eq 0 ]] || die "config show needs root: configuration files are readable by root only"
+    [[ $mod =~ $CONFIG_NAME_RE ]] \
+        || die "refusing configuration name $(printf '%q' "$mod"): it must match $CONFIG_NAME_RE"
+    _config_words $' \t\n' "$(meta "$mod" MODULE_CONFIG_PUBLIC)"
+    patterns=("${CONFIG_WORDS[@]}")
+
+    # A trailing '/' or '/.' makes -L test the link's target instead of the
+    # link, so the directory is normalised first, without resolving any
+    # symbolic link, and used in that form for every check and every read.
+    TOOLBOX_CONF_DIR=$(realpath -sm -- "$TOOLBOX_CONF_DIR") \
+        || die "cannot normalise the configuration directory path"
+
+    # Every check passes before any file is read, module_config_files
+    # included: it may read the module's own file to find the others.
+    names=("$mod")
+    if [[ -e $TOOLBOX_CONF_DIR || -L $TOOLBOX_CONF_DIR ]]; then
+        _config_check_path directory "$TOOLBOX_CONF_DIR"
+        f=$(conf_file "$mod")
+        if [[ -e $f || -L $f ]]; then _config_check_path file "$f"; fi
+        if module_has_function "$mod" module_config_files; then
+            rc=0
+            _config_module_files "$mod" || rc=$?
+            # A refusal wins over anything else. The channel says only which
+            # check failed; config show repeats a file's checks, which die
+            # with their own message naming the file, line and reason.
+            case $CONFIG_REFUSAL in
+                load) die "module_config_files may read configuration only with conf_get, not conf_load (module $mod)" ;;
+                name) die "module $mod read an invalid configuration name in module_config_files (each must match $CONFIG_NAME_RE)" ;;
+                "file "*)
+                    name=${CONFIG_REFUSAL#file }
+                    if [[ $name =~ $CONFIG_NAME_RE ]]; then
+                        f=$(conf_file "$name")
+                        _config_check_path file "$f"
+                        _config_parse "$f"
+                    fi
+                    ;;
+            esac
+            [[ -z $CONFIG_REFUSAL && $rc -eq 0 ]] || die "module $mod failed to list its configuration files"
+            for name in "${CONFIG_LISTED[@]}"; do
+                # Not echoed: a name built from configuration could carry a value.
+                [[ $name =~ $CONFIG_NAME_RE ]] \
+                    || die "module $mod listed an invalid configuration name (each must match $CONFIG_NAME_RE)"
+                cli_in "$name" "${names[@]}" || names+=("$name")
+            done
+        fi
+        for name in "${names[@]}"; do
+            f=$(conf_file "$name")
+            [[ -e $f || -L $f ]] || continue
+            _config_check_path file "$f"
+            files+=("$name")
+        done
+    fi
+
+    # JSON mode streams every field to one jq on stdin, NUL-separated: per
+    # file its name and key count, then key, set, public and value per key.
+    # Nothing passes through argv, so no value is limited by ARG_MAX.
+    for name in "${files[@]}"; do
+        f=$(conf_file "$name")
+        _config_read "$f" "${patterns[@]}"
+        if [[ $OUTPUT_JSON -eq 1 ]]; then
+            stream+=("$name" "$((${#CONFIG_RECORDS[@]} / 4))")
+        else
+            [[ -z $text ]] || text+=$'\n'
+            text+="$c_bold$name$c_reset $c_dim($f)$c_reset"$'\n'
+            [[ ${#CONFIG_RECORDS[@]} -gt 0 ]] || text+=$'  (no keys)\n'
+        fi
+        for ((i = 0; i < ${#CONFIG_RECORDS[@]}; i += 4)); do
+            key=${CONFIG_RECORDS[i]}
+            if [[ ${CONFIG_RECORDS[i + 2]} == 1 ]]; then
+                _config_display_clean "$(report_clean_text "${CONFIG_RECORDS[i + 3]}")"
+                value=$CONFIG_JSON_VALUE
+                display=$CONFIG_DISPLAY
+                [[ ${CONFIG_RECORDS[i + 1]} == 1 ]] || display="(not set)"
+            else
+                value=""
+                display="(not set)"
+                [[ ${CONFIG_RECORDS[i + 1]} != 1 ]] || display="(set, hidden)"
+            fi
+            if [[ $OUTPUT_JSON -eq 1 ]]; then
+                stream+=("$key" "${CONFIG_RECORDS[i + 1]}" "${CONFIG_RECORDS[i + 2]}" "$value")
+            else
+                printf -v line '  %-28s %s\n' "$key" "$display"
+                text+=$line
+            fi
+        done
+    done
+
+    if [[ $OUTPUT_JSON -eq 1 ]]; then
+        { if ((${#stream[@]})); then printf '%s\0' "${stream[@]}"; fi; } | jq -Rs --arg m "$mod" '
+            def files($t; $i):
+                if $i >= ($t | length) then []
+                else ($t[$i + 1] | tonumber) as $n
+                    | [{name: $t[$i],
+                        keys: [range(0; $n) as $k | $t[$i + 2 + 4 * $k : $i + 6 + 4 * $k]
+                               | {key: .[0], set: (.[1] == "1"), hidden: (.[2] != "1")}
+                                 + (if .[2] == "1" then {value: .[3]} else {} end)]}]
+                      + files($t; $i + 2 + 4 * $n)
+                end;
+            (split("\u0000") | .[:-1]) as $t
+            | {schema_version: 1, command: "config", module: $m, files: files($t; 0)}'
+    elif [[ ${#files[@]} -eq 0 ]]; then
+        printf 'no saved configuration for %s\n' "$mod"
+    else
+        printf '%s' "$text"
+    fi
+}
+
 # ------------------------------------------------------------------- ui --
 
 # Modules prompt and print while they work, which cannot happen inside a
@@ -1175,6 +1607,7 @@ case $command_name in
                  fi ;;
     doctor)      [[ ${#ARGS[@]} -eq 1 ]] || cli_usage_error "doctor takes no arguments" doctor
                  cmd_doctor ;;
+    config)      cmd_config "${ARGS[@]:1}" ;;
     uninstall)   [[ ${#ARGS[@]} -lt 2 ]] && cli_usage_error "uninstall needs a module name" uninstall
                  cmd_each module_uninstall "${ARGS[@]:1}" ;;
     ui)          cmd_ui ;;

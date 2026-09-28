@@ -36,7 +36,7 @@ report_clean_text() {
         -e 's#https://(discord(app)?[.]com)/api/webhooks/[0-9]+/[^[:space:];]+#[redacted-webhook]#g' \
         -e 's#/(etc/pve/priv|etc/pve-toolbox)/[^[:space:];]+#[redacted-path]#g' \
         -e 's#((token|secret|password|passphrase|webhook)[A-Za-z0-9_.-]*[=:])[[:space:]]*[^[:space:];]+#\1[redacted]#gI' \
-        <<<"$value"
+        < <(printf '%s\n' "$value")
 }
 
 report_add() { # report_add <state> <id> <summary> [detail]

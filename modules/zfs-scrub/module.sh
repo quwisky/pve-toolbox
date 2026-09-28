@@ -17,6 +17,8 @@ MODULE_TITLE="ZFS scrub + Discord"
 MODULE_DESC="scheduled scrub per pool, Discord message on start and on result"
 MODULE_TAGS="storage zfs monitoring notify"
 MODULE_HOST_ONLY=1        # needs the host's zpool, not an LXC view of it
+# config show may print these; the webhook stays hidden.
+MODULE_CONFIG_PUBLIC="POLL_INTERVAL NOTIFY_START"
 
 ZS_BIN="pve-toolbox-zfs-scrub"
 

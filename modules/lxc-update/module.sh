@@ -6,6 +6,8 @@ MODULE_TITLE="LXC package updates"
 MODULE_DESC="confirmed or scheduled local Debian/Ubuntu package updates"
 MODULE_TAGS="lxc upgrade apt notify schedule"
 MODULE_HOST_ONLY=1
+# config show may print these; the webhook stays hidden.
+MODULE_CONFIG_PUBLIC="LX_EXCLUDE LX_SCHEDULE_ENABLED LX_SCHEDULE LX_SCHEDULE_NOTIFY"
 
 LX_UNIT="pve-toolbox-lxc-update"
 LX_BIN="pve-toolbox-lxc-update"

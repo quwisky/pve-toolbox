@@ -85,6 +85,9 @@ SH_THIN_WARN='80'
 SH_THIN_FAIL='95'
 ```
 
+Run `pve-toolbox config show storage-hygiene` as root to display all six
+thresholds — none of them can hold a secret.
+
 At the install prompt, `SH_SNAPSHOT_DAYS` and `SH_CONTENT_DAYS` accept any
 positive integer. `SH_CAPACITY_WARN` and `SH_THIN_WARN` accept 0-99; the
 matching failure threshold (`SH_CAPACITY_FAIL`, `SH_THIN_FAIL`) must be above

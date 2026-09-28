@@ -7,6 +7,9 @@ MODULE_TITLE="Storage hygiene"
 MODULE_DESC="read-only snapshots, unreferenced volumes, stale content, and capacity audit"
 MODULE_TAGS="storage audit monitoring zfs lvm"
 MODULE_HOST_ONLY=1
+# config show may print these; every other key stays hidden.
+MODULE_CONFIG_PUBLIC="SH_SNAPSHOT_DAYS SH_CONTENT_DAYS SH_CAPACITY_WARN SH_CAPACITY_FAIL"
+MODULE_CONFIG_PUBLIC+=" SH_THIN_WARN SH_THIN_FAIL"
 
 SH_CONF_KEYS=(
     SH_SNAPSHOT_DAYS SH_CONTENT_DAYS SH_CAPACITY_WARN SH_CAPACITY_FAIL

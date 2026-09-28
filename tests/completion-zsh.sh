@@ -63,7 +63,7 @@ offers() {
 has() { [[ " $1 " == *" $2 "* ]] }
 
 got=$(offers 2 ./pve-toolbox "")
-for verb in menu ui list install update check status doctor uninstall link self-update; do
+for verb in menu ui list install update check status doctor config uninstall link self-update; do
     has $got $verb || fail "commands missing $verb: $got"
 done
 print "ok  zsh offers every command"
@@ -124,6 +124,22 @@ got=$(offers 3 ./pve-toolbox lxc-update "-")
 has $got --dry-run || fail "lxc-update did not offer --dry-run: $got"
 [[ $got != *--yes* ]] || fail "lxc-update offered --yes, which its runner refuses: $got"
 print "ok  zsh offers a command'"'"'s own flags, not another command'"'"'s"
+
+# config takes '"'"'show'"'"', then exactly one module name; --json anywhere.
+got=$(offers 3 ./pve-toolbox config "")
+[[ $got == show ]] || fail "config should offer only show: $got"
+got=$(offers 4 ./pve-toolbox config show "")
+has $got zfs-scrub || fail "config show offered no modules: $got"
+got=$(offers 5 ./pve-toolbox config show zfs-scrub "")
+[[ -z $got ]] || fail "config show takes one module, got: $got"
+got=$(offers 4 ./pve-toolbox config bogus "")
+[[ -z $got ]] || fail "config bogus offered modules: $got"
+got=$(offers 5 ./pve-toolbox config --json show "")
+has $got zfs-scrub || fail "config --json show offered no modules: $got"
+got=$(offers 3 ./pve-toolbox config "-")
+has $got --json || fail "config did not offer --json: $got"
+[[ $got != *--quiet* ]] || fail "config offered --quiet, which it does not accept: $got"
+print "ok  zsh completes config show and one module"
 
 # help completes command names, the same list as the bare prompt.
 got=$(offers 3 ./pve-toolbox help "")

@@ -91,6 +91,7 @@ pve-toolbox update [mod]...      update (all installed if none given)
 pve-toolbox check [mod]...       report available updates, change nothing
 pve-toolbox status [mod]         detailed status
 pve-toolbox doctor               read-only host and module health audit
+pve-toolbox config show <module> show a module's saved configuration
 pve-toolbox uninstall <mod>...
 pve-toolbox self-update          git pull this checkout (git installs only)
 pve-toolbox help [command]       list commands, or one command's usage and flags
@@ -100,8 +101,63 @@ pve-toolbox --version            print the installed version
 Flags: `-y` non-interactive (modules read their env vars instead of
 prompting), `-f` force, `--json` versioned output, `--quiet` exit-status-only
 output, `--color=auto|always|never` colour output, `-V` version, `-h` help.
-JSON output is available for `status`, `check`, `doctor`, and `list`; quiet
-output is available for `status`, `check`, and `doctor`.
+JSON output is available for `status`, `check`, `doctor`, `list`, and
+`config show`; quiet output is available for `status`, `check`, and `doctor`.
+
+## Showing configuration
+
+```bash
+pve-toolbox config show zfs-scrub
+pve-toolbox config show --json config-backup
+```
+
+`config show <module>` needs root: the files under `/etc/pve-toolbox` are
+`0600` and readable only by root, and the command refuses to run as anyone
+else. It never runs a saved configuration file — it parses the stored
+`KEY='value'` lines itself — and it prints a value only for the keys the
+module declares public in `MODULE_CONFIG_PUBLIC`: numbers, schedules, dataset
+names, plain directories, and similar facts that can never hold a secret.
+Every other key, and every key of a module that declares none public, shows
+only `(set, hidden)` or `(not set)`; `--json` leaves out the `value` field for
+those.
+
+A public value can still be an identifier — a host name, a `user@host`
+syncoid target, `config-backup`'s git author email — and is shown exactly as
+stored after the usual cleanup: only a credential embedded in an `http(s)://`
+URL (`user:pass@`) is redacted from it. Do not hand-edit a public key to hold
+a token, password, or webhook URL. A configuration file that is a symbolic
+link, has the wrong owner, is writable by group or others, or holds anything
+other than a comment or a `KEY='value'` line `conf_set` could have written is
+refused whole, naming the file and the line but never its content.
+
+### If `config show` refuses a file
+
+- **A refusal naming a line** (`line <n>: ...`) is a format problem: only a
+  blank line (nothing on it at all), a `#` comment, or a `KEY='value'` line
+  with nothing after the closing quote is accepted, and each of the three
+  has to start at column 1 — an indented comment, an indented assignment, or
+  a line that is only spaces is refused the same as any other bad line.
+  - If the named line is a plain `KEY=` assignment, at column 1, for a key
+    `pve-toolbox install <module>` prompts for and saves, running that
+    command again as root rewrites it through the same `conf_set` helper
+    that already writes it in the accepted form.
+  - Otherwise — an indented line, a line that is a stray continuation of an
+    earlier multi-line value, or any other line the installer does not
+    itself write — re-running install will not touch it. Open the file and
+    edit or delete the named line by hand.
+- **A refusal naming a reason like "not owned by root" or "writable by group
+  or others"** is a permission problem: run `chown root:root` and
+  `chmod 0600` on the named file, or, if the refusal names
+  `/etc/pve-toolbox` itself, `chown root:root /etc/pve-toolbox` and
+  `chmod 0750 /etc/pve-toolbox`. These are the same owner and modes
+  `conf_set` and the installer already set.
+- **A refusal naming "it is a symbolic link"** means the file or the
+  directory has to be replaced with a real one; `config show` never follows
+  a symbolic link to read or check what it points at.
+
+See [Automation output](automation.md#config-show-json) for the `--json`
+schema and exit codes, and [Writing a module](writing-a-module.md#showing-configuration)
+for how a module declares which keys `config show` may print.
 
 ## Help
 
