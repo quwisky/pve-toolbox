@@ -193,7 +193,7 @@ pass "upgrade readiness install fails when its configuration cannot be saved"
     if out=$(printf '%s\n' pve-9 24 4096 | module_install 2>&1); then
         fail "install reported success although its state could not be recorded: $out"
     fi
-    [[ $out == *'could not write'* ]] || fail "install did not say why it failed: $out"
+    [[ $out == *'not saving state'*'could not create'* ]] || fail "install did not say why it failed: $out"
     [[ $out != *'configured read-only'* ]] || fail "install printed its success line after a failed state write: $out"
 ) || exit 1
 pass "upgrade readiness install fails when its state cannot be recorded"

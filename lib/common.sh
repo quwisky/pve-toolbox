@@ -489,8 +489,8 @@ _replace_file() { # _replace_file <file> <mode> <content>
 
 state_set() { # state_set <module> <key> <value>
     local f out; f=$(_state_file "$1")
-    mkdir -p "$TOOLBOX_STATE_DIR"
-    [[ -f $f ]] || : > "$f"
+    mkdir -p "$TOOLBOX_STATE_DIR" && { [[ -f $f ]] || : > "$f"; } \
+        || { warn "not saving state $2: could not create $f"; return 1; }
     # Same shape as conf_set, and for the same reason. The value went through
     # `sed s|^K=.*|K=$3|` before, which read & as "the whole match", ate
     # backslashes, and died outright on a |, leaving the old value in place
@@ -499,8 +499,8 @@ state_set() { # state_set <module> <key> <value>
         $0 ~ "^" k "=" { print k "=" ENVIRON["_STATE_V"]; found = 1; next }
         { print }
         END { if (!found) print k "=" ENVIRON["_STATE_V"] }
-    ' "$f") && _replace_file "$f" 0644 "$out" \
-        || { warn "not saving state $2: could not write $f"; return 1; }
+    ' "$f") || { warn "not saving state $2: could not read $f"; return 1; }
+    _replace_file "$f" 0644 "$out" || { warn "not saving state $2: could not write $f"; return 1; }
 }
 
 state_get() { # state_get <module> <key>
