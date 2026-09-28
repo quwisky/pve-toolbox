@@ -1057,7 +1057,8 @@ pass "every module's MODULE_CONFIG_PUBLIC matches only keys it writes that hold 
 
 # komodo-periphery keeps a record per managed guest in files of their own,
 # which its module_config_files names from the ID lists: read-only, with
-# conf_get only, digits-only IDs, invalid ones skipped.
+# conf_get only, IDs matching KP_ID_RE (the same rule host.sh and
+# transport-qga.sh use for a container or VM ID), invalid ones skipped.
 (
     TOOLBOX_CONF_DIR=$(tmp)
     export TOOLBOX_CONF_DIR
@@ -1066,22 +1067,26 @@ pass "every module's MODULE_CONFIG_PUBLIC matches only keys it writes that hold 
     # shellcheck source=modules/komodo-periphery/module.sh
     source "$ROOT/modules/komodo-periphery/module.sh"
     declare -F module_config_files >/dev/null || fail "komodo-periphery has no module_config_files"
+    [[ $KP_ID_RE == '^[1-9][0-9]{2,8}$' ]] \
+        || fail "komodo-periphery KP_ID_RE changed unexpectedly: $KP_ID_RE"
     out=$(module_config_files) || fail "komodo-periphery module_config_files failed with no configuration"
     [[ $out == komodo-periphery-qemu ]] \
         || fail "komodo-periphery module_config_files with no configuration printed: $out"
-    conf_set komodo-periphery KP_IDS '101 abc 102 -5 1e3 0x1 ../x *'
-    conf_set komodo-periphery-qemu KP_VM_IDS $'201 x/y\n202 [0-9]*'
+    # 0 and a zero-padded ID are not valid container/VM IDs (KP_ID_RE forbids
+    # a leading zero), so they must be skipped exactly like the other rejects.
+    conf_set komodo-periphery KP_IDS '101 abc 102 -5 1e3 0x1 ../x * 0 099'
+    conf_set komodo-periphery-qemu KP_VM_IDS $'201 x/y\n202 [0-9]*\n0\n099'
     # A saved * or [0-9]* must not match a file name in the working directory.
     cd "$(tmp)"
     : >"555"
     before=$(find "$TOOLBOX_CONF_DIR" -printf '%p %m %s %T@\n' | sort)
     out=$(module_config_files 2>&1) || fail "komodo-periphery module_config_files failed: $out"
     want=$'komodo-periphery-qemu\nkomodo-periphery-101\nkomodo-periphery-102\nkomodo-periphery-qemu-201\nkomodo-periphery-qemu-202'
-    [[ $out == "$want" ]] || fail "komodo-periphery module_config_files printed '$out', want '$want'"
+    [[ $out == "$want" ]] || fail "komodo-periphery module_config_files printed '$out', want '$want' (0 and 099 must be skipped)"
     [[ $(find "$TOOLBOX_CONF_DIR" -printf '%p %m %s %T@\n' | sort) == "$before" ]] \
         || fail "komodo-periphery module_config_files changed the configuration directory"
 )
-pass "komodo-periphery lists its per-guest configuration files, skipping invalid IDs"
+pass "komodo-periphery lists its per-guest configuration files, skipping invalid, 0 and zero-padded IDs"
 
 if [[ $EUID -ne 0 ]]; then
     dir=$(tmp); conf_plant "$dir"
@@ -1653,4 +1658,55 @@ else
         SHA256:abcdefghijklmnopqrstuvwxyz0123456789ABCDEFG
     grep -Eq '^  KP_PENDING +\(not set\)$' <<<"$out" || fail "config show komodo-periphery: KP_PENDING not (not set): $out"
     pass "config show komodo-periphery shows each guest record and hides the SSH key and known-hosts paths"
+
+    # zfs-replication: job names are chosen so the field they add trips a
+    # careless glob -- "src_opts" normalizes to JOB_SRC_OPTS_OPTS (an _OPTS
+    # key whose job name itself contains "SRC") and "a_path" to
+    # JOB_A_PATH_OPTS (a job name containing "PATH") -- and the webhook and
+    # every job's OPTS still have to stay hidden regardless.
+    dir=$(tmp)
+    (
+        TOOLBOX_CONF_DIR=$dir
+        # shellcheck source=lib/common.sh
+        source "$ROOT/lib/common.sh"
+        conf_set zfs-replication DISCORD_WEBHOOK 'https://discord.com/api/webhooks/123/LEAKwebhookabcdefghijklmnop'
+        conf_set zfs-replication LOG_DIR /var/log/pve-toolbox
+        conf_set zfs-replication NOTIFY_START 1
+        conf_set zfs-replication JOBS 'src_opts a_path'
+        conf_set zfs-replication JOB_SRC_OPTS_SRC tank/src-opts
+        conf_set zfs-replication JOB_SRC_OPTS_DST backup/src-opts
+        conf_set zfs-replication JOB_SRC_OPTS_OPTS '--recursive --identifier LEAKOPTS1'
+        conf_set zfs-replication JOB_SRC_OPTS_CHOWN 100:100
+        conf_set zfs-replication JOB_SRC_OPTS_CHMOD 750
+        conf_set zfs-replication JOB_SRC_OPTS_PATH /srv/src-opts
+        conf_set zfs-replication JOB_A_PATH_SRC tank/a-path
+        conf_set zfs-replication JOB_A_PATH_DST backup/a-path
+        conf_set zfs-replication JOB_A_PATH_OPTS '--compress=zstd LEAKOPTS2'
+        conf_set zfs-replication JOB_A_PATH_CHOWN 200:200
+        conf_set zfs-replication JOB_A_PATH_CHMOD 640
+        conf_set zfs-replication JOB_A_PATH_PATH /srv/a-path
+    )
+    out=$(real_launch "$dir" config show zfs-replication) || fail "config show zfs-replication failed: $out"
+    json=$(real_launch "$dir" config show --json zfs-replication) || fail "config show --json zfs-replication failed: $json"
+    for text in "$out" "$json"; do
+        for leak in LEAK webhooks LEAKOPTS1 LEAKOPTS2; do
+            [[ $text != *"$leak"* ]] || fail "config show zfs-replication leaked '$leak': $text"
+        done
+    done
+    real_hidden "config show zfs-replication" "$out" "$json" \
+        DISCORD_WEBHOOK JOB_SRC_OPTS_OPTS JOB_A_PATH_OPTS
+    real_public "config show zfs-replication" "$out" "$json" LOG_DIR /var/log/pve-toolbox
+    real_public "config show zfs-replication" "$out" "$json" NOTIFY_START 1
+    real_public "config show zfs-replication" "$out" "$json" JOBS 'src_opts a_path'
+    real_public "config show zfs-replication" "$out" "$json" JOB_SRC_OPTS_SRC tank/src-opts
+    real_public "config show zfs-replication" "$out" "$json" JOB_SRC_OPTS_DST backup/src-opts
+    real_public "config show zfs-replication" "$out" "$json" JOB_SRC_OPTS_CHOWN 100:100
+    real_public "config show zfs-replication" "$out" "$json" JOB_SRC_OPTS_CHMOD 750
+    real_public "config show zfs-replication" "$out" "$json" JOB_SRC_OPTS_PATH /srv/src-opts
+    real_public "config show zfs-replication" "$out" "$json" JOB_A_PATH_SRC tank/a-path
+    real_public "config show zfs-replication" "$out" "$json" JOB_A_PATH_DST backup/a-path
+    real_public "config show zfs-replication" "$out" "$json" JOB_A_PATH_CHOWN 200:200
+    real_public "config show zfs-replication" "$out" "$json" JOB_A_PATH_CHMOD 640
+    real_public "config show zfs-replication" "$out" "$json" JOB_A_PATH_PATH /srv/a-path
+    pass "config show zfs-replication shows job fields and hides the webhook and every job's OPTS"
 fi
