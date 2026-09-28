@@ -141,7 +141,7 @@ Every prompt follows the same rules:
 See [State versus config](../writing-a-module.md#state-versus-config).
 
 `state_get` `state_set` `state_clear` `state_exists`
-: `0644`, `KEY=value`.
+: `0644`, `KEY=value`. `state_set` returns non-zero when it cannot write.
 
 `conf_file` `conf_get` `conf_set` `conf_load` `conf_clear` `conf_exists`
 : `0600`, `KEY='value'`, sourceable. `conf_load` sources every key into the

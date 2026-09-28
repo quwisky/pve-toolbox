@@ -141,7 +141,7 @@ state_set failwrite KEY "old"
 [[ $(state_get failwrite KEY) == old ]] || fail "a failed state_set write lost the previous value"
 [[ $(mode_of "$(conf_file failwrite)") == 600 && $(mode_of "$TOOLBOX_STATE_DIR/failwrite.state") == 644 ]] \
     || fail "a failed write changed the file modes"
-[[ -z $(find "$TOOLBOX_CONF_DIR" "$TOOLBOX_STATE_DIR" -name 'failwrite.*.*') ]] \
+[[ -z $(find "$TOOLBOX_CONF_DIR" "$TOOLBOX_STATE_DIR" -name '.failwrite.*') ]] \
     || fail "a failed write left a temporary file behind"
 conf_set failwrite KEY "$big"
 [[ $(conf_get failwrite KEY) == "$big" && $(mode_of "$(conf_file failwrite)") == 600 ]] \

@@ -473,13 +473,16 @@ is_newer() {
 
 _state_file() { printf '%s/%s.state' "$TOOLBOX_STATE_DIR" "$1"; }
 
-# Replace <file> with <content> through a temporary file beside it, then a
-# rename, so a write that fails part way (a full disk) leaves the old file
-# whole. Beside it, not under TMPDIR: the directory is the target's own.
+# Replace <file> with <content> through a hidden temporary file beside it,
+# synced and then renamed, so a write that fails part way (a full disk) or a
+# crash leaves the old file whole. Beside it, not under TMPDIR: the directory
+# is the target's own. -T: <file> is the target itself, never a directory to
+# move into.
 _replace_file() { # _replace_file <file> <mode> <content>
     local tmp
-    tmp=$(mktemp "$1.XXXXXX") || return 1
-    printf '%s\n' "$3" > "$tmp" && chmod "$2" "$tmp" && mv -f "$tmp" "$1" && return 0
+    tmp=$(mktemp "${1%/*}/.${1##*/}.XXXXXX") || return 1
+    printf '%s\n' "$3" > "$tmp" && chmod "$2" "$tmp" && sync -- "$tmp" \
+        && mv -fT -- "$tmp" "$1" && return 0
     rm -f "$tmp"
     return 1
 }
