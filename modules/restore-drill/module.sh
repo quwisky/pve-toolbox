@@ -80,7 +80,7 @@ module_install() {
         esac
     done
     _rd_validate || die "$RD_ERROR"
-    for key in "${RD_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
+    for key in "${RD_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
     _rd_install_helper
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
     ok "installed guarded restore drill helper"
@@ -96,7 +96,7 @@ module_update() {
     cmp -s "$(_rd_src)" "$TOOLBOX_BIN_DIR/$RD_BIN" || changed=1
     if [[ ${#missing[@]} -eq 0 && $changed -eq 0 ]]; then ok "restore drill is up to date"; return 0; fi
     if [[ $check_only -eq 1 ]]; then warn "restore drill update available"; return 0; fi
-    for key in "${missing[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
+    for key in "${missing[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
     _rd_install_helper
     ok "updated restore drill"
 }

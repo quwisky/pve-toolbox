@@ -272,29 +272,29 @@ _cb_write_conf() {
     local notify=0 secrets=0
     [[ $CB_NOTIFY_ON_CHANGE == y ]] && notify=1
     [[ $CB_INCLUDE_SECRETS   == y ]] && secrets=1
-    conf_set "$MODULE_NAME" DISCORD_WEBHOOK       "$CB_WEBHOOK"
-    conf_set "$MODULE_NAME" CB_ARCHIVE_DIR        "$CB_ARCHIVE_DIR"
-    conf_set "$MODULE_NAME" CB_RETENTION_COUNT    "$CB_RETENTION_COUNT"
-    conf_set "$MODULE_NAME" CB_RETENTION_DAYS     "$CB_RETENTION_DAYS"
-    conf_set "$MODULE_NAME" CB_NOTIFY_ON_CHANGE   "$notify"
-    conf_set "$MODULE_NAME" CB_INCLUDE_SECRETS    "$secrets"
-    conf_set "$MODULE_NAME" CB_AGE_RECIPIENT      "$CB_AGE_RECIPIENT"
-    conf_set "$MODULE_NAME" CB_VOLATILE_SECTIONS  "$CB_VOLATILE_SECTIONS"
-    conf_set "$MODULE_NAME" CB_SECRET_ALLOW       "$CB_SECRET_ALLOW"
+    conf_set "$MODULE_NAME" DISCORD_WEBHOOK       "$CB_WEBHOOK" || return 1
+    conf_set "$MODULE_NAME" CB_ARCHIVE_DIR        "$CB_ARCHIVE_DIR" || return 1
+    conf_set "$MODULE_NAME" CB_RETENTION_COUNT    "$CB_RETENTION_COUNT" || return 1
+    conf_set "$MODULE_NAME" CB_RETENTION_DAYS     "$CB_RETENTION_DAYS" || return 1
+    conf_set "$MODULE_NAME" CB_NOTIFY_ON_CHANGE   "$notify" || return 1
+    conf_set "$MODULE_NAME" CB_INCLUDE_SECRETS    "$secrets" || return 1
+    conf_set "$MODULE_NAME" CB_AGE_RECIPIENT      "$CB_AGE_RECIPIENT" || return 1
+    conf_set "$MODULE_NAME" CB_VOLATILE_SECTIONS  "$CB_VOLATILE_SECTIONS" || return 1
+    conf_set "$MODULE_NAME" CB_SECRET_ALLOW       "$CB_SECRET_ALLOW" || return 1
     local local_on=0 git_on=0 git_push=0
     [[ $CB_LOCAL_ENABLED == y ]] && local_on=1
     [[ $CB_GIT_ENABLED   == y ]] && git_on=1
     [[ $CB_GIT_PUSH      == y ]] && git_push=1
-    conf_set "$MODULE_NAME" CB_LOCAL_ENABLED   "$local_on"
-    conf_set "$MODULE_NAME" CB_GIT_ENABLED     "$git_on"
-    conf_set "$MODULE_NAME" CB_GIT_DIR         "$CB_GIT_DIR"
-    conf_set "$MODULE_NAME" CB_GIT_REMOTE      "$CB_GIT_REMOTE"
-    conf_set "$MODULE_NAME" CB_GIT_BRANCH      "$CB_GIT_BRANCH"
-    conf_set "$MODULE_NAME" CB_GIT_PUSH        "$git_push"
-    conf_set "$MODULE_NAME" CB_GIT_SSH_KEY     "$CB_GIT_SSH_KEY"
-    conf_set "$MODULE_NAME" CB_GIT_TOKEN_FILE  "$CB_GIT_TOKEN_FILE"
-    conf_set "$MODULE_NAME" CB_GIT_AUTHOR_NAME "$CB_GIT_AUTHOR_NAME"
-    conf_set "$MODULE_NAME" CB_GIT_AUTHOR_EMAIL "$CB_GIT_AUTHOR_EMAIL"
+    conf_set "$MODULE_NAME" CB_LOCAL_ENABLED   "$local_on" || return 1
+    conf_set "$MODULE_NAME" CB_GIT_ENABLED     "$git_on" || return 1
+    conf_set "$MODULE_NAME" CB_GIT_DIR         "$CB_GIT_DIR" || return 1
+    conf_set "$MODULE_NAME" CB_GIT_REMOTE      "$CB_GIT_REMOTE" || return 1
+    conf_set "$MODULE_NAME" CB_GIT_BRANCH      "$CB_GIT_BRANCH" || return 1
+    conf_set "$MODULE_NAME" CB_GIT_PUSH        "$git_push" || return 1
+    conf_set "$MODULE_NAME" CB_GIT_SSH_KEY     "$CB_GIT_SSH_KEY" || return 1
+    conf_set "$MODULE_NAME" CB_GIT_TOKEN_FILE  "$CB_GIT_TOKEN_FILE" || return 1
+    conf_set "$MODULE_NAME" CB_GIT_AUTHOR_NAME "$CB_GIT_AUTHOR_NAME" || return 1
+    conf_set "$MODULE_NAME" CB_GIT_AUTHOR_EMAIL "$CB_GIT_AUTHOR_EMAIL" || return 1
     ok "wrote $(conf_file "$MODULE_NAME") (0600)"
 }
 
@@ -325,9 +325,9 @@ _cb_migrate_conf() {
     for k in "${CB_MISSING[@]:-}"; do
         [[ -n $k ]] || continue
         case $k in
-            CB_NOTIFY_ON_CHANGE) conf_set "$MODULE_NAME" "$k" 0 ;;
-            CB_INCLUDE_SECRETS)  conf_set "$MODULE_NAME" "$k" 0 ;;
-            *)                   conf_set "$MODULE_NAME" "$k" "${!k}" ;;
+            CB_NOTIFY_ON_CHANGE) conf_set "$MODULE_NAME" "$k" 0 || return 1 ;;
+            CB_INCLUDE_SECRETS)  conf_set "$MODULE_NAME" "$k" 0 || return 1 ;;
+            *)                   conf_set "$MODULE_NAME" "$k" "${!k}" || return 1 ;;
         esac
         ok "added missing config key $k"
     done
@@ -439,7 +439,7 @@ module_install() {
     mkdir -p "$CB_ARCHIVE_DIR"
     chmod 0700 "$CB_ARCHIVE_DIR"
     ok "archives in $CB_ARCHIVE_DIR (0700)"
-    _cb_write_conf
+    _cb_write_conf || return 1
     systemd_oneshot "$CB_UNIT" "pve-toolbox PVE configuration snapshot" \
         "$(_cb_exec)" "$CB_SCHEDULE"
 
@@ -551,7 +551,7 @@ module_update() {
     install_toolbox_lib discord.sh
     install -m 0755 "$src" "$dst"
     ok "installed $dst"
-    _cb_migrate_conf
+    _cb_migrate_conf || return 1
 
     # Rewrite the unit from the schedule already on disk, so an operator's
     # OnCalendar survives an update that only wanted a newer runner.

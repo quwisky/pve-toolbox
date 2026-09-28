@@ -270,7 +270,7 @@ module_install() {
     ask_int UR_BACKUP_HOURS "maximum backup age (hours)" "$UR_BACKUP_HOURS" 1
     ask_int UR_MIN_FREE_MB "minimum free space (MiB)" "$UR_MIN_FREE_MB" 1
     _ur_validate || die "$UR_ERROR"
-    local key; for key in "${UR_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
+    local key; for key in "${UR_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
     state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
     ok "configured read-only $UR_POLICY upgrade preflight"
 }
@@ -281,7 +281,7 @@ module_update() {
     for key in "${UR_CONF_KEYS[@]}"; do [[ -n $(conf_get "$MODULE_NAME" "$key") ]] || missing+=("$key"); done
     [[ ${#missing[@]} -gt 0 ]] || { ok "upgrade readiness configuration is up to date"; return 0; }
     [[ $check_only -eq 0 ]] || { warn "update available: missing settings ${missing[*]}"; return 0; }
-    for key in "${missing[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}"; done
+    for key in "${missing[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
     ok "added missing upgrade readiness settings"
 }
 

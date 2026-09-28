@@ -375,7 +375,7 @@ _nt_assets_current() {
 _nt_write_conf() {
     local key
     for key in "${NT_CONF_KEYS[@]}"; do
-        conf_set "$MODULE_NAME" "$key" "${!key}"
+        conf_set "$MODULE_NAME" "$key" "${!key}" || return 1
     done
 }
 
@@ -443,7 +443,10 @@ _nt_configure() {
     fi
     [[ -z $old_conf ]] || rm -f -- "$old_conf"
     rm -rf -- "$asset_backup"
-    _nt_write_conf
+    # Not rolled back: restoring would re-read the same configuration file
+    # that just refused the write. The tested objects stay; say so and stop.
+    _nt_write_conf \
+        || die "the native notification objects are in place and tested, but $(conf_file "$MODULE_NAME") was not saved; fix it and run install again"
     state_set "$MODULE_NAME" TARGET_TYPE "$(_nt_api_type)"
     state_set "$MODULE_NAME" TARGET_NAME "$NT_TARGET_NAME"
     state_set "$MODULE_NAME" MATCHER_NAME "$NT_MATCHER_NAME"

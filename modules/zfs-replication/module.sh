@@ -260,12 +260,12 @@ _zr_save_job() { # _zr_save_job <job>
     local job=$1
     _zr_answers_ready
     [[ -n ${ZR_ANS_SRC[$job]+x} ]] || die "internal: no recorded answers for job $job"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" SRC)"   "${ZR_ANS_SRC[$job]}"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" DST)"   "${ZR_ANS_DST[$job]}"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" OPTS)"  "${ZR_ANS_OPTS[$job]}"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" CHOWN)" "${ZR_ANS_CHOWN[$job]}"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" CHMOD)" "${ZR_ANS_CHMOD[$job]}"
-    conf_set "$MODULE_NAME" "$(_zr_key "$job" PATH)"  "${ZR_ANS_PATH[$job]}"
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" SRC)"   "${ZR_ANS_SRC[$job]}" || return 1
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" DST)"   "${ZR_ANS_DST[$job]}" || return 1
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" OPTS)"  "${ZR_ANS_OPTS[$job]}" || return 1
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" CHOWN)" "${ZR_ANS_CHOWN[$job]}" || return 1
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" CHMOD)" "${ZR_ANS_CHMOD[$job]}" || return 1
+    conf_set "$MODULE_NAME" "$(_zr_key "$job" PATH)"  "${ZR_ANS_PATH[$job]}" || return 1
     _zr_write_timer "$job" "${ZR_ANS_SCHED[$job]}"
     ok "job $job: ${ZR_ANS_SRC[$job]} -> ${ZR_ANS_DST[$job]}  (${ZR_ANS_SCHED[$job]})"
 }
@@ -327,16 +327,16 @@ module_install() {
     ask_yn now "run the jobs once right now" "n"
 
     step "Save configuration"
-    conf_set "$MODULE_NAME" DISCORD_WEBHOOK "$ZFS_REPL_WEBHOOK"
-    conf_set "$MODULE_NAME" LOG_DIR "$ZR_LOG_DIR"
+    conf_set "$MODULE_NAME" DISCORD_WEBHOOK "$ZFS_REPL_WEBHOOK" || return 1
+    conf_set "$MODULE_NAME" LOG_DIR "$ZR_LOG_DIR" || return 1
     for job in "${kept[@]}"; do
-        _zr_save_job "$job"
+        _zr_save_job "$job" || return 1
     done
 
     local notify_start=0
     [[ $ZFS_REPL_NOTIFY_START == y ]] && notify_start=1
-    conf_set "$MODULE_NAME" NOTIFY_START "$notify_start"
-    conf_set "$MODULE_NAME" JOBS "${kept[*]}"
+    conf_set "$MODULE_NAME" NOTIFY_START "$notify_start" || return 1
+    conf_set "$MODULE_NAME" JOBS "${kept[*]}" || return 1
 
     step "Install"
     install_toolbox_lib discord.sh
@@ -453,7 +453,7 @@ module_update() {
         for j in "${repair[@]}"; do
             [[ -n $j ]] || continue
             _zr_ask_job "$j" || continue
-            _zr_save_job "$j"
+            _zr_save_job "$j" || return 1
         done
     fi
 
