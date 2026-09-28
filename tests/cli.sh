@@ -1088,6 +1088,30 @@ pass "every module's MODULE_CONFIG_PUBLIC matches only keys it writes that hold 
 )
 pass "komodo-periphery lists its per-guest configuration files, skipping invalid, 0 and zero-padded IDs"
 
+# host.sh and transport-qga.sh keep their own literal copies of the same
+# container/VM ID rule instead of sourcing KP_ID_RE (their flows are
+# real-root, CI-only paths that may run without module.sh ever being
+# sourced), so nothing stops the copies drifting from module.sh's constant.
+# Search those two files for the exact text of KP_ID_RE itself -- not a
+# broader "^[1-9][0-9]{n,m}$" shape, which host.sh also uses for an unrelated
+# port-number check with different bounds and would false-match -- and
+# require at least as many hits as are known to exist today, so neither a
+# changed bound in one of the copies nor a changed KP_ID_RE that the copies
+# were not updated to match can pass vacuously.
+(
+    # shellcheck source=modules/komodo-periphery/module.sh
+    source "$ROOT/modules/komodo-periphery/module.sh"
+    mapfile -t copies < <(grep -ohF "$KP_ID_RE" \
+        "$ROOT/modules/komodo-periphery/host.sh" "$ROOT/modules/komodo-periphery/transport-qga.sh")
+    [[ ${#copies[@]} -ge 4 ]] \
+        || fail "found only ${#copies[@]} occurrence(s) of KP_ID_RE ('$KP_ID_RE') in host.sh and transport-qga.sh, want at least 4: either a copy drifted to a different rule, or KP_ID_RE changed without updating them"
+    for copy in "${copies[@]}"; do
+        [[ $copy == "$KP_ID_RE" ]] \
+            || fail "internal: grep -F returned a non-matching line: $copy"
+    done
+)
+pass "host.sh and transport-qga.sh's container/VM ID regex copies match module.sh's KP_ID_RE"
+
 if [[ $EUID -ne 0 ]]; then
     dir=$(tmp); conf_plant "$dir"
     rc=0; out=$(conf_launch "$dir" config show e-conf 2>&1) || rc=$?

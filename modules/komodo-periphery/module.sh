@@ -12,10 +12,14 @@ MODULE_EXPLICIT_UPDATE=1
 MODULE_CONFIG_PUBLIC="KP_IDS KP_VM_IDS KP_VERSION KP_TRANSPORT KP_ADDRESS KP_PORT"
 MODULE_CONFIG_PUBLIC+=" KP_HOST_FINGERPRINT KP_PENDING KP_IDENTITY"
 
-# The one rule for a container or VM ID, the same host.sh and transport-qga.sh
-# check before naming a target: no leading zero, 3-9 digits. module_config_files
-# reuses it instead of a looser inline pattern, so "0", "007" and "1e3" name no
-# file, exactly as kp_target_key and kp_valid_ctid/kp_valid_vmid would refuse them.
+# The container/VM ID rule module_config_files checks IDs read from
+# configuration against: no leading zero, 3-9 digits. It mirrors the rule
+# host.sh (kp_target_key, kp_valid_ctid, the saved-ID check) and
+# transport-qga.sh enforce on the same kind of ID, so "0", "007" and "1e3"
+# name no file here, exactly as those would refuse them there. Those files
+# keep their own literal copies rather than sourcing this one: their flows
+# are real-root, CI-only paths that may run without module.sh ever being
+# sourced. tests/cli.sh keeps the copies in step with this constant.
 KP_ID_RE='^[1-9][0-9]{2,8}$'
 
 # The per-guest records config show displays after komodo-periphery.conf:
