@@ -177,7 +177,8 @@ its completion; `lxc-update` does not list `-y`/`--yes` or `-f`/`--force`,
 since LXC update execution requires interactive confirmation.
 
 An unknown command, an unsupported flag for the command given, an unknown
-module, or an unknown tag to `list` is a usage error: exit status `64`, the
+module, an unknown tag to `list`, or more arguments than a command takes (for
+example a second tag to `list`) is a usage error: exit status `64`, the
 message on stderr as `error: <what was wrong>` after a single leading space, a
 `did you mean: ...?` line when a close match exists, and a final line naming
 where to read the usage: `run 'pve-toolbox help <command>' for usage` when

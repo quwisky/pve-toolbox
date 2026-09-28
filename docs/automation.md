@@ -58,8 +58,10 @@ the line may already have run when a later unknown module is rejected.
 The error goes to stderr. Its first line is `error: <what was wrong>`
 preceded by a single space, so match `error:` within the line rather than
 anchoring a pattern on `^error:`. When a close candidate exists, a
-`did you mean: a, b?` line follows (at most three, closest match first);
-otherwise there is no suggestion line. The last line always names where to
+`did you mean: a, b?` line follows (at most three): when one to three
+candidates start with the word, all of them, in order (`status zfs` suggests
+`zfs-replication, zfs-scrub`); otherwise those within two edits, closest match
+first. When nothing is close there is no suggestion line. The last line always names where to
 read the usage. It is `run 'pve-toolbox help <command>' for usage` when a
 known command rejects its own arguments or flags (an unknown module or tag, a
 missing module name, a flag that command does not accept). It is the general
@@ -74,7 +76,9 @@ run 'pve-toolbox help' for usage
 ```
 
 This covers an unknown command, a flag the given command does not accept, an
-unknown module or module tag, and an unknown top-level flag. An unknown tag to
+unknown module or module tag, an unknown top-level flag, and more arguments
+than a command takes (`list` takes one tag, `help` one command, `doctor`
+none). An unknown tag to
 `list` (for example `pve-toolbox list nope`, or `pve-toolbox list --json nope`)
 is a usage error too; earlier releases printed nothing for a tag no module
 carries.
