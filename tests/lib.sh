@@ -123,6 +123,32 @@ pass "conf_set refuses a file with an unclosed quote"
 conf_clear notmp; state_clear notmp
 pass "conf_set and state_set do not use TMPDIR"
 
+# A write that fails part way (here: past a 1 KiB file-size limit, the way a
+# full disk would) keeps the previous file whole and says so. Writing in place
+# truncated first, so a failed write lost every key, secrets included.
+big=$(printf 'x%.0s' $(seq 1 4096))
+conf_set failwrite KEY "old"
+state_set failwrite KEY "old"
+(
+    trap '' XFSZ
+    ulimit -f 1
+    out=$(conf_set failwrite KEY "$big" 2>&1) && fail "conf_set reported success for a failed write"
+    [[ $out == *"could not write"* ]] || fail "conf_set did not say the write failed: $out"
+    state_set failwrite KEY "$big" 2>/dev/null && fail "state_set reported success for a failed write"
+    exit 0
+) || exit 1
+[[ $(conf_get failwrite KEY) == old ]] || fail "a failed conf_set write lost the previous value"
+[[ $(state_get failwrite KEY) == old ]] || fail "a failed state_set write lost the previous value"
+[[ $(mode_of "$(conf_file failwrite)") == 600 && $(mode_of "$TOOLBOX_STATE_DIR/failwrite.state") == 644 ]] \
+    || fail "a failed write changed the file modes"
+[[ -z $(find "$TOOLBOX_CONF_DIR" "$TOOLBOX_STATE_DIR" -name 'failwrite.*.*') ]] \
+    || fail "a failed write left a temporary file behind"
+conf_set failwrite KEY "$big"
+[[ $(conf_get failwrite KEY) == "$big" && $(mode_of "$(conf_file failwrite)") == 600 ]] \
+    || fail "conf_set did not replace the file with mode 0600"
+conf_clear failwrite; state_clear failwrite
+pass "a failed conf_set or state_set write keeps the previous file"
+
 # Modules run as a condition (`if ! run_module ...`), where bash ignores
 # set -e, so an unchecked conf_set failure is dropped and install goes on to
 # report success. Every call in a module (including the packaged legacy
