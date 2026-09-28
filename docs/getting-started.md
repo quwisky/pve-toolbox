@@ -107,8 +107,8 @@ JSON output is available for `status`, `check`, `doctor`, `list`, and
 ## Showing configuration
 
 ```bash
-sudo pve-toolbox config show zfs-scrub
-sudo pve-toolbox config show --json config-backup
+pve-toolbox config show zfs-scrub
+pve-toolbox config show --json config-backup
 ```
 
 `config show <module>` needs root: the files under `/etc/pve-toolbox` are
@@ -129,6 +129,22 @@ a token, password, or webhook URL. A configuration file that is a symbolic
 link, has the wrong owner, is writable by group or others, or holds anything
 other than a comment or a `KEY='value'` line `conf_set` could have written is
 refused whole, naming the file and the line but never its content.
+
+### If `config show` refuses a file
+
+- **A refusal naming a line** (`line <n>: ...`) is a format problem: only
+  blank lines, `#` comments, and `KEY='value'` lines with nothing after the
+  closing quote are accepted. Rewrite the named line in that exact form, or
+  run `pve-toolbox install <module>` as root — it saves the key again through
+  the same `conf_set` helper that already writes it that way.
+- **A refusal naming a reason like "not owned by root" or "writable by group
+  or others"** is a permission problem: run `chown root:root` and
+  `chmod 0600` on the named file, or, if the refusal names
+  `/etc/pve-toolbox` itself, `chmod 0750 /etc/pve-toolbox`. These are the
+  same owner and modes `conf_set` and the installer already set.
+- **A refusal naming "it is a symbolic link"** means the file or the
+  directory has to be replaced with a real one; `config show` never follows
+  a symbolic link to read or check what it points at.
 
 See [Automation output](automation.md#config-show-json) for the `--json`
 schema and exit codes, and [Writing a module](writing-a-module.md#showing-configuration)

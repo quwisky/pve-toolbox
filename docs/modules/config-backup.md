@@ -427,7 +427,7 @@ CB_VOLATILE_SECTIONS='firewall-live/'
 CB_SECRET_ALLOW='pve/user.cfg:credential derived/dpkg-selections.txt:credential'
 ```
 
-`sudo pve-toolbox config show config-backup` displays `CB_ARCHIVE_DIR`,
+Run `pve-toolbox config show config-backup` as root to display `CB_ARCHIVE_DIR`,
 `CB_RETENTION_COUNT`, `CB_RETENTION_DAYS`, `CB_NOTIFY_ON_CHANGE`,
 `CB_INCLUDE_SECRETS`, `CB_VOLATILE_SECTIONS`, `CB_SECRET_ALLOW`,
 `CB_LOCAL_ENABLED`, `CB_GIT_ENABLED`, `CB_GIT_DIR`, `CB_GIT_BRANCH`,

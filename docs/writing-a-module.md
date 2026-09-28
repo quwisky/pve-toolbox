@@ -125,7 +125,10 @@ patterns such as `JOB_*_SRC`. Every other key shows only `(set, hidden)` or
     stored after the usual cleanup: credentials in URLs and webhook URLs are
     redacted, tabs and carriage returns become spaces, and newlines are
     joined with `; `. The text output then replaces every other control
-    character with `?`; `--json` keeps them, escaped as JSON.
+    character with `?`. `--json` keeps the ones JSON requires (U+0000-U+001F)
+    JSON-escaped, and also shows the rest as `?` — including the C1 range
+    (U+0080-U+009F), which JSON does not require escaping and which `jq`
+    would otherwise pass through raw.
 
 A module that keeps more than one configuration file names the others in
 `module_config_files`, one name per line, each matching `^[a-z0-9][a-z0-9-]*$`
@@ -151,6 +154,8 @@ not owned by root, or is writable by group or others, or a file with a line
 that is not blank, a `#` comment, or `KEY='value'` as `conf_set` writes it.
 The refusal names the file and the line, never its content, and nothing from
 any file is printed. Files written with `conf_set` already meet all of that.
+See [Getting started](getting-started.md#if-config-show-refuses-a-file) for
+how to repair one that does not.
 
 ## Module health checks
 

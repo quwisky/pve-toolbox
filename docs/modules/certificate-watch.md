@@ -36,12 +36,12 @@ at or below the failure boundary fails, and one at or below the warning
 boundary warns. Defaults are 7 and 30 days.
 
 ```ini title="/etc/pve-toolbox/certificate-watch.conf"
-CW_WARN_DAYS=30
-CW_FAIL_DAYS=7
-CW_ACME_STALE_DAYS=45
+CW_WARN_DAYS='30'
+CW_FAIL_DAYS='7'
+CW_ACME_STALE_DAYS='45'
 ```
 
-`sudo pve-toolbox config show certificate-watch` displays all three
+Run `pve-toolbox config show certificate-watch` as root to display all three
 thresholds — none of them can hold a secret.
 
 At the install prompt, `CW_WARN_DAYS` accepts 2 or higher. `CW_FAIL_DAYS`

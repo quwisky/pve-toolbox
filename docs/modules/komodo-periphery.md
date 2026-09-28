@@ -199,8 +199,8 @@ Files are sent in verified chunks,
 then removed after a completed operation. An interrupted operation retains the
 transaction ID for explicit recovery.
 
-`sudo pve-toolbox config show komodo-periphery` displays the main file, then
-one record per managed container and VM ID: `KP_IDS`, `KP_VM_IDS`,
+Run `pve-toolbox config show komodo-periphery` as root to display the main
+file, then one record per managed container and VM ID: `KP_IDS`, `KP_VM_IDS`,
 `KP_VERSION`, `KP_TRANSPORT`, `KP_ADDRESS`, `KP_PORT`, `KP_HOST_FINGERPRINT`,
 `KP_PENDING` and `KP_IDENTITY`. `KP_KEY_FILE` and `KP_KNOWN_HOSTS` — the SSH
 private-key and known-hosts paths — stay hidden.

@@ -28,12 +28,12 @@ cannot appear healthy to automation. Warnings produce status `2` when no check
 fails.
 
 ```ini title="/etc/pve-toolbox/upgrade-readiness.conf"
-UR_POLICY=pve-9
-UR_BACKUP_HOURS=48
-UR_MIN_FREE_MB=2048
+UR_POLICY='pve-9'
+UR_BACKUP_HOURS='48'
+UR_MIN_FREE_MB='2048'
 ```
 
-`sudo pve-toolbox config show upgrade-readiness` displays all three
+Run `pve-toolbox config show upgrade-readiness` as root to display all three
 settings — none of them can hold a secret.
 
 At the install prompt, `UR_POLICY` is chosen from the policies shipped under

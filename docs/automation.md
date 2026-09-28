@@ -11,7 +11,7 @@ pve-toolbox status --json
 pve-toolbox check --json
 pve-toolbox doctor --json
 pve-toolbox list --json
-sudo pve-toolbox config show --json zfs-scrub
+pve-toolbox config show --json zfs-scrub
 
 pve-toolbox check --quiet
 ```
@@ -216,7 +216,7 @@ values are shown as strings, exactly as saved.
 | Code | When |
 | ---: | --- |
 | `0` | The module's configuration was read, including a module with nothing saved |
-| `1` | Not running as root, or a configuration file or directory is missing its checks (see [Writing a module](writing-a-module.md#showing-configuration)) |
+| `1` | Not running as root, or a configuration file or directory fails a check: a symbolic link, the wrong owner or mode, a line not in `KEY='value'` form, or `module_config_files` failing or listing an invalid name (see [Writing a module](writing-a-module.md#showing-configuration)) |
 | `64` | An unknown module, an unknown `config` subcommand, or a missing or extra module name |
 
 A refusal (exit `1`) prints nothing on stdout and names the offending file and

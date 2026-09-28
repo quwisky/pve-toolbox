@@ -165,7 +165,7 @@ Operator input is stored through the config helpers in
 | `LX_SCHEDULE` | Validated systemd `OnCalendar` expression |
 | `LX_SCHEDULE_NOTIFY` | `1` to report every scheduled batch to Discord |
 
-`sudo pve-toolbox config show lxc-update` displays `LX_EXCLUDE`,
+Run `pve-toolbox config show lxc-update` as root to display `LX_EXCLUDE`,
 `LX_SCHEDULE_ENABLED`, `LX_SCHEDULE` and `LX_SCHEDULE_NOTIFY`; `DISCORD_WEBHOOK`
 stays hidden.
 

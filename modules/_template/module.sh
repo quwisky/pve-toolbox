@@ -28,7 +28,10 @@
 #                       file, and public values go through the usual cleanup
 #                       (credential URLs redacted, tabs and newlines
 #                       flattened); text output shows any other control
-#                       character as ?, --json keeps it JSON-escaped.
+#                       character as ?, --json JSON-escapes the ones JSON
+#                       requires and shows the rest (the C1 range
+#                       U+0080-U+009F, which JSON does not require escaping)
+#                       as ? too.
 #
 #   Functions:
 #     module_install      interactive install / reconfigure
