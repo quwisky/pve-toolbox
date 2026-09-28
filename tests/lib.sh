@@ -105,7 +105,8 @@ pass "conf_set matches keys only at the start of a stored line"
 conf_set broken KEY "300"
 printf "b'\nOTHER='x'\n" >> "$(conf_file broken)"
 before=$(< "$(conf_file broken)")
-conf_set broken OTHER "y" 2>/dev/null && fail "conf_set wrote into a file with an open quote"
+out=$(conf_set broken OTHER "y" 2>&1) && fail "conf_set wrote into a file with an open quote"
+[[ $out == *"never closed"* ]] || fail "conf_set refused without saying why: $out"
 [[ $(< "$(conf_file broken)") == "$before" ]] || fail "conf_set changed a file it refused"
 conf_clear broken
 pass "conf_set refuses a file with an unclosed quote"

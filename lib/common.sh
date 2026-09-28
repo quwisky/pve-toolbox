@@ -518,7 +518,7 @@ _conf_quote() {
 }
 
 conf_set() { # conf_set <module> <key> <value>
-    local f out q
+    local f out q rc=0
     f=$(conf_file "$1")
     mkdir -p "$TOOLBOX_CONF_DIR"
     chmod 0750 "$TOOLBOX_CONF_DIR"
@@ -552,13 +552,15 @@ conf_set() { # conf_set <module> <key> <value>
             if (!skip) print
         }
         END { if (quoted) exit 3; if (!found) print k "=" ENVIRON["_CONF_V"] }
-    ' "$f") || {
-        # An open quote at the end means a line no conf_set wrote (a stray
-        # continuation left by an older version, or a hand edit); writing
-        # the key would put it inside that quote.
-        warn "not saving $2: $f has a quoted value that is never closed; fix the file by hand (pve-toolbox config show $1 names the line)"
+    ' "$f") || rc=$?
+    # An open quote at the end means a line no conf_set wrote (a stray
+    # continuation left by an older version, or a hand edit); writing the
+    # key would put it inside that quote.
+    if ((rc == 3)); then
+        warn "not saving $2: $f has a quoted value that is never closed; fix the file by hand (pve-toolbox config show <module> names the line)"
         return 1
-    }
+    fi
+    ((rc == 0)) || { warn "not saving $2: could not read $f"; return 1; }
     # Overwrite in place so the 0600 mode and the inode survive.
     printf '%s\n' "$out" > "$f"
 }
