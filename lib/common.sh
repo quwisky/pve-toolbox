@@ -474,21 +474,19 @@ is_newer() {
 _state_file() { printf '%s/%s.state' "$TOOLBOX_STATE_DIR" "$1"; }
 
 state_set() { # state_set <module> <key> <value>
-    local f tmp; f=$(_state_file "$1")
+    local f out; f=$(_state_file "$1")
     mkdir -p "$TOOLBOX_STATE_DIR"
     [[ -f $f ]] || : > "$f"
-    tmp=$(mktemp)
     # Same shape as conf_set, and for the same reason. The value went through
     # `sed s|^K=.*|K=$3|` before, which read & as "the whole match", ate
     # backslashes, and died outright on a |, leaving the old value in place
     # and the error on stderr where nothing looked at it.
-    _STATE_V=$3 awk -v k="$2" '
+    out=$(_STATE_V=$3 awk -v k="$2" '
         $0 ~ "^" k "=" { print k "=" ENVIRON["_STATE_V"]; found = 1; next }
         { print }
         END { if (!found) print k "=" ENVIRON["_STATE_V"] }
-    ' "$f" > "$tmp"
-    cat "$tmp" > "$f"
-    rm -f "$tmp"
+    ' "$f") || return 1
+    printf '%s\n' "$out" > "$f"
     chmod 0644 "$f"
 }
 
@@ -520,7 +518,7 @@ _conf_quote() {
 }
 
 conf_set() { # conf_set <module> <key> <value>
-    local f tmp q
+    local f out q
     f=$(conf_file "$1")
     mkdir -p "$TOOLBOX_CONF_DIR"
     chmod 0750 "$TOOLBOX_CONF_DIR"
@@ -529,17 +527,40 @@ conf_set() { # conf_set <module> <key> <value>
     fi
     chmod 0600 "$f"
     q=$(_conf_quote "$3")
-    tmp=$(mktemp)
     # Via the environment, not -v: awk expands backslash escapes in -v values
-    # and would eat the quote escaping.
-    _CONF_V=$q awk -v k="$2" '
-        $0 ~ "^" k "=" { print k "=" ENVIRON["_CONF_V"]; found = 1; next }
-        { print }
-        END { if (!found) print k "=" ENVIRON["_CONF_V"] }
-    ' "$f" > "$tmp"
+    # and would eat the quote escaping. A stored value can span lines, so the
+    # shell quoting is followed across them: only a line that starts outside
+    # quotes starts a key, and a replaced key takes every line it spans. The
+    # result goes through a variable, not a temporary file, so nothing
+    # depends on TMPDIR.
+    out=$(_CONF_V=$q LC_ALL=C awk -v k="$2" '
+        function scan(s,   i, c) {
+            for (i = 1; i <= length(s); i++) {
+                c = substr(s, i, 1)
+                if (quoted) { if (c == "\047") quoted = 0 }
+                else if (c == "\\") i++
+                else if (c == "\047") quoted = 1
+            }
+        }
+        {
+            if (!quoted) {
+                skip = index($0, k "=") == 1
+                if (skip && !found) { print k "=" ENVIRON["_CONF_V"]; found = 1 }
+                if ($0 ~ /^[[:space:]]*#/) { if (!skip) print; next }
+            }
+            scan($0)
+            if (!skip) print
+        }
+        END { if (quoted) exit 3; if (!found) print k "=" ENVIRON["_CONF_V"] }
+    ' "$f") || {
+        # An open quote at the end means a line no conf_set wrote (a stray
+        # continuation left by an older version, or a hand edit); writing
+        # the key would put it inside that quote.
+        warn "not saving $2: $f has a quoted value that is never closed; fix the file by hand (pve-toolbox config show $1 names the line)"
+        return 1
+    }
     # Overwrite in place so the 0600 mode and the inode survive.
-    cat "$tmp" > "$f"
-    rm -f "$tmp"
+    printf '%s\n' "$out" > "$f"
 }
 
 # Read one key back by sourcing in a subshell, so the quoting round-trips.
