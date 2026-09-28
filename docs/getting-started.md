@@ -91,6 +91,7 @@ pve-toolbox update [mod]...      update (all installed if none given)
 pve-toolbox check [mod]...       report available updates, change nothing
 pve-toolbox status [mod]         detailed status
 pve-toolbox doctor               read-only host and module health audit
+pve-toolbox config show <module> show a module's saved configuration
 pve-toolbox uninstall <mod>...
 pve-toolbox self-update          git pull this checkout (git installs only)
 pve-toolbox help [command]       list commands, or one command's usage and flags
@@ -100,8 +101,38 @@ pve-toolbox --version            print the installed version
 Flags: `-y` non-interactive (modules read their env vars instead of
 prompting), `-f` force, `--json` versioned output, `--quiet` exit-status-only
 output, `--color=auto|always|never` colour output, `-V` version, `-h` help.
-JSON output is available for `status`, `check`, `doctor`, and `list`; quiet
-output is available for `status`, `check`, and `doctor`.
+JSON output is available for `status`, `check`, `doctor`, `list`, and
+`config show`; quiet output is available for `status`, `check`, and `doctor`.
+
+## Showing configuration
+
+```bash
+sudo pve-toolbox config show zfs-scrub
+sudo pve-toolbox config show --json config-backup
+```
+
+`config show <module>` needs root: the files under `/etc/pve-toolbox` are
+`0600` and readable only by root, and the command refuses to run as anyone
+else. It never runs a saved configuration file — it parses the stored
+`KEY='value'` lines itself — and it prints a value only for the keys the
+module declares public in `MODULE_CONFIG_PUBLIC`: numbers, schedules, dataset
+names, plain directories, and similar facts that can never hold a secret.
+Every other key, and every key of a module that declares none public, shows
+only `(set, hidden)` or `(not set)`; `--json` leaves out the `value` field for
+those.
+
+A public value can still be an identifier — a host name, a `user@host`
+syncoid target, `config-backup`'s git author email — and is shown exactly as
+stored after the usual cleanup: only a credential embedded in an `http(s)://`
+URL (`user:pass@`) is redacted from it. Do not hand-edit a public key to hold
+a token, password, or webhook URL. A configuration file that is a symbolic
+link, has the wrong owner, is writable by group or others, or holds anything
+other than a comment or a `KEY='value'` line `conf_set` could have written is
+refused whole, naming the file and the line but never its content.
+
+See [Automation output](automation.md#config-show-json) for the `--json`
+schema and exit codes, and [Writing a module](writing-a-module.md#showing-configuration)
+for how a module declares which keys `config show` may print.
 
 ## Help
 

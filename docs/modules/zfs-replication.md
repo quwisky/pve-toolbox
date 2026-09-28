@@ -40,6 +40,12 @@ JOB_APPDATA_CHMOD='775'             # optional
 JOB_APPDATA_PATH=''                 # blank = the target's own mountpoint
 ```
 
+`sudo pve-toolbox config show zfs-replication` displays `LOG_DIR`,
+`NOTIFY_START`, `JOBS`, and each job's `_SRC`, `_DST`, `_CHOWN`, `_CHMOD` and
+`_PATH` keys — a syncoid remote can be `user@host:dataset`, which is an
+identifier, not a credential. `DISCORD_WEBHOOK` and every job's `_OPTS` stay
+hidden: syncoid options can name an SSH key or carry ssh options.
+
 Job keys are the job name uppercased with anything non-alphanumeric turned
 into `_`. Job names must match `^[A-Za-z][A-Za-z0-9_.:-]*$`, because they
 become systemd instance names. The normalized key must also be unique:

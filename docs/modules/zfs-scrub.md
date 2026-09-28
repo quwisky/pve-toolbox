@@ -117,6 +117,9 @@ POLL_INTERVAL=300
 NOTIFY_START=1
 ```
 
+`sudo pve-toolbox config show zfs-scrub` displays `POLL_INTERVAL` and
+`NOTIFY_START`; `DISCORD_WEBHOOK` stays hidden.
+
 The webhook URL is the only credential Discord checks, so it goes through
 `conf_set` into a `0600` file rather than the world-readable state file.
 

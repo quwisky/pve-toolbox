@@ -427,6 +427,15 @@ CB_VOLATILE_SECTIONS='firewall-live/'
 CB_SECRET_ALLOW='pve/user.cfg:credential derived/dpkg-selections.txt:credential'
 ```
 
+`sudo pve-toolbox config show config-backup` displays `CB_ARCHIVE_DIR`,
+`CB_RETENTION_COUNT`, `CB_RETENTION_DAYS`, `CB_NOTIFY_ON_CHANGE`,
+`CB_INCLUDE_SECRETS`, `CB_VOLATILE_SECTIONS`, `CB_SECRET_ALLOW`,
+`CB_LOCAL_ENABLED`, `CB_GIT_ENABLED`, `CB_GIT_DIR`, `CB_GIT_BRANCH`,
+`CB_GIT_PUSH`, `CB_GIT_AUTHOR_NAME` and `CB_GIT_AUTHOR_EMAIL` — the author
+email is personal data, not a secret, and it is already written into every
+commit. `DISCORD_WEBHOOK`, `CB_AGE_RECIPIENT`, `CB_GIT_REMOTE`,
+`CB_GIT_SSH_KEY` and `CB_GIT_TOKEN_FILE` stay hidden.
+
 A failed capture always reports. `CB_NOTIFY_ON_CHANGE=1` additionally reports
 when the configuration changed — off by default, because editing a guest is
 routine and a channel that pings on every edit stops being read.

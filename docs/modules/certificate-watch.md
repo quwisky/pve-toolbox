@@ -41,6 +41,9 @@ CW_FAIL_DAYS=7
 CW_ACME_STALE_DAYS=45
 ```
 
+`sudo pve-toolbox config show certificate-watch` displays all three
+thresholds — none of them can hold a secret.
+
 At the install prompt, `CW_WARN_DAYS` accepts 2 or higher. `CW_FAIL_DAYS`
 must be at least 1 and below the warning value just entered.
 `CW_ACME_STALE_DAYS` accepts any positive integer.

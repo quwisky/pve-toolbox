@@ -28,6 +28,9 @@ RD_BOOT_TIMEOUT=60
 RD_ALLOW_UNATTENDED=0
 ```
 
+`sudo pve-toolbox config show restore-drill` displays all five settings —
+none of them can hold a secret.
+
 The helper takes the first free VMID among the 10000 starting at
 `RD_VMID_START`, never above 999999999, and never overwrites an existing guest.
 If none of them is free, it stops with

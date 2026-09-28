@@ -2,13 +2,16 @@
 
 `status`, `check`, and `doctor` support versioned JSON and output-free status
 checks. `list` also supports `--json`, for a machine-readable module
-inventory, but does not accept `--quiet`:
+inventory, but does not accept `--quiet`. `config show` supports `--json` too,
+but it is root-only and shaped differently again — see
+[`config show --json`](#config-show-json) below:
 
 ```bash
 pve-toolbox status --json
 pve-toolbox check --json
 pve-toolbox doctor --json
 pve-toolbox list --json
+sudo pve-toolbox config show --json zfs-scrub
 
 pve-toolbox check --quiet
 ```
@@ -157,6 +160,69 @@ always an array, empty when the module declares none. `installed` reflects
 result reports above (see [Redaction](#redaction)) before they are rendered,
 so a module string containing a credential-shaped value, a tab, or a newline
 still comes out as valid JSON. `list --json` does not accept `--quiet`.
+
+## `config show --json`
+
+`config show <module>` (root only) prints a module's saved
+`/etc/pve-toolbox/<module>.conf`, and any extra file the module names through
+`module_config_files`. It never runs any of those files: it parses the
+stored `KEY='value'` lines itself. `--json` shapes the document differently
+again, one entry per configuration file rather than one flat list of results:
+
+```json
+{
+  "schema_version": 1,
+  "command": "config",
+  "module": "zfs-scrub",
+  "files": [
+    {
+      "name": "zfs-scrub",
+      "keys": [
+        {"key": "DISCORD_WEBHOOK", "set": true, "hidden": true},
+        {"key": "POLL_INTERVAL", "set": true, "hidden": false, "value": "300"},
+        {"key": "NOTIFY_START", "set": true, "hidden": false, "value": "1"}
+      ]
+    }
+  ]
+}
+```
+
+`module` echoes the name given on the command line. `files` lists every
+configuration file that exists, in the order `config show` displays them: the
+module's own file first, then each name `module_config_files` printed, in the
+order it printed them. A module with no saved configuration at all gives an
+empty `files` array rather than an error.
+
+Each entry in a file's `keys` array is, in the order the key first appeared in
+that file:
+
+| Field | Meaning |
+| --- | --- |
+| `key` | The configuration key |
+| `set` | `true` when the stored value is non-empty |
+| `hidden` | `true` unless the module declares `key` public in `MODULE_CONFIG_PUBLIC` |
+| `value` | The stored value, after the same cleanup as text output (see [Redaction](#redaction)). Present only when `hidden` is `false` |
+
+A hidden key never carries a `value` field at all, not even `null`, so a
+consumer that only checks `has("value")` cannot be tricked by an empty string.
+`DISCORD_WEBHOOK` above is `set` but has no `value` because zfs-scrub does not
+declare it public; `POLL_INTERVAL` and `NOTIFY_START` do, so their stored
+values are shown as strings, exactly as saved.
+
+### Exit codes
+
+`config show` uses three of the codes in the table above:
+
+| Code | When |
+| ---: | --- |
+| `0` | The module's configuration was read, including a module with nothing saved |
+| `1` | Not running as root, or a configuration file or directory is missing its checks (see [Writing a module](writing-a-module.md#showing-configuration)) |
+| `64` | An unknown module, an unknown `config` subcommand, or a missing or extra module name |
+
+A refusal (exit `1`) prints nothing on stdout and names the offending file and
+line on stderr, never its content. `--json` gives no partial document on a
+refusal; either the whole call fails before anything is written, or the full
+document is printed and the command exits `0`.
 
 ## Redaction
 

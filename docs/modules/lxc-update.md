@@ -165,6 +165,10 @@ Operator input is stored through the config helpers in
 | `LX_SCHEDULE` | Validated systemd `OnCalendar` expression |
 | `LX_SCHEDULE_NOTIFY` | `1` to report every scheduled batch to Discord |
 
+`sudo pve-toolbox config show lxc-update` displays `LX_EXCLUDE`,
+`LX_SCHEDULE_ENABLED`, `LX_SCHEDULE` and `LX_SCHEDULE_NOTIFY`; `DISCORD_WEBHOOK`
+stays hidden.
+
 Run `pve-toolbox install lxc-update` to reconfigure. Use `none` to clear a field.
 The excluded IDs prompt takes container IDs from 100 to 999999999 separated by
 spaces, or `none`; an invalid ID is asked again. With `-y`, `LX_EXCLUDE` in the

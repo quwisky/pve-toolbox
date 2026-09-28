@@ -66,6 +66,9 @@ BA_STORAGE_FAIL='95'
 BA_MIN_KEEP_LAST='2'
 ```
 
+`sudo pve-toolbox config show backup-audit` displays all four thresholds —
+none of them can hold a secret.
+
 All four values are validated at the install prompt. `BA_FRESHNESS_HOURS` and
 `BA_MIN_KEEP_LAST` accept any positive integer. `BA_STORAGE_WARN` accepts
 0-99; `BA_STORAGE_FAIL` must be above the warning value just entered, up to
