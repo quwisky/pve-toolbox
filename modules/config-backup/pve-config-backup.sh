@@ -197,18 +197,23 @@ _cb_notify_failure() {
 # systemd unit with no stdin.
 
 _cb_state_set() { # _cb_state_set <key> <value>
-    local tmp
-    mkdir -p "$(dirname "$CB_STATE_FILE")"
-    [[ -f $CB_STATE_FILE ]] || : > "$CB_STATE_FILE"
-    tmp=$(mktemp)
-    _STATE_V=$2 awk -v k="$1" '
+    local dir tmp out
+    dir=$(dirname "$CB_STATE_FILE")
+    mkdir -p "$dir" || return 1
+    [[ -f $CB_STATE_FILE ]] || : > "$CB_STATE_FILE" || return 1
+    out=$(_STATE_V=$2 awk -v k="$1" '
         $0 ~ "^" k "=" { print k "=" ENVIRON["_STATE_V"]; found = 1; next }
         { print }
         END { if (!found) print k "=" ENVIRON["_STATE_V"] }
-    ' "$CB_STATE_FILE" > "$tmp"
-    cat "$tmp" > "$CB_STATE_FILE"
+    ' "$CB_STATE_FILE") || return 1
+    # As state_set in lib/common.sh: a hidden temporary file beside the state
+    # file, synced and renamed onto it, so a write that fails part way keeps
+    # the previous file whole and nothing depends on TMPDIR.
+    tmp=$(mktemp "$dir/.${CB_STATE_FILE##*/}.XXXXXX") || return 1
+    printf '%s\n' "$out" > "$tmp" && chmod 0644 "$tmp" && sync -- "$tmp" \
+        && mv -fT -- "$tmp" "$CB_STATE_FILE" && return 0
     rm -f "$tmp"
-    chmod 0644 "$CB_STATE_FILE"
+    return 1
 }
 
 _cb_state_get() { # _cb_state_get <key>
