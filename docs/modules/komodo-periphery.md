@@ -192,7 +192,10 @@ helpers in `/etc/pve-toolbox/komodo-periphery-CTID.conf`. The managed ID list is
 host state. VM records use `/etc/pve-toolbox/komodo-periphery-qemu-VMID.conf`,
 `/etc/pve-toolbox/komodo-periphery-qemu.conf`, and
 `/var/lib/pve-toolbox/komodo-periphery-qemu-VMID.state`; these are separate from
-LXC records even when the numeric IDs match. Updates to the shared VM list are
+LXC records even when the numeric IDs match. VM state holds a SHA-256 digest of
+the guest machine ID, never the confidential ID itself. A record written by an
+earlier build with the plain ID still matches and is rewritten as a digest by
+the next install, update, uninstall or reconciliation. Updates to the shared VM list are
 serialized, so operations on different VMs preserve each other's entries.
 VM transfer uses a protected nonce-bound directory under guest `/run`.
 Files are sent in verified chunks,

@@ -34,7 +34,8 @@ printf binary > "$WORK/binary"
 kp_vm_apply 201 "$WORK/request.json" "$WORK/binary" || fail 'valid VM apply rejected'
 [[ $(conf_get komodo-periphery-qemu-201 KP_PENDING) == "$KP_TRANSACTION" ]] || fail 'pending marker absent before commit bookkeeping'
 [[ $(conf_get komodo-periphery-qemu KP_VM_IDS) == 201 ]] || fail 'first-install pending VM hidden from inventory'
-[[ $(state_get komodo-periphery-qemu-201 machine_id) == "$KP_VM_MACHINE" ]] || fail 'pending VM machine identity absent'
+[[ $(state_get komodo-periphery-qemu-201 machine_id) == "$(printf '%s' "$KP_VM_MACHINE" | sha256sum | cut -d ' ' -f1)" ]] || fail 'pending VM machine identity absent'
+if grep -rFq "$KP_VM_MACHINE" "$TOOLBOX_STATE_DIR"; then fail 'raw VM machine ID persisted in host state'; fi
 kp_host_require() { :; }
 kp_vm_load_connection() { KP_VM_TRANSPORT=qga; }
 status=$(kp_vm_status 2>&1) && fail 'pending VM reported healthy'

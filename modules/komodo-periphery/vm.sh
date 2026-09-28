@@ -56,15 +56,16 @@ kp_vm_ids() {
 }
 
 kp_vm_save() { # <vmid> <version> <identity> <fingerprint> <install|update|uninstall>
-    local id=$1 version=$2 identity=$3 fingerprint=$4 action=$5
+    local id=$1 version=$2 identity=$3 fingerprint=$4 action=$5 machine
     kp_target_key qemu "$id" >/dev/null || return 1
+    machine=$(kp_vm_machine_hash "${KP_VM_MACHINE:-}") || return 1
     [[ $action == install || $action == update || $action == uninstall || $action == configure ]] || return 1
     # Even an uninstalled VM remains visible until staging cleanup succeeds.
     kp_vm_register "$id" || return 1
     conf_set "komodo-periphery-qemu-$id" KP_VERSION "$version" &&
         conf_set "komodo-periphery-qemu-$id" KP_IDENTITY "$identity" &&
         state_set "komodo-periphery-qemu-$id" version "$version" &&
-        state_set "komodo-periphery-qemu-$id" machine_id "${KP_VM_MACHINE:-}" &&
+        state_set "komodo-periphery-qemu-$id" machine_id "$machine" &&
         state_set "komodo-periphery-qemu-$id" fingerprint "$fingerprint" &&
         state_set "komodo-periphery-qemu-$id" result "$action completed; Core connectivity unverified" || return 1
 }
@@ -110,9 +111,19 @@ kp_vm_inspect() { # <vmid>; uses selected KP_VM_* connection globals
     KP_INSPECTION_JSON=$result KP_VM_UUID=$uuid
 }
 
-kp_vm_match() { # <vmid> <expected identity> <expected machine ID>
+kp_vm_machine_hash() { # <raw machine ID>; host state keeps only this digest (machine-id(5) is confidential).
+    local digest
+    [[ $1 =~ ^[a-f0-9]{32}$ ]] || return 1
+    digest=$(printf '%s' "$1" | sha256sum) || return 1
+    printf '%s' "${digest%% *}"
+}
+
+kp_vm_match() { # <vmid> <expected identity> <expected machine ID or its kp_vm_machine_hash>
+    local observed
     kp_vm_inspect "$1" || return 1
-    [[ $KP_TARGET_IDENTITY == "$2" && $(jq -r .machine_id <<<"$KP_INSPECTION_JSON") == "$3" ]] || {
+    observed=$(jq -r .machine_id <<<"$KP_INSPECTION_JSON")
+    # The raw form is the in-memory value; in state it is a legacy record that the next save rewrites as a hash.
+    [[ $KP_TARGET_IDENTITY == "$2" && ( $3 == "$observed" || $3 == "$(kp_vm_machine_hash "$observed")" ) ]] || {
         warn 'VM identity changed; no further guest action applied'; return 1;
     }
 }
@@ -168,13 +179,14 @@ kp_vm_recover() { # <vmid> <transaction-id>
 }
 
 kp_vm_apply() { # <vmid> <request> <binary-or-empty>
-    local id=$1 request=$2 binary=$3 dir="/run/pve-toolbox-komodo-$KP_TRANSACTION" command result rc=0
+    local id=$1 request=$2 binary=$3 dir="/run/pve-toolbox-komodo-$KP_TRANSACTION" command result rc=0 machine
     kp_vm_match "$id" "$KP_VM_IDENTITY" "$KP_VM_MACHINE" || return 1
+    machine=$(kp_vm_machine_hash "$KP_VM_MACHINE") || return 1
     [[ $(jq -r .fingerprint <<<"$KP_INSPECTION_JSON") == "$KP_VM_FINGERPRINT" ]] || return 1
     kp_vm_register "$id" &&
         conf_set "komodo-periphery-qemu-$id" KP_PENDING "$KP_TRANSACTION" &&
         conf_set "komodo-periphery-qemu-$id" KP_IDENTITY "$KP_VM_IDENTITY" || return 1
-    state_set "komodo-periphery-qemu-$id" machine_id "$KP_VM_MACHINE" &&
+    state_set "komodo-periphery-qemu-$id" machine_id "$machine" &&
         state_set "komodo-periphery-qemu-$id" result 'operation incomplete; inspect pending transaction' || return 1
     if [[ $KP_VM_TRANSPORT == qga ]]; then kp_qga_bootstrap "$KP_NODE" "$id" "$dir" || return 1
     else kp_ssh_bootstrap "$dir" "$KP_VM_UUID" || return 1; fi
