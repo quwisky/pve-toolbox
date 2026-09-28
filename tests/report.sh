@@ -59,6 +59,12 @@ user@host|user@host
 https://host.example/p?mail=a@b.example|https://host.example/p?mail=a@b.example
 https://host.example?mail=a@b.example|https://host.example?mail=a@b.example
 https://host.example#a@b|https://host.example#a@b
+https://alice@corp.example:TOKEN@git.example/r|https://[redacted]@git.example/r
+https://a:b@c@host/x|https://[redacted]@host/x
+HTTPS://u:p@h Ssh://u:p@h|HTTPS://[redacted]@h Ssh://[redacted]@h
+redis://:pw@h https://u%40x:p@h|redis://[redacted]@h https://[redacted]@h
+https://u:p@[::1]:8443/x ("ssh://u:p@h")|https://[redacted]@[::1]:8443/x ("ssh://[redacted]@h")
+https://u:p@discord.com/api/webhooks/1/TOK|[redacted-webhook]
 EOF
 pass "report text redacts URL user information in any scheme"
 
