@@ -32,7 +32,7 @@ report_clean_text() {
     # Remove common credential forms and paths whose filenames reveal secret
     # material before anything is retained for human or JSON rendering.
     sed -E \
-        -e 's#https?://[^/@[:space:]]+:[^/@[:space:]]+@#https://[redacted]@#g' \
+        -e 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/?#@[:space:]]+@#\1[redacted]@#g' \
         -e 's#https://(discord(app)?[.]com)/api/webhooks/[0-9]+/[^[:space:];]+#[redacted-webhook]#g' \
         -e 's#/(etc/pve/priv|etc/pve-toolbox)/[^[:space:];]+#[redacted-path]#g' \
         -e 's#((token|secret|password|passphrase|webhook)[A-Za-z0-9_.-]*[=:])[[:space:]]*[^[:space:];]+#\1[redacted]#gI' \
