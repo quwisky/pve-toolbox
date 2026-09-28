@@ -444,7 +444,7 @@ module_update() {
             fi
         done
     fi
-    local repair=("${missing[@]}" "${invalid[@]}")
+    local repair=("${missing[@]}" "${invalid[@]}") failed=0
     if [[ ${#repair[@]} -gt 0 ]]; then
         step "Jobs needing a timer"
         # Each job is saved as soon as it is answered, as update always has.
@@ -453,11 +453,14 @@ module_update() {
         for j in "${repair[@]}"; do
             [[ -n $j ]] || continue
             _zr_ask_job "$j" || continue
-            _zr_save_job "$j" || return 1
+            _zr_save_job "$j" || { failed=1; break; }
         done
     fi
 
+    # Units were rewritten above: reload even when a save failed, so no unit
+    # file on disk differs from what systemd runs.
     systemctl daemon-reload
+    ((failed == 0)) || return 1
     _zr_scheduled
     for j in "${ZR_SCHEDULED[@]}"; do
         _zr_enable "$j" || die "could not enable the timer for $j"
