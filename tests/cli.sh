@@ -446,8 +446,9 @@ pass "_man does not call discover"
 # what it needs (mirroring the module-less checkout built above), the same
 # way a packaged, non-root invocation would see it. If the switch itself is
 # impossible (e.g. user-namespace root, where 65534 is unmapped, or no
-# setpriv), skip with the reason instead of failing -- real root in CI has
-# the mapping and must take the real path.
+# setpriv), skip with the reason -- unless CLI_ROOT_TEST_REQUIRED=1, which
+# fails instead: real root in CI has the mapping and must take the real
+# path, so a required run silently skipping this check is not a pass.
 if [[ $(id -u) -ne 0 ]]; then
     launch _man >/dev/null || fail "_man failed as a normal user"
     pass "_man works as a normal user"
@@ -1486,15 +1487,35 @@ else
     conf_write "$dir" o-ignores-y "O_Y='1'"
     expect_config_fail "a refusal the module ignored" "$dir/o-ignores-x.conf: line 2: " \
         "$dir" config show o-ignores
-    # fd 3 is write-only inside the module: a module that tries to read from
-    # it after triggering a refusal, to see and drain it, cannot suppress it.
-    conf_module p-drains 'module_config_files() { conf_get p-drains-x K >/dev/null || true; if read -r -t 0 -u 3 2>/dev/null; then read -r -u 3 x 2>/dev/null; fi; printf "p-drains-y\n"; }'
-    conf_write "$dir" p-drains "P_A='1'"
-    conf_write "$dir" p-drains-x "K='SECRETB6'" "junk line"
-    conf_write "$dir" p-drains-y "P_Y='1'"
-    expect_config_fail "a module that tries to read fd 3 after a refusal" "$dir/p-drains-x.conf: line 2: " \
-        "$dir" config show p-drains
     pass "config show takes refusals only from its own channel"
+
+    # Regression guard for the fill guard itself: module_config_files often
+    # captures conf_get's output through command substitution ("x=$(conf_get
+    # ...)"), and every such call forks its own subshell. A per-shell
+    # variable set inside one of those subshells cannot survive it, so a
+    # guard against writing more than one refusal has to work by checking
+    # the pipe itself (what fd 3 actually is), not shell state -- a variant
+    # that checked shell state once regressed exactly this way, hanging
+    # instead of refusing. A long, valid configuration name makes each
+    # would-be duplicate refusal large enough that a few hundred of them
+    # exceed the pipe's 64 KiB, so a broken guard hangs quickly rather than
+    # needing thousands of iterations; timeout turns that hang into a fast,
+    # named failure instead of stalling the whole suite.
+    printf -v fillname 'f%.0s' $(seq 1 240)
+    conf_module u-fills "module_config_files() { local i x; for ((i = 0; i < 400; i++)); do x=\$(conf_get $fillname K) || true; done; printf 'u-fills-y\n'; }"
+    dir=$(tmp)
+    conf_write "$dir" u-fills "U_A='1'"
+    conf_write "$dir" "$fillname" "junk line"
+    conf_write "$dir" u-fills-y "U_Y='1'"
+    rc=0
+    out=$(TOOLBOX_BIN_DIR=$(tmp) TOOLBOX_STATE_DIR=$(tmp) TOOLBOX_SYSTEMD_DIR=$(tmp) \
+        TOOLBOX_CONF_DIR="$dir" PVE_TOOLBOX_ROOT="$conf_root" \
+        timeout 30 "$conf_root/pve-toolbox" config show u-fills 2>&1) || rc=$?
+    [[ $rc -ne 124 ]] || fail "config show hung on a module that retries a bad file through \$(conf_get ...) many times"
+    [[ $rc -eq 1 ]] || fail "config show of a module that retries a bad file exited $rc, want 1: ${out:0:200}"
+    [[ $out == *"$dir/$fillname.conf: line 1:"* ]] \
+        || fail "config show of a module that retries a bad file did not name it: ${out:0:200}"
+    pass "config show does not fill its refusal channel when a module retries a bad file many times through command substitution"
 
     # config show needs no temporary file: it works, and still refuses what
     # it must, with TMPDIR missing or in a directory nobody can write to.

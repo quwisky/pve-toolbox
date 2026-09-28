@@ -391,13 +391,15 @@ in pmxcfs, and reusing that VMID is exactly what DR mode is for.
 
 ## Retention
 
-```
-CB_RETENTION_COUNT=30    # never prune below this, whatever the age
-CB_RETENTION_DAYS=90     # prune older than this, once COUNT is satisfied
+```ini title="/etc/pve-toolbox/config-backup.conf"
+CB_RETENTION_COUNT='30'
+CB_RETENTION_DAYS='90'
 ```
 
-In one sentence: **you always have the last 30 runs, and anything older than 90
-days beyond that is pruned.**
+`CB_RETENTION_COUNT` never prunes below this many runs, whatever their age;
+`CB_RETENTION_DAYS` prunes anything older than this once `COUNT` is
+satisfied. In one sentence: **you always have the last 30 runs, and anything
+older than 90 days beyond that is pruned.**
 
 Count is a floor, not a cap. An archive that is outside the newest 30 but
 younger than 90 days is kept — so on a frequent timer the directory can hold

@@ -19,9 +19,12 @@
 #     JOB_APPDATA_SRC='fast-data-pool/appdata'
 #     JOB_APPDATA_DST='data-pool/appdata-backup'
 #     JOB_APPDATA_OPTS='--recursive --compress=zstd-fast'
-#     JOB_APPDATA_CHOWN='102105:102105'   # optional, applied to the target
-#     JOB_APPDATA_CHMOD='775'             # optional
-#     JOB_APPDATA_PATH=''                 # optional, defaults to the mountpoint
+#     JOB_APPDATA_CHOWN='102105:102105'
+#     JOB_APPDATA_CHMOD='775'
+#     JOB_APPDATA_PATH=''
+#
+#   CHOWN and CHMOD are optional, applied to the target after a successful
+#   run; PATH left blank defaults to the target's own mountpoint.
 #
 set -euo pipefail
 

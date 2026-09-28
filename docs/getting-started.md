@@ -132,16 +132,25 @@ refused whole, naming the file and the line but never its content.
 
 ### If `config show` refuses a file
 
-- **A refusal naming a line** (`line <n>: ...`) is a format problem: only
-  blank lines, `#` comments, and `KEY='value'` lines with nothing after the
-  closing quote are accepted. Rewrite the named line in that exact form, or
-  run `pve-toolbox install <module>` as root — it saves the key again through
-  the same `conf_set` helper that already writes it that way.
+- **A refusal naming a line** (`line <n>: ...`) is a format problem: only a
+  blank line (nothing on it at all), a `#` comment, or a `KEY='value'` line
+  with nothing after the closing quote is accepted, and each of the three
+  has to start at column 1 — an indented comment, an indented assignment, or
+  a line that is only spaces is refused the same as any other bad line.
+  - If the named line is a plain `KEY=` assignment, at column 1, for a key
+    `pve-toolbox install <module>` prompts for and saves, running that
+    command again as root rewrites it through the same `conf_set` helper
+    that already writes it in the accepted form.
+  - Otherwise — an indented line, a line that is a stray continuation of an
+    earlier multi-line value, or any other line the installer does not
+    itself write — re-running install will not touch it. Open the file and
+    edit or delete the named line by hand.
 - **A refusal naming a reason like "not owned by root" or "writable by group
   or others"** is a permission problem: run `chown root:root` and
   `chmod 0600` on the named file, or, if the refusal names
-  `/etc/pve-toolbox` itself, `chmod 0750 /etc/pve-toolbox`. These are the
-  same owner and modes `conf_set` and the installer already set.
+  `/etc/pve-toolbox` itself, `chown root:root /etc/pve-toolbox` and
+  `chmod 0750 /etc/pve-toolbox`. These are the same owner and modes
+  `conf_set` and the installer already set.
 - **A refusal naming "it is a symbolic link"** means the file or the
   directory has to be replaced with a real one; `config show` never follows
   a symbolic link to read or check what it points at.

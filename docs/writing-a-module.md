@@ -125,10 +125,10 @@ patterns such as `JOB_*_SRC`. Every other key shows only `(set, hidden)` or
     stored after the usual cleanup: credentials in URLs and webhook URLs are
     redacted, tabs and carriage returns become spaces, and newlines are
     joined with `; `. The text output then replaces every other control
-    character with `?`. `--json` keeps the ones JSON requires (U+0000-U+001F)
-    JSON-escaped, and also shows the rest as `?` — including the C1 range
-    (U+0080-U+009F), which JSON does not require escaping and which `jq`
-    would otherwise pass through raw.
+    character, DEL included, with `?`. `--json` keeps those and lets `jq`
+    JSON-escape them, except the C1 range (U+0080-U+009F): JSON does not
+    require escaping it, `jq` does not either, so `--json` shows it as `?`
+    too, the same as text.
 
 A module that keeps more than one configuration file names the others in
 `module_config_files`, one name per line, each matching `^[a-z0-9][a-z0-9-]*$`
