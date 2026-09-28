@@ -271,7 +271,7 @@ module_install() {
     ask_int UR_MIN_FREE_MB "minimum free space (MiB)" "$UR_MIN_FREE_MB" 1
     _ur_validate || die "$UR_ERROR"
     local key; for key in "${UR_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
-    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)" || return 1
     ok "configured read-only $UR_POLICY upgrade preflight"
 }
 

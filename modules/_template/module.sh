@@ -100,11 +100,12 @@ module_install() {
     # ... do the work ...
     dim "  you picked: $answer, keeping $keep days"
 
-    # Module functions run with set -e off, so check every conf_set: one
-    # that cannot save warns and returns 1, and must fail the install.
+    # Module functions run with set -e off, so check every conf_set and
+    # state_set: one that cannot save warns and returns 1, and must fail the
+    # install.
     conf_set  "$MODULE_NAME" SOME_TOKEN "$answer" || return 1  # 0600, secrets
     conf_set  "$MODULE_NAME" KEEP_DAYS "$keep" || return 1     # 0600, public
-    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"  # 0644, facts
+    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)" || return 1  # 0644, facts
     ok "installed"
 }
 

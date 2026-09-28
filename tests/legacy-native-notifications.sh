@@ -251,6 +251,14 @@ printf '%s\n' "$conf_before" > "$(conf_file native-notifications)"
 printf '%s\n' "$count_before" > "$TEST_COUNT_FILE"
 pass "a configuration that cannot be saved fails without recording state"
 
+# Ownership state that cannot be recorded fails the install and says how to
+# recover, since rerunning install otherwise refuses the unowned objects.
+rc=0; out=$( state_set() { return 1; }; _nt_configure 2>&1 ) || rc=$?
+[[ $rc -ne 0 && $out == *'ownership state was not recorded'* && $out != *'configured and tested'* ]] \
+    || fail "a failed ownership state write was not reported: $out"
+printf '%s\n' "$count_before" > "$TEST_COUNT_FILE"
+pass "ownership state that cannot be recorded fails with recovery guidance"
+
 before_target=$(<"$API_ROOT/endpoints/webhook.pve-toolbox-discord.json")
 before_matcher=$(<"$API_ROOT/matchers/pve-toolbox-discord.json")
 for file in "${NT_TEMPLATE_FILES[@]}"; do

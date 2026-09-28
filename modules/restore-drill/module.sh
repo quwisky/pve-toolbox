@@ -82,7 +82,7 @@ module_install() {
     _rd_validate || die "$RD_ERROR"
     for key in "${RD_CONF_KEYS[@]}"; do conf_set "$MODULE_NAME" "$key" "${!key}" || return 1; done
     _rd_install_helper
-    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)" || return 1
     ok "installed guarded restore drill helper"
     dim "  default invocation only prints a plan"
 }

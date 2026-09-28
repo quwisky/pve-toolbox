@@ -447,11 +447,14 @@ _nt_configure() {
     # that just refused the write. The tested objects stay; say so and stop.
     _nt_write_conf \
         || die "the native notification objects are in place and tested, but $(conf_file "$MODULE_NAME") was not saved; fix it and run install again"
-    state_set "$MODULE_NAME" TARGET_TYPE "$(_nt_api_type)"
-    state_set "$MODULE_NAME" TARGET_NAME "$NT_TARGET_NAME"
-    state_set "$MODULE_NAME" MATCHER_NAME "$NT_MATCHER_NAME"
-    state_set "$MODULE_NAME" ASSET_SUM "$(_nt_installed_asset_sum)"
-    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
+    # Ownership state decides what a later install or uninstall may touch;
+    # without it they refuse the objects just created, so say how to recover.
+    { state_set "$MODULE_NAME" TARGET_TYPE "$(_nt_api_type)" \
+        && state_set "$MODULE_NAME" TARGET_NAME "$NT_TARGET_NAME" \
+        && state_set "$MODULE_NAME" MATCHER_NAME "$NT_MATCHER_NAME" \
+        && state_set "$MODULE_NAME" ASSET_SUM "$(_nt_installed_asset_sum)" \
+        && state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"; } \
+        || die "the native notification objects are in place and tested, but ownership state was not recorded in $(_state_file "$MODULE_NAME"); fix it and run install again"
     ok "configured and tested $NT_KIND target $NT_TARGET_NAME"
 }
 

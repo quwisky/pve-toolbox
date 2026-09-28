@@ -370,7 +370,7 @@ module_install() {
     conf_set "$MODULE_NAME" BA_STORAGE_WARN "$BA_STORAGE_WARN" || return 1
     conf_set "$MODULE_NAME" BA_STORAGE_FAIL "$BA_STORAGE_FAIL" || return 1
     conf_set "$MODULE_NAME" BA_MIN_KEEP_LAST "$BA_MIN_KEEP_LAST" || return 1
-    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"
+    state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)" || return 1
     ok "configured read-only backup audit"
     dim "  run: pve-toolbox doctor"
 }
