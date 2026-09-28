@@ -123,8 +123,10 @@ those.
 
 A public value can still be an identifier — a host name, a `user@host`
 syncoid target, `config-backup`'s git author email — and is shown exactly as
-stored after the usual cleanup: only a credential embedded in an `http(s)://`
-URL (`user:pass@`) is redacted from it. Do not hand-edit a public key to hold
+stored after the usual cleanup, which redacts the user information of any URL
+with a scheme (`ssh://user:pass@host` and `https://token@host` both become
+`<scheme>://[redacted]@host`) but leaves a plain `user@host`, which has no
+scheme, as it is. Do not hand-edit a public key to hold
 a token, password, or webhook URL. A configuration file that is a symbolic
 link, has the wrong owner, is writable by group or others, or holds anything
 other than a comment or a `KEY='value'` line `conf_set` could have written is

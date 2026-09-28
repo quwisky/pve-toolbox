@@ -227,9 +227,11 @@ document is printed and the command exits `0`.
 ## Redaction
 
 Terminal color escapes never appear in JSON. Before result text is retained,
-the reporting layer removes common credential forms, authenticated URL user
-information, Discord webhook credentials, and paths beneath `/etc/pve/priv`
-or `/etc/pve-toolbox`.
+the reporting layer removes common credential forms, the user information of
+any URL with a scheme (`ssh://user:pass@host` and `https://token@host` both
+become `<scheme>://[redacted]@host`; a plain `user@host` has no scheme and is
+kept), Discord webhook credentials, and paths beneath `/etc/pve/priv` or
+`/etc/pve-toolbox`.
 
 Redaction is a defensive boundary, not permission to print secrets from a
 module. Module status and health functions must still avoid tokens, passwords,

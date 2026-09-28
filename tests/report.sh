@@ -42,6 +42,32 @@ done
     && $rendered == *"[redacted-path]"* ]] || fail "redaction markers are missing"
 pass "report text is redacted before JSON rendering"
 
+# The user information of any URL with a scheme is redacted, whatever the
+# scheme and whether or not it has a password; the scheme and host stay.
+# A plain user@host has no scheme and is an identifier, not a credential.
+while IFS='|' read -r input want; do
+    got=$(report_clean_text "$input")
+    [[ $got == "$want" ]] || fail "report_clean_text [$input] gave [$got], want [$want]"
+done <<'EOF'
+ssh://user:pw@host/path|ssh://[redacted]@host/path
+https://token@git.example/repo|https://[redacted]@git.example/repo
+http://user:pass@example.invalid|http://[redacted]@example.invalid
+ftp://u:p@h/f smb://u:p@h/s rsync://u:p@h/m|ftp://[redacted]@h/f smb://[redacted]@h/s rsync://[redacted]@h/m
+git+ssh://git@host:repo|git+ssh://[redacted]@host:repo
+root@backup:tank/data|root@backup:tank/data
+user@host|user@host
+https://host.example/p?mail=a@b.example|https://host.example/p?mail=a@b.example
+https://host.example?mail=a@b.example|https://host.example?mail=a@b.example
+https://host.example#a@b|https://host.example#a@b
+https://alice@corp.example:TOKEN@git.example/r|https://[redacted]@git.example/r
+https://a:b@c@host/x|https://[redacted]@host/x
+HTTPS://u:p@h Ssh://u:p@h|HTTPS://[redacted]@h Ssh://[redacted]@h
+redis://:pw@h https://u%40x:p@h|redis://[redacted]@h https://[redacted]@h
+https://u:p@[::1]:8443/x ("ssh://u:p@h")|https://[redacted]@[::1]:8443/x ("ssh://[redacted]@h")
+https://u:p@discord.com/api/webhooks/1/TOK|[redacted-webhook]
+EOF
+pass "report text redacts URL user information in any scheme"
+
 report_reset ordering
 report_add pass z.last "last"
 report_add pass a.first "first"
