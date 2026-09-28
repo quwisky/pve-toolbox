@@ -200,7 +200,7 @@ declare -A CLI_DESC=(
     [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Use --dry-run for a cached preview, --allow-removals to enable package removals and cleanup, and --notify for a Discord report. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades. Package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local systemd schedule. Scheduled runs update every eligible local container with the non-removing policy, never catch up after downtime, and can report every batch to Discord when explicitly enabled. Use 'pve-toolbox status lxc-update' to inspect timer health and recent results."
     [doctor]="The audit covers host, cluster, storage and installed modules. Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
     [link]="Packaged installs refuse this command."
-    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, tabs and newlines flattened; any other control character, including DEL, shown as ? in text and JSON-escaped in --json, except the C1 range U+0080-U+009F, which JSON does not require escaping and --json does not either, so it is shown as ? there too); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
+    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, tabs and carriage returns turned into spaces, newlines joined with '; '; any other control character, including DEL, shown as ? in text and JSON-escaped in --json, except the C1 range U+0080-U+009F, which JSON does not require escaping and --json does not either, so it is shown as ? there too; an invalid UTF-8 sequence shown as ? in text and as U+FFFD in --json); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
 )
 declare -A CLI_EXAMPLES=(
     [list]=$'pve-toolbox list\npve-toolbox list storage\npve-toolbox list --json'
@@ -1162,7 +1162,10 @@ cmd_config() { # cmd_config show <module>
     done
 
     if [[ $OUTPUT_JSON -eq 1 ]]; then
-        { if ((${#stream[@]})); then printf '%s\0' "${stream[@]}"; fi; } | jq -Rs --arg m "$mod" '
+        # --rawfile, not -R: jq -R decodes its input in 4 KB chunks and turns
+        # a character split at a chunk boundary into U+FFFD.
+        { if ((${#stream[@]})); then printf '%s\0' "${stream[@]}"; fi; } \
+            | jq -n --rawfile s /dev/stdin --arg m "$mod" '
             def files($t; $i):
                 if $i >= ($t | length) then []
                 else ($t[$i + 1] | tonumber) as $n
@@ -1172,12 +1175,18 @@ cmd_config() { # cmd_config show <module>
                                  + (if .[2] == "1" then {value: .[3]} else {} end)]}]
                       + files($t; $i + 2 + 4 * $n)
                 end;
-            (split("\u0000") | .[:-1]) as $t
+            ($s | split("\u0000") | .[:-1]) as $t
             | {schema_version: 1, command: "config", module: $m, files: files($t; 0)}'
     elif [[ ${#files[@]} -eq 0 ]]; then
         printf 'no saved configuration for %s\n' "$mod"
     else
-        printf '%s' "$text"
+        # Text output is UTF-8. A lone byte in 0x80-0x9f is not, so the C1
+        # check above misses it, and a terminal reads a bare 0x9b as CSI.
+        # jq decodes the whole text as UTF-8 whatever the locale and turns
+        # every invalid sequence into U+FFFD, shown here as ?. --rawfile,
+        # not -R, which decodes in 4 KB chunks and splits characters;
+        # split/join, not gsub, which is quadratic in the matches.
+        printf '%s' "$text" | jq -jnr --rawfile t /dev/stdin '$t | split("\ufffd") | join("?")'
     fi
 }
 

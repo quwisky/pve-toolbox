@@ -128,7 +128,8 @@ patterns such as `JOB_*_SRC`. Every other key shows only `(set, hidden)` or
     character, DEL included, with `?`. `--json` keeps those and lets `jq`
     JSON-escape them, except the C1 range (U+0080-U+009F): JSON does not
     require escaping it, `jq` does not either, so `--json` shows it as `?`
-    too, the same as text.
+    too, the same as text. An invalid UTF-8 sequence is shown as `?` in text
+    and as U+FFFD in `--json`.
 
 A module that keeps more than one configuration file names the others in
 `module_config_files`, one name per line, each matching `^[a-z0-9][a-z0-9-]*$`
