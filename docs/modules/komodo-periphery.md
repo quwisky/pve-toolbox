@@ -10,10 +10,17 @@ change VM power, network, or migration settings. Docker workloads require a
 separately configured Docker installation.
 Core must already exist; choose a Periphery release compatible with your Core.
 
+!!! warning "VM support is experimental"
+    Installing into a QEMU VM, over QGA or SSH, has so far been tested only
+    against controlled PVE and guest doubles, not a live PVE 9 node (see
+    [Validation limits](#validation-limits)). Try it on a disposable VM before
+    relying on it. LXC support is not affected.
+
 ## Prerequisites
 
-The guest must be running, unlocked, and use systemd. It needs Bash, jq,
-coreutils, util-linux (`flock`), sed, findutils and dpkg-query. A missing
+The guest must be running, unlocked, and use systemd. The VM ID prompt accepts
+only a running VM on this node; start a stopped VM yourself first. It needs
+Bash, jq, coreutils, util-linux (`flock`), sed, findutils and dpkg-query. A missing
 prerequisite is reported before installation. If necessary, an administrator
 can install missing packages inside the guest; the module does not do this.
 The host needs its usual Proxmox tools, curl and jq. SSH transport also needs
@@ -34,6 +41,24 @@ checking, and disables agent and connection forwarding. Every SSH transfer comma
 the DMI UUID in that same connection; each staged chunk also checks the guest
 machine ID. A changed key or mismatched guest identity stops staging.
 
+The toolbox also records the pinned key's fingerprint (`KP_HOST_FINGERPRINT`).
+If a guest's host key is legitimately rotated, `status`, `check` and `doctor`
+fail for that VM until an operator reviews the new key. To accept it:
+
+1. Verify the guest's new host key through your trusted provisioning process,
+   then replace the entry in the dedicated known-hosts file on the PVE host.
+2. Run `pve-toolbox update komodo-periphery` (or `install` / `uninstall`)
+   **as root on the PVE host, interactively and without `-y`**, and select the VM.
+3. The flow shows the pinned and the new `SHA256:` fingerprints and warns that
+   an unexpected change can indicate a man-in-the-middle attack. Answer `y`
+   only if the new fingerprint matches the key you verified. The default is no.
+
+Accepting the key does not skip guest identity checks. The guest must still
+prove its PVE `smbios1` UUID and recorded machine ID. The new fingerprint is
+recorded only when you confirm and apply the operation. Under `-y`, at end of
+input, and in `status`, `check` or `doctor`, the key is never accepted and the
+VM stays unchanged.
+
 For a new installation, have the Core HTTP or HTTPS URL, a server name and a Core v2
 onboarding key ready. Create the onboarding key in Core. The prompt hides the
 key and transfers it in a protected file. The new agent connects outward to
@@ -43,9 +68,9 @@ a port and path, but must not include credentials, a query or a fragment.
 See [Komodo's connection guide](https://komo.do/docs/setup/connect-servers).
 
 The new service runs as **root inside the guest**. Core can execute agent actions
-with that account's privileges. The preview identifies the guest and service
-account before asking permission to apply changes. In a VM, that account is VM
-root, not PVE host root.
+with that account's privileges. The preview identifies the guest (for a VM,
+including its PVE name) and service account before asking permission to apply
+changes. In a VM, that account is VM root, not PVE host root.
 
 ## Install and update
 
@@ -192,7 +217,10 @@ helpers in `/etc/pve-toolbox/komodo-periphery-CTID.conf`. The managed ID list is
 host state. VM records use `/etc/pve-toolbox/komodo-periphery-qemu-VMID.conf`,
 `/etc/pve-toolbox/komodo-periphery-qemu.conf`, and
 `/var/lib/pve-toolbox/komodo-periphery-qemu-VMID.state`; these are separate from
-LXC records even when the numeric IDs match. Updates to the shared VM list are
+LXC records even when the numeric IDs match. VM state holds a SHA-256 digest of
+the guest machine ID, never the confidential ID itself. A record written by an
+earlier build with the plain ID still matches and is rewritten as a digest by
+the next install, update, uninstall or reconciliation. Updates to the shared VM list are
 serialized, so operations on different VMs preserve each other's entries.
 VM transfer uses a protected nonce-bound directory under guest `/run`.
 Files are sent in verified chunks,
@@ -251,11 +279,17 @@ whose host bookkeeping failed before attempting another change. If identity or
 locality no longer matches, inspect it manually first. Incomplete cleanup retains
 the protected staging location's transaction identifier in host configuration.
 An uninstalled VM remains listed as pending until staging cleanup succeeds;
-rerun the flow for that VM to reconcile it.
+rerun the flow for that VM to reconcile it. The same applies to a VM whose first
+install failed or was interrupted: after that cleanup, a VM with no agent and no
+toolbox ownership is removed from the managed list. Do not edit the VM list by
+hand.
 
 Rollback covers agent binary, service and toolbox-owned configuration changes.
 It cannot undo commands already executed by Core or changes made to workloads.
 
+For each managed VM, status reports unusable saved connection settings, an
+unreachable QGA or SSH transport, and a changed guest identity as separate
+lines, and reports service health only after the guest is reached.
 Status distinguishes local service health from Core enrollment. **A running
 service does not prove that Core accepted it.** Confirm that Core shows the
 server online after installation, update and a separately scheduled reboot.

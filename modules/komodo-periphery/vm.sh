@@ -56,15 +56,16 @@ kp_vm_ids() {
 }
 
 kp_vm_save() { # <vmid> <version> <identity> <fingerprint> <install|update|uninstall>
-    local id=$1 version=$2 identity=$3 fingerprint=$4 action=$5
+    local id=$1 version=$2 identity=$3 fingerprint=$4 action=$5 machine
     kp_target_key qemu "$id" >/dev/null || return 1
+    machine=$(kp_vm_machine_hash "${KP_VM_MACHINE:-}") || return 1
     [[ $action == install || $action == update || $action == uninstall || $action == configure ]] || return 1
     # Even an uninstalled VM remains visible until staging cleanup succeeds.
     kp_vm_register "$id" || return 1
     conf_set "komodo-periphery-qemu-$id" KP_VERSION "$version" &&
         conf_set "komodo-periphery-qemu-$id" KP_IDENTITY "$identity" &&
         state_set "komodo-periphery-qemu-$id" version "$version" &&
-        state_set "komodo-periphery-qemu-$id" machine_id "${KP_VM_MACHINE:-}" &&
+        state_set "komodo-periphery-qemu-$id" machine_id "$machine" &&
         state_set "komodo-periphery-qemu-$id" fingerprint "$fingerprint" &&
         state_set "komodo-periphery-qemu-$id" result "$action completed; Core connectivity unverified" || return 1
 }
@@ -97,7 +98,9 @@ kp_vm_inspect() { # <vmid>; uses selected KP_VM_* connection globals
     elif [[ $KP_VM_TRANSPORT == ssh ]]; then
         [[ -n $uuid ]] || { warn 'SSH requires a PVE smbios1 UUID'; return 1; }
         kp_ssh_inspect "$id" "$KP_VM_ADDRESS" "$KP_VM_PORT" "$KP_VM_KEY" "$KP_VM_HOSTS" "$uuid" || { warn 'pinned SSH guest inspection failed'; return 1; }
-        [[ -z ${KP_VM_HOST_FINGERPRINT:-} || $KP_SSH_HOST_FINGERPRINT == "$KP_VM_HOST_FINGERPRINT" ]] || { warn 'SSH host key changed'; return 1; }
+        [[ -z ${KP_VM_HOST_FINGERPRINT:-} || $KP_SSH_HOST_FINGERPRINT == "$KP_VM_HOST_FINGERPRINT" ]] || {
+            warn 'SSH host key changed; review it with an interactive install, update or uninstall (not -y)'; return 1;
+        }
         result=$KP_SSH_INSPECTION_JSON
     else return 1; fi
     [[ ${#result} -le 65536 ]] && jq -e 'type=="object" and .schema==1 and
@@ -110,10 +113,20 @@ kp_vm_inspect() { # <vmid>; uses selected KP_VM_* connection globals
     KP_INSPECTION_JSON=$result KP_VM_UUID=$uuid
 }
 
-kp_vm_match() { # <vmid> <expected identity> <expected machine ID>
+kp_vm_machine_hash() { # <raw machine ID>; host state keeps only this digest (machine-id(5) is confidential).
+    local digest
+    [[ $1 =~ ^[a-f0-9]{32}$ ]] || return 1
+    digest=$(printf '%s' "$1" | sha256sum) || return 1
+    printf '%s' "${digest%% *}"
+}
+
+kp_vm_match() { # <vmid> <expected identity> <expected machine ID or its kp_vm_machine_hash>; 1 uninspectable, 2 identity changed
+    local observed
     kp_vm_inspect "$1" || return 1
-    [[ $KP_TARGET_IDENTITY == "$2" && $(jq -r .machine_id <<<"$KP_INSPECTION_JSON") == "$3" ]] || {
-        warn 'VM identity changed; no further guest action applied'; return 1;
+    observed=$(jq -r .machine_id <<<"$KP_INSPECTION_JSON")
+    # The raw form is the in-memory value; in state it is a legacy record that the next save rewrites as a hash.
+    [[ $KP_TARGET_IDENTITY == "$2" && ( $3 == "$observed" || $3 == "$(kp_vm_machine_hash "$observed")" ) ]] || {
+        warn 'VM identity changed; no further guest action applied'; return 2;
     }
 }
 
@@ -150,10 +163,10 @@ kp_vm_cleanup() { # <vmid> <stage-directory>; leave pending on any uncertainty
     [[ $(jq -r .transaction <<<"$KP_INSPECTION_JSON") != pending ]] || return 1
     command=$(jq -nc --arg dir "$dir" --arg machine "$KP_VM_MACHINE" '["/bin/bash","-s","--",$dir,$machine]')
     kp_vm_command "$id" "$command" "$TOOLBOX_ROOT/modules/komodo-periphery/stage-cleanup.sh" >/dev/null || return 1
-    # A rolled-back uninstall must stay registered. Only remove the entry for
-    # the committed uninstall whose staging we have just verified as cleaned.
-    if jq -e --arg txn "${dir##*-}" '.transaction=="committed" and .transaction_id==$txn and .last_action=="uninstall"' \
-        <<<"$KP_INSPECTION_JSON" >/dev/null; then
+    # Deregister only a guest with no agent and no toolbox ownership: a committed
+    # uninstall or an install that never committed. A rolled-back uninstall or
+    # a drifted owned install must stay registered.
+    if jq -e '.layout=="absent" and .owned==false' <<<"$KP_INSPECTION_JSON" >/dev/null; then
         kp_vm_registry remove "$id" || return 1
     fi
     conf_set "komodo-periphery-qemu-$id" KP_PENDING '' || return 1
@@ -168,13 +181,14 @@ kp_vm_recover() { # <vmid> <transaction-id>
 }
 
 kp_vm_apply() { # <vmid> <request> <binary-or-empty>
-    local id=$1 request=$2 binary=$3 dir="/run/pve-toolbox-komodo-$KP_TRANSACTION" command result rc=0
+    local id=$1 request=$2 binary=$3 dir="/run/pve-toolbox-komodo-$KP_TRANSACTION" command result rc=0 machine
     kp_vm_match "$id" "$KP_VM_IDENTITY" "$KP_VM_MACHINE" || return 1
+    machine=$(kp_vm_machine_hash "$KP_VM_MACHINE") || return 1
     [[ $(jq -r .fingerprint <<<"$KP_INSPECTION_JSON") == "$KP_VM_FINGERPRINT" ]] || return 1
     kp_vm_register "$id" &&
         conf_set "komodo-periphery-qemu-$id" KP_PENDING "$KP_TRANSACTION" &&
         conf_set "komodo-periphery-qemu-$id" KP_IDENTITY "$KP_VM_IDENTITY" || return 1
-    state_set "komodo-periphery-qemu-$id" machine_id "$KP_VM_MACHINE" &&
+    state_set "komodo-periphery-qemu-$id" machine_id "$machine" &&
         state_set "komodo-periphery-qemu-$id" result 'operation incomplete; inspect pending transaction' || return 1
     if [[ $KP_VM_TRANSPORT == qga ]]; then kp_qga_bootstrap "$KP_NODE" "$id" "$dir" || return 1
     else kp_ssh_bootstrap "$dir" "$KP_VM_UUID" || return 1; fi
@@ -239,6 +253,15 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         if [[ $saved_transport == ssh ]]; then KP_VM_HOST_FINGERPRINT=$(conf_get "$record" KP_HOST_FINGERPRINT); fi
         kp_ssh_prepare "$id" "$address" "$port" "$key_file" "$hosts" || { warn 'SSH identity files or pinned host key invalid'; return 1; }
         port=$KP_SSH_PORT KP_VM_PORT=$KP_SSH_PORT
+        if [[ -n $KP_VM_HOST_FINGERPRINT && $KP_SSH_HOST_FINGERPRINT != "$KP_VM_HOST_FINGERPRINT" ]]; then
+            warn "SSH host key changed: pinned $KP_VM_HOST_FINGERPRINT; known-hosts file now pins $KP_SSH_HOST_FINGERPRINT"
+            warn 'An unexpected change can indicate a man-in-the-middle attack. Verify the new key out of band.'
+            confirm 'Accept the new SSH host key for this VM' n || {
+                warn 'new SSH host key not accepted; VM unchanged. Review it in an interactive run (not -y).'; return 1;
+            }
+            # The guest's DMI UUID and machine ID are still verified below.
+            KP_VM_HOST_FINGERPRINT=$KP_SSH_HOST_FINGERPRINT
+        fi
     fi
     kp_vm_inspect "$id" || return 1
     KP_VM_IDENTITY=$KP_TARGET_IDENTITY
@@ -343,6 +366,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         printf '%s' "$key" > "$KP_VM_WORK/key"; unset key
     fi
     info "Node $KP_NODE / VM $id ($transport): $action Periphery ${version:-absent} -> $release"
+    info "VM name: $(kp_display "$(jq -r --argjson id "$id" '.[] | select(.vmid==$id) | .name // "unnamed"' <<<"$PVE_QEMU_JSON")")"
     info "Guest machine ID: $KP_VM_MACHINE; PVE SMBIOS UUID: ${KP_VM_UUID:-not set}"
     if [[ $transport == ssh ]]; then info "SSH: $address:$port; pinned host key $fingerprint"; fi
     info "Service account: $(kp_display "$(jq -r .service_user <<<"$inspected")"); unit: /etc/systemd/system/periphery.service; binary: /usr/local/bin/periphery"
@@ -373,14 +397,19 @@ kp_vm_status() {
     kp_vm_ids || return 1
     ((${#KP_VM_IDS[@]})) || { printf 'no managed VMs\n'; return 0; }
     kp_host_require || return 1
-    local id record pending failed=0
+    local id record pending failed=0 rc
     for id in "${KP_VM_IDS[@]}"; do
         record="komodo-periphery-qemu-$id"
         pending=$(conf_get "$record" KP_PENDING)
         if [[ -n $pending ]]; then printf 'VM %s: pending transaction %s\n' "$id" "$pending"; failed=1; fi
-        if ! kp_vm_load_connection "$id" || ! kp_vm_match "$id" "$(conf_get "$record" KP_IDENTITY)" "$(state_get "$record" machine_id)"; then
-            printf 'VM %s: unreachable or identity changed\n' "$id"; failed=1; continue
-        fi
+        kp_vm_load_connection "$id" || { printf 'VM %s: saved connection settings unusable\n' "$id"; failed=1; continue; }
+        rc=0
+        kp_vm_match "$id" "$(conf_get "$record" KP_IDENTITY)" "$(state_get "$record" machine_id)" || rc=$?
+        case $rc in
+            0) ;;
+            2) printf 'VM %s: reachable over %s, but the guest identity changed\n' "$id" "$KP_VM_TRANSPORT"; failed=1; continue ;;
+            *) printf 'VM %s: %s transport unreachable\n' "$id" "$KP_VM_TRANSPORT"; failed=1; continue ;;
+        esac
         printf 'VM %s (%s): %s\n' "$id" "$KP_VM_TRANSPORT" "$(jq -r '[.layout,.version,.enabled,.active,.transaction]|join(" / ")' <<<"$KP_INSPECTION_JSON" | tr -d '\000-\037\177')"
         printf 'Core connectivity: unverified\n'
         if [[ -n $pending || $(jq -r .layout <<<"$KP_INSPECTION_JSON") != supported ||

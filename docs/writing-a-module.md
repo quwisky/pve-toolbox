@@ -206,9 +206,13 @@ and install it into `TOOLBOX_BIN_DIR`, so the systemd unit does not depend on
 the checkout staying where it is:
 
 ```bash
-install -m 0755 "$(_my_dir)/my-runner.sh" "$TOOLBOX_BIN_DIR/my-runner"
-install_toolbox_lib discord.sh
+install -m 0755 "$(_my_dir)/my-runner.sh" "$TOOLBOX_BIN_DIR/my-runner" || return 1
+install_toolbox_lib discord.sh || return 1
 ```
+
+Check each write: modules run as a condition, where `set -e` does not apply,
+so an unchecked copy that fails on a full disk leaves a truncated file behind
+a reported success.
 
 Point the unit at both:
 

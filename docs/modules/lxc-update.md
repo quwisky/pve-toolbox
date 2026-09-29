@@ -174,7 +174,11 @@ The excluded IDs prompt takes container IDs from 100 to 999999999 separated by
 spaces, or `none`; an invalid ID is asked again. With `-y`, `LX_EXCLUDE` in the
 environment presets the list (`none` clears it; a blank value keeps the saved
 list), and an invalid preset stops the install, naming `LX_EXCLUDE`, before
-anything is changed.
+anything is changed. The webhook prompt takes a
+`https://discord.com/api/webhooks/<id>/<token>` (or `discordapp.com`) URL, the
+only form the runner reports to; any other answer is asked again. Enter keeps
+the saved webhook and `none` clears it. With `-y`, an invalid saved webhook
+stops the install, naming `DISCORD_WEBHOOK`, before anything is changed.
 Configuration is optional unless exclusions, notifications, or scheduling are
 wanted. Existing hosts remain unscheduled until enabled. Module updates preserve
 the exact saved calendar, enabled state, and scheduled-notification choice. If

@@ -45,6 +45,10 @@ pass "report text is redacted before JSON rendering"
 # The user information of any URL with a scheme is redacted, whatever the
 # scheme and whether or not it has a password; the scheme and host stay.
 # A plain user@host has no scheme and is an identifier, not a credential.
+# User information runs to the last @ before the first /, so a password
+# holding an unencoded # or ? is still redacted. The cost is that an @ in a
+# query or fragment straight after the host is redacted too, which is the
+# safe direction.
 while IFS='|' read -r input want; do
     got=$(report_clean_text "$input")
     [[ $got == "$want" ]] || fail "report_clean_text [$input] gave [$got], want [$want]"
@@ -57,8 +61,10 @@ git+ssh://git@host:repo|git+ssh://[redacted]@host:repo
 root@backup:tank/data|root@backup:tank/data
 user@host|user@host
 https://host.example/p?mail=a@b.example|https://host.example/p?mail=a@b.example
-https://host.example?mail=a@b.example|https://host.example?mail=a@b.example
-https://host.example#a@b|https://host.example#a@b
+https://host.example?mail=a@b.example|https://[redacted]@b.example
+https://host.example#a@b|https://[redacted]@b
+fatal: unable to access 'https://u:ab#cd@git.example/r.git/'|fatal: unable to access 'https://[redacted]@git.example/r.git/'
+https://u:ab?cd@git.example/r|https://[redacted]@git.example/r
 https://alice@corp.example:TOKEN@git.example/r|https://[redacted]@git.example/r
 https://a:b@c@host/x|https://[redacted]@host/x
 HTTPS://u:p@h Ssh://u:p@h|HTTPS://[redacted]@h Ssh://[redacted]@h
@@ -67,6 +73,15 @@ https://u:p@[::1]:8443/x ("ssh://u:p@h")|https://[redacted]@[::1]:8443/x ("ssh:/
 https://u:p@discord.com/api/webhooks/1/TOK|[redacted-webhook]
 EOF
 pass "report text redacts URL user information in any scheme"
+
+# A byte that is not valid in the caller's UTF-8 locale must not stop a
+# match part-way through a secret.
+bad=$'\xff'
+for input in "https://bob:hun${bad}ter2@example.invalid/x" "password=hun${bad}ter2"; do
+    got=$(LC_ALL=C.UTF-8 report_clean_text "$input")
+    [[ $got != *ter2* ]] || fail "report_clean_text leaked a secret with an invalid byte under C.UTF-8: $got"
+done
+pass "report text redaction does not depend on the caller's locale"
 
 report_reset ordering
 report_add pass z.last "last"

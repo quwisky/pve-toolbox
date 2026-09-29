@@ -240,7 +240,7 @@ _lx_config_health() {
     if [[ $(conf_get "$MODULE_NAME" LX_SCHEDULE_NOTIFY) == 1 ]]; then
         local webhook
         webhook=$(conf_get "$MODULE_NAME" DISCORD_WEBHOOK)
-        [[ $webhook =~ ^https://(discord\.com|discordapp\.com)/api/webhooks/[0-9]+/[A-Za-z0-9._-]+$ ]] \
+        [[ -n $webhook ]] && _lx_valid_webhook "$webhook" \
             || { LX_HEALTH_REASON="automatic Discord webhook is invalid"; return 1; }
     fi
 }
@@ -325,6 +325,16 @@ _lx_valid_exclude() { # _lx_valid_exclude <answer>
     ASK_NORMALIZED="${ids[*]}"
 }
 
+# Blank means no webhook. This is the form run.sh requires before a report,
+# stricter than valid_webhook_url: accepting another host here would only move
+# the failure to the run. The reason never repeats the URL: it carries the token.
+_lx_valid_webhook() { # _lx_valid_webhook <answer>
+    [[ -z $1 || $1 =~ ^https://(discord\.com|discordapp\.com)/api/webhooks/[0-9]+/[A-Za-z0-9._-]+$ ]] \
+        && return 0
+    ASK_REASON="enter a https://discord.com/api/webhooks/<id>/<token> URL, or none"
+    return 1
+}
+
 _lx_lock_idle() {
     command -v flock >/dev/null 2>&1 || die "missing host command: flock"
     [[ ! -L $TOOLBOX_STATE_DIR ]] || die "unsafe state directory"
@@ -356,8 +366,7 @@ module_install() {
     ask_valid LX_EXCLUDE "Excluded container IDs, space-separated (use none to clear)" \
         "${LX_EXCLUDE:-none}" _lx_valid_exclude
     [[ $LX_EXCLUDE != none ]] || LX_EXCLUDE=""
-    ask_secret DISCORD_WEBHOOK "Discord webhook URL (optional)"
-    [[ $DISCORD_WEBHOOK != none ]] || DISCORD_WEBHOOK=""
+    ask_secret DISCORD_WEBHOOK "Discord webhook URL (optional)" _lx_valid_webhook
 
     schedule_enabled=n
     case ${LX_SCHEDULE_ENABLED,,} in 1|y|yes) schedule_enabled=y ;; esac
@@ -374,7 +383,7 @@ module_install() {
         case ${LX_SCHEDULE_NOTIFY,,} in 1|y|yes) schedule_notify=y ;; esac
         ask_yn schedule_notify "Send a Discord report after every automatic run" "$schedule_notify"
         if [[ $schedule_notify == y ]]; then
-            [[ $DISCORD_WEBHOOK =~ ^https://(discord\.com|discordapp\.com)/api/webhooks/[0-9]+/[A-Za-z0-9._-]+$ ]] \
+            [[ -n $DISCORD_WEBHOOK ]] \
                 || die "automatic reports require a configured Discord webhook"
         fi
     else
