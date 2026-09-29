@@ -67,9 +67,10 @@ _cli_distance() { # _cli_distance <a> <b> -> distance
     printf '%s' "${prev[${#b}]}"
 }
 
-# What the operator probably meant. A candidate that is the only one starting
-# with the word wins outright; otherwise every candidate within two edits
-# qualifies, closest first and then in the order given. At most three.
+# What the operator probably meant. When one to three candidates start with
+# the word, those win outright, in the order given; otherwise every candidate
+# within two edits qualifies, closest first and then in the order given. At
+# most three.
 cli_suggest() { # cli_suggest <word> <candidate>... -> up to 3, one per line
     local word=$1 c d n=0
     local -a prefix=() scored=()
@@ -90,8 +91,8 @@ cli_suggest() { # cli_suggest <word> <candidate>... -> up to 3, one per line
         if ((d <= 2)); then scored+=("$d $n $c"); fi
         n=$((n + 1))
     done
-    if ((${#prefix[@]} == 1)); then
-        printf '%s\n' "${prefix[0]}"
+    if ((${#prefix[@]} >= 1 && ${#prefix[@]} <= 3)); then
+        printf '%s\n' "${prefix[@]}"
         return 0
     fi
     ((${#scored[@]})) || return 0
@@ -200,7 +201,7 @@ declare -A CLI_DESC=(
     [lxc-update]="Update running Debian/Ubuntu containers on the local PVE 9 host. Requires interactive confirmation. Use --dry-run for a cached preview, --allow-removals to enable package removals and cleanup, and --notify for a Discord report. Saved exclusions always apply. No automatic reboots, backups, rollback, or distribution upgrades. Package scripts may restart services. Use 'pve-toolbox install lxc-update' to configure an optional node-local systemd schedule. Scheduled runs update every eligible local container with the non-removing policy, never catch up after downtime, and can report every batch to Discord when explicitly enabled. Use 'pve-toolbox status lxc-update' to inspect timer health and recent results."
     [doctor]="The audit covers host, cluster, storage and installed modules. Exit status 0 when healthy, 2 when warnings are present, 1 when a check fails, 69 when every meaningful check is unsupported."
     [link]="Packaged installs refuse this command."
-    [config]="Only keys the module declares public show their value, as stored and after the usual cleanup (credential URLs redacted, tabs and carriage returns turned into spaces, newlines joined with '; '; any other control character, including DEL, shown as ? in text and JSON-escaped in --json, except the C1 range U+0080-U+009F, which JSON does not require escaping and --json does not either, so it is shown as ? there too; an invalid UTF-8 sequence shown as ? in text and as U+FFFD in --json); every other key shows only whether it is set. The stored KEY='value' lines are parsed, nothing is expanded, and the file is never run; a line outside that form refuses the file. A configuration file or directory that is a symbolic link, is not owned by root, or is writable by group or others is refused too, before anything is read."
+    [config]="Only keys the module declares public show their value, after the usual cleanup; every other key shows only whether it is set. The file is parsed, never run, and refused when unsafe. The automation guide in the project documentation gives the exact cleanup and refusal rules."
 )
 declare -A CLI_EXAMPLES=(
     [list]=$'pve-toolbox list\npve-toolbox list storage\npve-toolbox list --json'
@@ -1600,7 +1601,8 @@ export ASSUME_YES FORCE TOOLBOX_ROOT TOOLBOX_PACKAGED
 case $command_name in
     menu)        menu ;;
     lxc-update)  exec bash "$MODULE_DIR/lxc-update/run.sh" "${LXC_FLAGS[@]}" "${ARGS[@]:1}" ;;
-    list)        cmd_list "${ARGS[@]:1}" ;;
+    list)        [[ ${#ARGS[@]} -le 2 ]] || cli_usage_error "list takes at most one tag" list
+                 cmd_list "${ARGS[@]:1}" ;;
     install)     [[ ${#ARGS[@]} -lt 2 ]] && cli_usage_error "install needs a module name" install
                  cmd_each module_install "${ARGS[@]:1}" ;;
     update)      cmd_each module_update "${ARGS[@]:1}" ;;
@@ -1624,7 +1626,8 @@ case $command_name in
     _complete)   cmd_complete "${ARGS[@]:1}" ;;
     _man)        cmd_man ;;
     self-update) cmd_self_update ;;
-    help)        if [[ ${#ARGS[@]} -eq 1 ]]; then
+    help)        [[ ${#ARGS[@]} -le 2 ]] || cli_usage_error "help takes at most one command" help
+                 if [[ ${#ARGS[@]} -eq 1 ]]; then
                      cli_help_overview
                  else
                      cli_help_topic "${ARGS[1]}"
