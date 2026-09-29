@@ -204,6 +204,48 @@ for file in "${NT_TEMPLATE_FILES[@]}"; do
 done
 pass "first template copy failure aborts configuration and removes partial assets"
 
+# A first install that cannot save its configuration or record ownership must
+# not leave objects that a rerun and uninstall would refuse as unowned.
+_assert_first_install_rolled_back() { # <label> <output>
+    [[ $2 == *'objects created by this run were removed'* && $2 != *'configured and tested'* ]] \
+        || fail "$1 did not report the rollback: $2"
+    [[ ! -e $API_ROOT/endpoints/webhook.pve-toolbox-discord.json \
+        && ! -e $API_ROOT/matchers/pve-toolbox-discord.json \
+        && ! -e $TOOLBOX_BIN_DIR/$NT_HELPER \
+        && ! -e $(conf_file native-notifications) \
+        && ! -e $TOOLBOX_STATE_DIR/native-notifications.state ]] \
+        || fail "$1 left objects, assets, configuration, or state behind"
+    for file in "${NT_TEMPLATE_FILES[@]}"; do
+        [[ ! -e $NT_TEMPLATE_DIR/$file ]] || fail "$1 retained $file"
+    done
+    rm -f -- "$TEST_COUNT_FILE"
+}
+rc=0; out=$( conf_set() { return 1; }; _nt_configure 2>&1 ) || rc=$?
+[[ $rc -ne 0 && $out == *'was not saved'* ]] || fail "first-install save failure passed: $out"
+_assert_first_install_rolled_back "first-install save failure" "$out"
+rc=0
+out=$(
+    state_set() { # records the first key, then fails like a full disk
+        [[ $2 == TARGET_TYPE ]] || return 1
+        printf '%s=%s\n' "$2" "$3" > "$(_state_file "$1")"
+    }
+    _nt_configure 2>&1
+) || rc=$?
+[[ $rc -ne 0 && $out == *'ownership state was not recorded'* ]] \
+    || fail "first-install state failure passed: $out"
+_assert_first_install_rolled_back "first-install state failure" "$out"
+rc=0; out=$( conf_set() { return 1; }; FAIL_TARGET_DELETE=1 _nt_configure 2>&1 ) || rc=$?
+[[ $rc -ne 0 && $out == *'removing what this run created failed'* \
+    && $out != *'were removed'* ]] || fail "failed first-install rollback was not reported: $out"
+retained_backup=${out##*restore assets from }; retained_backup=${retained_backup%%, and clear*}
+[[ -d $retained_backup && $retained_backup == "${TMPDIR:-/tmp}/tmp."* && ! -L $retained_backup ]] \
+    || fail "failed first-install rollback did not retain its asset backup: $out"
+rm -r -- "$retained_backup"
+rm -f -- "$API_ROOT/endpoints/webhook.pve-toolbox-discord.json" "$TEST_COUNT_FILE" \
+    "$API_ROOT/endpoints/webhook.pve-toolbox-discord.private" "$TOOLBOX_BIN_DIR/$NT_HELPER"
+for file in "${NT_TEMPLATE_FILES[@]}"; do rm -f -- "$NT_TEMPLATE_DIR/$file"; done
+pass "a first install that cannot save its records removes what it created"
+
 output=$(_nt_configure) || fail "initial notification configuration failed"
 _nt_assets_current || fail "installed template contents differ from source"
 [[ $(stat -c '%a' "$TOOLBOX_BIN_DIR/$NT_HELPER") == 755 ]] \

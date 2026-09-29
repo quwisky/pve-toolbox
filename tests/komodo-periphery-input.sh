@@ -54,17 +54,21 @@ done
 pass 'release validator normalizes a v prefix'
 
 PVE_LXC_JSON='[{"vmid":101,"name":"one","status":"running"},{"vmid":102,"status":"stopped"}]'
-PVE_QEMU_JSON='[{"vmid":201,"name":"vm","status":"running"}]'
+PVE_QEMU_JSON='[{"vmid":201,"name":"vm","status":"running"},{"vmid":203,"name":"off","status":"stopped"}]'
 accepts kp_valid_ctid 101
 accepts kp_valid_ctid 102
 for id in '' 103 201 99 0101 '101 ' '101;touch x' ../101 1e2; do
     rejects kp_valid_ctid "$id" 'select one listed local container'
 done
 accepts kp_valid_vmid 201
+stopped_reason='select a running VM; this module does not start VMs'
 for id in '' 202 101 99 0201 '201 ' '201;touch x' ../201; do
     rejects kp_valid_vmid "$id" 'select one listed local VM'
 done
-pass 'guest ID validators accept only listed local guests'
+# Every VM action inspects the running guest, so a stopped VM is refused at
+# the prompt, before the transport and SSH questions.
+rejects kp_valid_vmid 203 "$stopped_reason"
+pass 'guest ID validators accept only listed local guests and running VMs'
 
 # The real kp_host_safe needs root-owned files. Like the flows below, the test
 # treats anything under $WORK that is not a symlink as safe, and anything else
@@ -165,7 +169,10 @@ pass 'printable-only validators for the server name and onboarding key'
 # --- VM flow through piped answers ----------------------------------------------
 
 kp_host_require() { KP_NODE=pve1; }
-pve_qemu_inventory() { PVE_QEMU_JSON='[{"vmid":201,"name":"fixture","status":"running"}]'; }
+# The PVE VM name carries an escape sequence the preview must not pass through.
+pve_qemu_inventory() {
+    PVE_QEMU_JSON='[{"vmid":201,"name":"fix\u001b[31mture","status":"running"},{"vmid":203,"name":"off","status":"stopped"}]'
+}
 kp_ssh_prepare() {
     printf 'prepare %s\n' "$*" >> "$WORK/calls"
     KP_SSH_PORT=$3 KP_SSH_HOST_FINGERPRINT=SHA256:fixture
@@ -209,12 +216,13 @@ vm_clean() {
 
 # A fresh SSH install: every prompt gets one bad answer first.
 KP_FIXTURE_INSPECTION=$(inspection absent)
-vm_run install "$(printf '%s\n' 202 201 sshx SSH '' host_name 'a b' 192.0.2.20 70000 '' \
+vm_run install "$(printf '%s\n' 202 203 201 sshx SSH '' host_name 'a b' 192.0.2.20 70000 '' \
     id_ed25519 "$WORK/ssh/link" "$WORK/ssh/id_ed25519" known "$WORK/ssh/missing" "$OUTSIDE/id_ed25519" \
     "$WORK/ssh/dir" "$WORK/ssh/pin-other" "$WORK/ssh/known_hosts" 2.3 v2.3.3 ftp://core.example.invalid https://core.example.invalid \
     $'vm\x01one' '' '' $'tab-secret\tx' fixture-secret n)"
 [[ $VM_RC == 0 ]] || fail "VM install flow exit $VM_RC [$VM_OUT]"
 vm_count 'select one listed local VM' 1 'unlisted VM ID'
+vm_count "$stopped_reason" 1 'stopped VM ID'
 vm_count 'choose one of qga/ssh' 1 'unknown transport'
 vm_count "$address_reason" 3 'blank, underscored and spaced SSH addresses'
 vm_count 'a value is required' 1 'blank onboarding key'
@@ -228,6 +236,8 @@ grep -Fxq "prepare 201 192.0.2.20 22 $WORK/ssh/id_ed25519 $WORK/ssh/known_hosts"
     || fail "SSH answers not passed on: $(cat "$WORK/calls")"
 grep -Fxq 'release v2.3.3' "$WORK/calls" || fail 'v-prefixed release not normalized once'
 vm_expect 'Node pve1 / VM 201 (ssh): install Periphery absent -> 2.3.3' 'install preview'
+vm_expect 'VM name: fix[31mture' 'install preview VM name'
+[[ $VM_OUT != *$'\e'* ]] || fail "VM name escape sequence reached the terminal [$VM_OUT]"
 vm_expect 'SSH: 192.0.2.20:22;' 'blank SSH port did not default to 22'
 vm_expect 'cancelled; VM unchanged' 'declined install'
 vm_clean 'VM install flow'

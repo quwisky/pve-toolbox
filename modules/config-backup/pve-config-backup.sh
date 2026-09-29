@@ -207,11 +207,12 @@ _cb_state_set() { # _cb_state_set <key> <value>
         END { if (!found) print k "=" ENVIRON["_STATE_V"] }
     ' "$CB_STATE_FILE") || return 1
     # As state_set in lib/common.sh: a hidden temporary file beside the state
-    # file, synced and renamed onto it, so a write that fails part way keeps
-    # the previous file whole and nothing depends on TMPDIR.
+    # file, synced and renamed onto it, then the directory synced, so a write
+    # that fails part way keeps the previous file whole and nothing depends
+    # on TMPDIR.
     tmp=$(mktemp "$dir/.${CB_STATE_FILE##*/}.XXXXXX") || return 1
     printf '%s\n' "$out" > "$tmp" && chmod 0644 "$tmp" && sync -- "$tmp" \
-        && mv -fT -- "$tmp" "$CB_STATE_FILE" && return 0
+        && mv -fT -- "$tmp" "$CB_STATE_FILE" && sync -- "$dir" && return 0
     rm -f "$tmp"
     return 1
 }

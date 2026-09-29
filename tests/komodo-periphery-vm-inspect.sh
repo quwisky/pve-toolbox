@@ -33,3 +33,36 @@ PVE_QEMU_CONFIG_JSON='{"agent":"enabled=0"}'
 kp_ssh_inspect() { fail 'SSH called without PVE UUID'; }
 if kp_vm_inspect 201; then fail 'SSH accepted VM without SMBIOS UUID'; fi
 printf 'ok VM inspection binds machine identity and enforces transport prerequisites\n'
+
+# Status names an unreachable transport, a changed guest identity and unusable
+# saved settings separately, and reports service health only once reachable.
+WORK=$(mktemp -d)
+trap 'rm -rf -- "$WORK"' EXIT
+export TOOLBOX_CONF_DIR="$WORK/conf" TOOLBOX_STATE_DIR="$WORK/state"
+KP_VM_TRANSPORT=qga PVE_QEMU_CONFIG_JSON='{"agent":1}' MACHINE=0123456789abcdef0123456789abcdef
+kp_vm_inspect 201 || fail 'status fixture inspection rejected'
+conf_set komodo-periphery-qemu-201 KP_IDENTITY "$KP_TARGET_IDENTITY"
+state_set komodo-periphery-qemu-201 machine_id "$MACHINE"
+state_set komodo-periphery-qemu-201 fingerprint absent
+kp_vm_ids() { KP_VM_IDS=(201); }
+kp_host_require() { KP_NODE=pve1; }
+kp_vm_load_connection() { KP_VM_TRANSPORT=qga; }
+vm_status() { # vm_status <the one expected VM line> <what>
+    local out
+    if out=$(kp_vm_status 2>&1); then fail "$2 reported healthy [$out]"; fi
+    [[ $(grep '^VM 201' <<<"$out") == "$1" ]] || fail "$2: expected only [$1] in [$out]"
+}
+real_qga_exec=$(declare -f kp_qga_exec)
+kp_qga_exec() { return 1; }
+vm_status 'VM 201: qga transport unreachable' 'QGA transport failure'
+eval "$real_qga_exec"
+MACHINE=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+vm_status 'VM 201: reachable over qga, but the guest identity changed' 'reused VM'
+MACHINE=0123456789abcdef0123456789abcdef
+kp_vm_load_connection() { return 1; }
+vm_status 'VM 201: saved connection settings unusable' 'invalid saved connection'
+kp_vm_load_connection() { KP_VM_TRANSPORT=qga; }
+out=$(kp_vm_status 2>&1) && fail "absent agent reported healthy [$out]"
+[[ $out == *'VM 201 (qga): absent'* && $out == *'inactive service'* && $out != *unreachable* ]] \
+    || fail "reachable guest without a running agent misreported [$out]"
+printf 'ok VM status separates transport reachability, identity and service health\n'

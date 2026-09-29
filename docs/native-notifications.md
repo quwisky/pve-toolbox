@@ -54,7 +54,10 @@ permissions under `/etc/pve`, where Proxmox assigns permissions by path. This
 fixes the legacy `install: setting permissions ... Operation not permitted`
 failure during asset installation or restoration. If restoring assets fails,
 the error reports the retained private backup directory for recovery instead
-of claiming that restoration succeeded.
+of claiming that restoration succeeded. If a first install creates and tests
+the target and matcher but cannot save its configuration or ownership state,
+it removes the target, matcher, helper, and templates it created so that the
+next install is not refused as conflicting with unowned objects.
 
 ## Removing an old target
 

@@ -34,7 +34,8 @@ printf binary > "$WORK/binary"
 kp_vm_apply 201 "$WORK/request.json" "$WORK/binary" || fail 'valid VM apply rejected'
 [[ $(conf_get komodo-periphery-qemu-201 KP_PENDING) == "$KP_TRANSACTION" ]] || fail 'pending marker absent before commit bookkeeping'
 [[ $(conf_get komodo-periphery-qemu KP_VM_IDS) == 201 ]] || fail 'first-install pending VM hidden from inventory'
-[[ $(state_get komodo-periphery-qemu-201 machine_id) == "$KP_VM_MACHINE" ]] || fail 'pending VM machine identity absent'
+[[ $(state_get komodo-periphery-qemu-201 machine_id) == "$(printf '%s' "$KP_VM_MACHINE" | sha256sum | cut -d ' ' -f1)" ]] || fail 'pending VM machine identity absent'
+if grep -rFq "$KP_VM_MACHINE" "$TOOLBOX_STATE_DIR"; then fail 'raw VM machine ID persisted in host state'; fi
 kp_host_require() { :; }
 kp_vm_load_connection() { KP_VM_TRANSPORT=qga; }
 status=$(kp_vm_status 2>&1) && fail 'pending VM reported healthy'
@@ -60,7 +61,7 @@ if kp_vm_cleanup 201 "/run/pve-toolbox-komodo-$KP_TRANSACTION"; then fail 'pendi
 # Uninstall commits before staging cleanup. A lost connection must keep the
 # target discoverable, and rerunning the public flow must reconcile it safely.
 KP_INSPECTION_JSON=$(jq -nc --arg txn "$KP_TRANSACTION" --arg machine "$KP_VM_MACHINE" \
-    '{schema:1,transaction:"committed",transaction_id:$txn,last_action:"uninstall",layout:"absent",version:"",fingerprint:"absent",machine_id:$machine}')
+    '{schema:1,transaction:"committed",transaction_id:$txn,last_action:"uninstall",owned:false,layout:"absent",version:"",fingerprint:"absent",machine_id:$machine}')
 conf_set komodo-periphery-qemu-201 KP_TRANSPORT qga
 kp_vm_save 201 '' identity absent uninstall || fail 'uninstall bookkeeping failed'
 KP_VM_FAIL_MATCH=1
@@ -92,6 +93,40 @@ kp_vm_change uninstall || fail 'completed uninstall could not be reconciled'
 [[ -z $(conf_get komodo-periphery-qemu KP_VM_IDS) ]] || fail 'cleaned uninstall still registered'
 [[ $(kp_vm_status) == 'no managed VMs' ]] || fail 'cleaned uninstall reported incomplete'
 printf 'ok VM transfer intent, staging failure, secret isolation and cleanup\n'
+
+# A first install that never commits leaves nothing to uninstall. Rerunning the
+# flow must deregister the VM instead of stranding it in status and doctor.
+kp_absent() { # <transaction> <transaction-id> <last-action>
+    jq -nc --arg transaction "$1" --arg txn "$2" --arg action "$3" --arg machine "$KP_VM_MACHINE" \
+        '{schema:1,transaction:$transaction,transaction_id:$txn,last_action:$action,owned:false,layout:"absent",version:"",fingerprint:"absent",machine_id:$machine}'
+}
+KP_TRANSACTION=cccccccccccccccccccccccccccccccc
+KP_INSPECTION_JSON=$(kp_absent none '' '')
+KP_VM_FAIL_STAGE=request
+if kp_vm_apply 201 "$WORK/request.json" "$WORK/binary"; then fail 'failed first install accepted'; fi
+unset KP_VM_FAIL_STAGE
+[[ $(conf_get komodo-periphery-qemu KP_VM_IDS) == 201 ]] || fail 'failed first install hidden before cleanup'
+kp_vm_change install || fail 'failed first install could not be cleaned up'
+[[ -z $(conf_get komodo-periphery-qemu-201 KP_PENDING) ]] || fail 'failed first install left pending marker'
+[[ -z $(conf_get komodo-periphery-qemu KP_VM_IDS) ]] || fail 'failed first install still registered'
+[[ $(kp_vm_status) == 'no managed VMs' ]] || fail 'failed first install reported incomplete'
+# A failed reinstall after an earlier committed uninstall is equally unmanaged.
+kp_vm_register 201
+KP_INSPECTION_JSON=$(kp_absent committed bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb uninstall)
+kp_vm_cleanup 201 "/run/pve-toolbox-komodo-$KP_TRANSACTION" || fail 'failed reinstall cleanup rejected'
+[[ -z $(conf_get komodo-periphery-qemu KP_VM_IDS) ]] || fail 'failed reinstall still registered'
+# An owned agent stays managed: a rolled-back uninstall restores it, and a
+# committed install whose files were removed out of band is drift to report.
+for inspection in \
+    "$(kp_absent committed "$KP_TRANSACTION" install | jq -c '.owned=true|.layout="supported"')" \
+    "$(kp_absent committed "$KP_TRANSACTION" install | jq -c '.owned=true')"; do
+    kp_vm_register 201
+    KP_INSPECTION_JSON=$inspection
+    kp_vm_cleanup 201 "/run/pve-toolbox-komodo-$KP_TRANSACTION" || fail 'owned VM cleanup rejected'
+    [[ $(conf_get komodo-periphery-qemu KP_VM_IDS) == 201 ]] || fail 'owned VM deregistered'
+    conf_clear komodo-periphery-qemu
+done
+printf 'ok failed first install deregistered; owned VMs stay managed\n'
 
 # A rotated SSH host key: only interactive consent re-pins it, and the guest
 # identity must still match. Restore the real orchestration and prompts first.
