@@ -23,9 +23,12 @@ kp_valid_ctid() { # a container listed in PVE_LXC_JSON by pve_lxc_inventory
         || { ASK_REASON='select one listed local container'; return 1; }
 }
 # shellcheck disable=SC2034
-kp_valid_vmid() { # a VM listed in PVE_QEMU_JSON by pve_qemu_inventory
+kp_valid_vmid() { # a running VM listed in PVE_QEMU_JSON by pve_qemu_inventory
     kp_target_key qemu "$1" >/dev/null && jq -e --argjson id "$1" 'any(.[];.vmid==$id)' <<<"$PVE_QEMU_JSON" >/dev/null \
         || { ASK_REASON='select one listed local VM'; return 1; }
+    # Every VM action inspects the running guest; refuse before the transport prompts.
+    jq -e --argjson id "$1" 'any(.[];.vmid==$id and .status=="running")' <<<"$PVE_QEMU_JSON" >/dev/null \
+        || { ASK_REASON='select a running VM; this module does not start VMs'; return 1; }
 }
 # The guest refuses bytes below 32 and 127 in the server name and onboarding
 # key, but only after the Apply confirm. The prompts refuse those first, and

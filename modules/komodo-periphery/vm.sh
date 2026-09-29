@@ -110,10 +110,10 @@ kp_vm_inspect() { # <vmid>; uses selected KP_VM_* connection globals
     KP_INSPECTION_JSON=$result KP_VM_UUID=$uuid
 }
 
-kp_vm_match() { # <vmid> <expected identity> <expected machine ID>
+kp_vm_match() { # <vmid> <expected identity> <expected machine ID>; 1 uninspectable, 2 identity changed
     kp_vm_inspect "$1" || return 1
     [[ $KP_TARGET_IDENTITY == "$2" && $(jq -r .machine_id <<<"$KP_INSPECTION_JSON") == "$3" ]] || {
-        warn 'VM identity changed; no further guest action applied'; return 1;
+        warn 'VM identity changed; no further guest action applied'; return 2;
     }
 }
 
@@ -343,6 +343,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         printf '%s' "$key" > "$KP_VM_WORK/key"; unset key
     fi
     info "Node $KP_NODE / VM $id ($transport): $action Periphery ${version:-absent} -> $release"
+    info "VM name: $(kp_display "$(jq -r --argjson id "$id" '.[] | select(.vmid==$id) | .name // "unnamed"' <<<"$PVE_QEMU_JSON")")"
     info "Guest machine ID: $KP_VM_MACHINE; PVE SMBIOS UUID: ${KP_VM_UUID:-not set}"
     if [[ $transport == ssh ]]; then info "SSH: $address:$port; pinned host key $fingerprint"; fi
     info "Service account: $(kp_display "$(jq -r .service_user <<<"$inspected")"); unit: /etc/systemd/system/periphery.service; binary: /usr/local/bin/periphery"
@@ -373,14 +374,19 @@ kp_vm_status() {
     kp_vm_ids || return 1
     ((${#KP_VM_IDS[@]})) || { printf 'no managed VMs\n'; return 0; }
     kp_host_require || return 1
-    local id record pending failed=0
+    local id record pending failed=0 rc
     for id in "${KP_VM_IDS[@]}"; do
         record="komodo-periphery-qemu-$id"
         pending=$(conf_get "$record" KP_PENDING)
         if [[ -n $pending ]]; then printf 'VM %s: pending transaction %s\n' "$id" "$pending"; failed=1; fi
-        if ! kp_vm_load_connection "$id" || ! kp_vm_match "$id" "$(conf_get "$record" KP_IDENTITY)" "$(state_get "$record" machine_id)"; then
-            printf 'VM %s: unreachable or identity changed\n' "$id"; failed=1; continue
-        fi
+        kp_vm_load_connection "$id" || { printf 'VM %s: saved connection settings unusable\n' "$id"; failed=1; continue; }
+        rc=0
+        kp_vm_match "$id" "$(conf_get "$record" KP_IDENTITY)" "$(state_get "$record" machine_id)" || rc=$?
+        case $rc in
+            0) ;;
+            2) printf 'VM %s: reachable over %s, but the guest identity changed\n' "$id" "$KP_VM_TRANSPORT"; failed=1; continue ;;
+            *) printf 'VM %s: %s transport unreachable\n' "$id" "$KP_VM_TRANSPORT"; failed=1; continue ;;
+        esac
         printf 'VM %s (%s): %s\n' "$id" "$KP_VM_TRANSPORT" "$(jq -r '[.layout,.version,.enabled,.active,.transaction]|join(" / ")' <<<"$KP_INSPECTION_JSON" | tr -d '\000-\037\177')"
         printf 'Core connectivity: unverified\n'
         if [[ -n $pending || $(jq -r .layout <<<"$KP_INSPECTION_JSON") != supported ||
