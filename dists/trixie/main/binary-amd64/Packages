@@ -1,16 +1,16 @@
 Package: pve-toolbox
-Version: 0.8.0
+Version: 0.10.0
 Architecture: all
 Maintainer: Bence Nagy <quwisky@qwky.eu>
-Installed-Size: 597
+Installed-Size: 742
 Depends: curl, jq
-Recommends: whiptail, zfsutils-linux
+Recommends: whiptail, zfsutils-linux, openssh-client
 Suggests: smartmontools, sanoid
-Filename: pool/main/p/pve-toolbox/pve-toolbox_0.8.0_all.deb
-Size: 124768
-MD5sum: 4b8b50a40739cdcb31c8cfe8cc481854
-SHA1: b242b88574a3b96763637257e7a21ba40f359722
-SHA256: 8acf3edfaa645e5fc305716a83f2954d335dca6802f617026b0b52afca7e8c8f
+Filename: pool/main/p/pve-toolbox/pve-toolbox_0.10.0_all.deb
+Size: 159476
+MD5sum: 74c643f3a11ea42e2bb869ebe40bb4d4
+SHA1: 75ea14ad3867579843d595d87fdfd0a491cd3a30
+SHA256: b2205e910ce9de7616a715622c618cbf4568ecff1a7bc5427898707259a63355
 Section: admin
 Priority: optional
 Homepage: https://github.com/quwisky/pve-toolbox
