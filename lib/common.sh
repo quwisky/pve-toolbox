@@ -690,7 +690,8 @@ install_toolbox_lib() {
     for n in "$@"; do
         src="${BASH_SOURCE[0]%/*}/$n"
         [[ -f $src ]] || die "missing shared lib: $src"
-        install -m 0644 "$src" "$TOOLBOX_LIB_DIR/$n"
+        install -m 0644 "$src" "$TOOLBOX_LIB_DIR/$n" \
+            || { warn "could not install $TOOLBOX_LIB_DIR/$n"; return 1; }
         ok "installed $TOOLBOX_LIB_DIR/$n"
     done
 }

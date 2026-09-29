@@ -129,7 +129,7 @@ _zr_webhook_shown() {
 
 # One template service for every job; %i is the job name.
 _zr_write_service() {
-    cat > "$TOOLBOX_SYSTEMD_DIR/$ZR_UNIT@.service" <<EOF
+    cat > "$TOOLBOX_SYSTEMD_DIR/$ZR_UNIT@.service" <<EOF || { warn "could not write $ZR_UNIT@.service"; return 1; }
 [Unit]
 Description=pve-toolbox ZFS replication job %i
 Documentation=man:syncoid(8)
@@ -153,7 +153,7 @@ EOF
 
 _zr_write_timer() { # _zr_write_timer <job> <OnCalendar>
     _zr_valid_schedule "$2" || die "invalid systemd OnCalendar for $1: $2"
-    cat > "$TOOLBOX_SYSTEMD_DIR/$ZR_UNIT@$1.timer" <<EOF
+    cat > "$TOOLBOX_SYSTEMD_DIR/$ZR_UNIT@$1.timer" <<EOF || { warn "could not write $ZR_UNIT@$1.timer"; return 1; }
 [Unit]
 Description=pve-toolbox ZFS replication job $1 (timer)
 
@@ -166,6 +166,21 @@ Unit=$ZR_UNIT@$1.service
 [Install]
 WantedBy=timers.target
 EOF
+}
+
+# The runner, the lib it sources, and the service template.
+_zr_install_files() {
+    local dst="$TOOLBOX_BIN_DIR/$ZR_BIN"
+    install_toolbox_lib discord.sh || return 1
+    install -m 0755 "$(_zr_src)" "$dst" || { warn "could not install $dst"; return 1; }
+    ok "installed $dst"
+    _zr_write_service
+}
+
+# From the first unit write until daemon-reload, an interrupt still reloads
+# systemd, so no unit file on disk differs from what it runs.
+_zr_reload_on_signal() {
+    trap 'systemctl daemon-reload; exit 130' INT TERM HUP
 }
 
 _zr_enable() {
@@ -266,7 +281,7 @@ _zr_save_job() { # _zr_save_job <job>
     conf_set "$MODULE_NAME" "$(_zr_key "$job" CHOWN)" "${ZR_ANS_CHOWN[$job]}" || return 1
     conf_set "$MODULE_NAME" "$(_zr_key "$job" CHMOD)" "${ZR_ANS_CHMOD[$job]}" || return 1
     conf_set "$MODULE_NAME" "$(_zr_key "$job" PATH)"  "${ZR_ANS_PATH[$job]}" || return 1
-    _zr_write_timer "$job" "${ZR_ANS_SCHED[$job]}"
+    _zr_write_timer "$job" "${ZR_ANS_SCHED[$job]}" || return 1
     ok "job $job: ${ZR_ANS_SRC[$job]} -> ${ZR_ANS_DST[$job]}  (${ZR_ANS_SCHED[$job]})"
 }
 
@@ -331,6 +346,7 @@ module_install() {
     conf_set "$MODULE_NAME" LOG_DIR "$ZR_LOG_DIR" || return 1
     local notify_start=0 failed=0
     [[ $ZFS_REPL_NOTIFY_START == y ]] && notify_start=1
+    _zr_reload_on_signal
     for job in "${kept[@]}"; do
         _zr_save_job "$job" || { failed=1; break; }
     done
@@ -338,21 +354,17 @@ module_install() {
         conf_set "$MODULE_NAME" NOTIFY_START "$notify_start" \
             && conf_set "$MODULE_NAME" JOBS "${kept[*]}" || failed=1
     fi
-    # _zr_save_job writes each job's timer: a reinstall has replaced timers
-    # systemd already runs, so reload before failing.
-    if ((failed == 1)); then
-        systemctl daemon-reload || warn "systemctl daemon-reload failed"
-        return 1
+    if ((failed == 0)); then
+        step "Install"
+        _zr_install_files || failed=1
+        mkdir -p "$ZR_LOG_DIR"
+        chmod 0750 "$ZR_LOG_DIR"
     fi
-
-    step "Install"
-    install_toolbox_lib discord.sh
-    install -m 0755 "$(_zr_src)" "$TOOLBOX_BIN_DIR/$ZR_BIN"
-    ok "installed $TOOLBOX_BIN_DIR/$ZR_BIN"
-    mkdir -p "$ZR_LOG_DIR"
-    chmod 0750 "$ZR_LOG_DIR"
-    _zr_write_service
-    systemctl daemon-reload || { warn "systemctl daemon-reload failed"; return 1; }
+    # _zr_save_job writes each job's timer: a reinstall has replaced timers
+    # systemd already runs, so reload even when a write failed.
+    systemctl daemon-reload || { warn "systemctl daemon-reload failed"; failed=1; }
+    trap - INT TERM HUP
+    ((failed == 0)) || return 1
     for job in "${kept[@]}"; do
         _zr_enable "$job" || die "could not enable the timer for $job"
     done
@@ -458,22 +470,24 @@ module_update() {
     fi
 
     step "Runner and units"
-    install_toolbox_lib discord.sh
-    install -m 0755 "$src" "$dst"
-    ok "installed $dst"
-    _zr_write_service
-    for j in "${drops[@]}"; do
-        _zr_remove_timer "$j"
-        ok "removed $ZR_UNIT@$j.timer"
-    done
     local failed=0
-    for j in "${answered[@]}"; do
-        _zr_save_job "$j" || { failed=1; break; }
-    done
+    _zr_reload_on_signal
+    if _zr_install_files; then
+        for j in "${drops[@]}"; do
+            _zr_remove_timer "$j"
+            ok "removed $ZR_UNIT@$j.timer"
+        done
+        for j in "${answered[@]}"; do
+            _zr_save_job "$j" || { failed=1; break; }
+        done
+    else
+        failed=1
+    fi
 
-    # Units were rewritten above: reload even when a save failed, so no unit
+    # Units were rewritten above: reload even when a write failed, so no unit
     # file on disk differs from what systemd runs.
     systemctl daemon-reload || { warn "systemctl daemon-reload failed"; failed=1; }
+    trap - INT TERM HUP
     ((failed == 0)) || return 1
     _zr_scheduled
     for j in "${ZR_SCHEDULED[@]}"; do

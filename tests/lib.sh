@@ -163,6 +163,19 @@ conf_set failwrite KEY "$big"
 conf_clear failwrite; state_clear failwrite
 pass "a failed conf_set or state_set write keeps the previous file"
 
+# A lib a runner sources that cannot be copied (a full disk, here past a 1 KiB
+# file-size limit) fails install_toolbox_lib instead of leaving it truncated
+# behind an "installed" line.
+(
+    trap '' XFSZ
+    ulimit -f 1
+    out=$(install_toolbox_lib discord.sh 2>&1) \
+        && fail "install_toolbox_lib reported success for a failed copy: $out"
+    [[ $out != *installed* ]] || fail "install_toolbox_lib reported a failed copy as installed: $out"
+    exit 0
+) || exit 1
+pass "install_toolbox_lib fails when a lib cannot be written"
+
 # Modules run as a condition (`if ! run_module ...`), where bash ignores
 # set -e, so an unchecked conf_set or state_set failure is dropped and install
 # goes on to report success. Every call in a module (including the packaged
