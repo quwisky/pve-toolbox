@@ -231,7 +231,9 @@ the reporting layer removes common credential forms, the user information of
 any URL with a scheme (`ssh://user:pass@host` and `https://token@host` both
 become `<scheme>://[redacted]@host`; a plain `user@host` has no scheme and is
 kept), Discord webhook credentials, and paths beneath `/etc/pve/priv` or
-`/etc/pve-toolbox`.
+`/etc/pve-toolbox`. User information runs to the last `@` before the first
+`/`, so a password holding an unencoded `#` or `?` is still removed, and
+redaction works byte by byte whatever the caller's locale.
 
 Redaction is a defensive boundary, not permission to print secrets from a
 module. Module status and health functions must still avoid tokens, passwords,

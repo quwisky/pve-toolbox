@@ -100,6 +100,19 @@ conf_set lookalike OTHER "real"
 conf_clear lookalike
 pass "conf_set matches keys only at the start of a stored line"
 
+# A rename is only durable once its directory is synced: without that, a
+# crash soon after a reported success can bring back the previous file.
+(
+    sync() { printf '%s\n' "${@: -1}" >> "$WORK/sync.log"; command sync "$@"; }
+    : > "$WORK/sync.log"
+    conf_set durable KEY v || fail "conf_set failed"
+    state_set durable KEY v || fail "state_set failed"
+    [[ $(tail -n 1 "$WORK/sync.log") == "$TOOLBOX_STATE_DIR" ]] \
+        && grep -qxF -- "$TOOLBOX_CONF_DIR" "$WORK/sync.log" \
+        || fail "conf_set/state_set did not sync the directory after renaming: $(<"$WORK/sync.log")"
+) || exit 1
+pass "conf_set and state_set sync the directory after the rename"
+
 # A file an older version already broke (a stray continuation line leaves a
 # quote open) is refused untouched rather than written into the open quote.
 conf_set broken KEY "300"
@@ -149,6 +162,19 @@ conf_set failwrite KEY "$big"
     || fail "conf_set did not replace the file with mode 0600"
 conf_clear failwrite; state_clear failwrite
 pass "a failed conf_set or state_set write keeps the previous file"
+
+# A lib a runner sources that cannot be copied (a full disk, here past a 1 KiB
+# file-size limit) fails install_toolbox_lib instead of leaving it truncated
+# behind an "installed" line.
+(
+    trap '' XFSZ
+    ulimit -f 1
+    out=$(install_toolbox_lib discord.sh 2>&1) \
+        && fail "install_toolbox_lib reported success for a failed copy: $out"
+    [[ $out != *installed* ]] || fail "install_toolbox_lib reported a failed copy as installed: $out"
+    exit 0
+) || exit 1
+pass "install_toolbox_lib fails when a lib cannot be written"
 
 # Modules run as a condition (`if ! run_module ...`), where bash ignores
 # set -e, so an unchecked conf_set or state_set failure is dropped and install

@@ -31,10 +31,13 @@ report_clean_text() {
     # Module output is not trusted to remember every secret-redaction rule.
     # Remove common credential forms and paths whose filenames reveal secret
     # material before anything is retained for human or JSON rendering.
-    # URL user information runs to the last @ before the host, as curl and
-    # git read it, so an email-style user name cannot split it.
-    sed -E \
-        -e 's|([A-Za-z][A-Za-z0-9+.-]*://)[^/?#[:space:]]+@|\1[redacted]@|g' \
+    # URL user information runs to the last @ before the first /, so neither
+    # an email-style user name nor a password holding an unencoded # or ?
+    # can split it; an @ in a query right after the host is redacted too.
+    # The C locale makes every byte matchable: in a UTF-8 locale an invalid
+    # byte would end a match part-way through a secret.
+    LC_ALL=C sed -E \
+        -e 's|([A-Za-z][A-Za-z0-9+.-]*://)[^/[:space:]]+@|\1[redacted]@|g' \
         -e 's|https://([^/?#[:space:]]+@)?discord(app)?[.]com/api/webhooks/[0-9]+/[^[:space:];]+|[redacted-webhook]|g' \
         -e 's#/(etc/pve/priv|etc/pve-toolbox)/[^[:space:];]+#[redacted-path]#g' \
         -e 's#((token|secret|password|passphrase|webhook)[A-Za-z0-9_.-]*[=:])[[:space:]]*[^[:space:];]+#\1[redacted]#gI' \

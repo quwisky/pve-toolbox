@@ -150,10 +150,10 @@ kp_vm_cleanup() { # <vmid> <stage-directory>; leave pending on any uncertainty
     [[ $(jq -r .transaction <<<"$KP_INSPECTION_JSON") != pending ]] || return 1
     command=$(jq -nc --arg dir "$dir" --arg machine "$KP_VM_MACHINE" '["/bin/bash","-s","--",$dir,$machine]')
     kp_vm_command "$id" "$command" "$TOOLBOX_ROOT/modules/komodo-periphery/stage-cleanup.sh" >/dev/null || return 1
-    # A rolled-back uninstall must stay registered. Only remove the entry for
-    # the committed uninstall whose staging we have just verified as cleaned.
-    if jq -e --arg txn "${dir##*-}" '.transaction=="committed" and .transaction_id==$txn and .last_action=="uninstall"' \
-        <<<"$KP_INSPECTION_JSON" >/dev/null; then
+    # Deregister only a guest with no agent and no toolbox ownership: a committed
+    # uninstall or an install that never committed. A rolled-back uninstall or
+    # a drifted owned install must stay registered.
+    if jq -e '.layout=="absent" and .owned==false' <<<"$KP_INSPECTION_JSON" >/dev/null; then
         kp_vm_registry remove "$id" || return 1
     fi
     conf_set "komodo-periphery-qemu-$id" KP_PENDING '' || return 1
