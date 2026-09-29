@@ -85,8 +85,10 @@ case ${0##*/} in
                 printf 'ExecStart={ path=/bin/sh ; argv[]=/bin/sh -lc /usr/local/bin/periphery --config-path %s ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }\n' "$config_path"
                 ;;
             start)
-                if [[ -f /crash-start ]]; then kill -KILL "$PPID"; exit 1; fi
+                if [[ -f /crash-start ]]; then kill -KILL "$(cat /guest-pid)"; exit 1; fi
                 printf '%s\n' "$*" >> /calls
+                # Block on a FIFO nobody writes: only the caller's time limit ends it.
+                if [[ -f /hang-new-start ]] && /usr/local/bin/periphery --version | grep -q 2.3.3; then read -r _ < /hang; fi
                 if [[ -f /fail-old-start ]] && /usr/local/bin/periphery --version | grep -q 2.3.2; then exit 1; fi
                 if { [[ -f /fail-new-start || -f /fail-new-health ]] && /usr/local/bin/periphery --version | grep -q 2.3.3; } ||
                     { [[ -f /fail-config-start ]] && grep -Fq 'connect_as = "new-name"' /etc/komodo/periphery.config.toml; }; then
@@ -98,10 +100,12 @@ case ${0##*/} in
                 fi
                 rm -f /startup-failed
                 printf 'active\n' > /active ;;
-            stop) [[ -f /etc/systemd/system/periphery.service ]] || exit 5; rm -f /startup-failed; printf '%s\n' "$*" >> /calls; printf 'inactive\n' > /active ;;
+            stop) [[ -f /etc/systemd/system/periphery.service ]] || exit 5
+                if [[ -f /hang-stop-once ]]; then rm -f /hang-stop-once; read -r _ < /hang; fi
+                rm -f /startup-failed; printf '%s\n' "$*" >> /calls; printf 'inactive\n' > /active ;;
             enable)
                 printf '%s\n' "$*" >> /calls; printf 'enabled\n' > /enabled
-                if [[ -f /crash-enable ]]; then kill -KILL "$PPID"; exit 1; fi ;;
+                if [[ -f /crash-enable ]]; then kill -KILL "$(cat /guest-pid)"; exit 1; fi ;;
             disable) printf '%s\n' "$*" >> /calls; printf 'disabled\n' > /enabled ;;
             daemon-reload) printf '%s\n' "$*" >> /calls ;;
             *) printf '%s\n' "$*" >> /calls; exit 99 ;;

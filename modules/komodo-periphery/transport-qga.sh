@@ -26,7 +26,7 @@ kp_qga_exec() { # <node> <vmid> <JSON command array> <stdin-file or empty>
         '{schema:1,node:$node,vmid:$vmid,action:"exec",command:$command,input_data_b64:.}' \
         | kp_qga_bridge) || return 1
     pid=$(jq -er '.pid | select(type=="number" and .>0 and floor==.)' <<<"$response" 2>/dev/null) || return 1
-    deadline=$((SECONDS + 120))
+    deadline=$((SECONDS + 240)) # covers the guest time budget in guest.sh
     while ((SECONDS <= deadline)); do
         status=$(jq -nc --arg node "$node" --argjson vmid "$id" --argjson pid "$pid" \
             '{schema:1,node:$node,vmid:$vmid,action:"exec-status",pid:$pid}' | kp_qga_bridge) || return 1
@@ -79,6 +79,8 @@ kp_qga_stage() ( # <node> <vmid> <helper|binary|request> <host-file> <guest-stag
     receiver=$dir/receiver.sh
     chunk=$(mktemp) || return 1
     trap 'rm -f -- "$chunk"' EXIT
+    # Each chunk costs several bridge round trips; report progress on stderr.
+    info "Staging $kind over QGA ($(((size + 1023) / 1024)) KiB)" >&2
     while ((offset < size)); do
         dd if="$file" of="$chunk" bs=49152 skip="$block" count=1 status=none || return 1
         length=$(stat -c %s -- "$chunk") || return 1
@@ -90,6 +92,9 @@ kp_qga_stage() ( # <node> <vmid> <helper|binary|request> <host-file> <guest-stag
         output=$(kp_qga_exec "$node" "$id" "$command" "$chunk") || return 1
         [[ $output == ok ]] || return 1
         offset=$((offset + length)); block=$((block + 1))
+        if ((block % 16 == 0 || offset == size)); then
+            info "  $kind: $(((offset + 1023) / 1024))/$(((size + 1023) / 1024)) KiB ($((offset * 100 / size))%)" >&2
+        fi
     done
     digest=$(sha256sum -- "$file"); digest=${digest%% *}
     command=$(jq -nc --arg receiver "$receiver" --arg dir "$dir" --arg kind "$kind" \

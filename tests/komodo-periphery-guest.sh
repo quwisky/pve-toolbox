@@ -41,6 +41,21 @@ old_binary=$(sha256sum "$KP_TEST_BINARY")
 if kp_guest apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out"; then fail 'failed startup succeeded'; fi
 [[ $(sha256sum "$KP_TEST_BINARY") == "$old_binary" ]] || fail 'previous binary not restored'
 jq -e '.rollback == "restored"' "$KP_TEST_ROOT/out" >/dev/null || fail 'rollback not reported'
+# A stop or start that never returns must time out inside the guest budget and
+# roll back; the outer limit only keeps a regression from hanging the suite.
+for hang in hang-stop-once hang-new-start; do
+    kp_fixture upstream-v2
+    kp_request update
+    mkfifo "$KP_TEST_ROOT/hang"
+    : > "$KP_TEST_ROOT/$hang"
+    rc=0
+    timeout -s KILL 90 chroot "$KP_TEST_ROOT" /bin/bash /guest.sh apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out" || rc=$?
+    [[ $rc == 1 ]] || fail "$hang: guest did not fail by itself (exit $rc)"
+    [[ $(sha256sum "$KP_TEST_BINARY") == "$old_binary" ]] || fail "$hang: previous binary not restored"
+    [[ $(cat "$KP_TEST_ROOT/active") == active ]] || fail "$hang: previous service not restarted"
+    jq -e '.result == "failed" and .rollback == "restored"' "$KP_TEST_ROOT/out" >/dev/null || fail "$hang: rollback not reported"
+done
+printf 'ok timed-out stop and start roll back\n'
 kp_fixture absent
 kp_request install
 kp_guest apply "$KP_TEST_REQUEST" > "$KP_TEST_ROOT/out" || fail 'fresh install failed'
