@@ -367,6 +367,35 @@ exclude_output=$(printf '%s\n' abc '101 99' 101 '' n \
 [[ $(conf_get lxc-update LX_EXCLUDE) == 101 ]] || fail 'corrected container ID was not stored'
 pass 'excluded container IDs are validated at the prompt and presets are honored'
 
+# The webhook is checked where it is asked, against the form the runner and
+# status accept. A refusal never echoes the URL, which carries the token.
+webhook_reason='enter a https://discord.com/api/webhooks/<id>/<token> URL, or none'
+webhook_output=$(printf '%s\n' '' https://example.com/api/webhooks/1/leaked \
+    discord.com/api/webhooks/1/leaked https://discord.com/api/webhooks/456/fixed n \
+    | ./pve-toolbox install lxc-update 2>&1) \
+    || fail "install with a corrected webhook failed: $webhook_output"
+[[ $(grep -cF "$webhook_reason" <<<"$webhook_output") == 2 ]] \
+    || fail "invalid webhooks were not re-asked: $webhook_output"
+[[ $webhook_output != *leaked* ]] || fail 'a refused webhook was echoed'
+[[ $(conf_get lxc-update DISCORD_WEBHOOK) == https://discord.com/api/webhooks/456/fixed ]] \
+    || fail 'corrected webhook was not stored'
+if webhook_output=$(printf '%s\n' '' https://example.com/api/webhooks/1/leaked \
+    | ./pve-toolbox install lxc-update 2>&1); then
+    fail 'install accepted an invalid webhook when input ran out'
+fi
+[[ $webhook_output == *'no answer for "Discord webhook URL (optional)"'* ]] \
+    || fail "closed input after an invalid webhook did not fail at the prompt: $webhook_output"
+conf_set lxc-update DISCORD_WEBHOOK https://example.com/api/webhooks/1/leaked
+if webhook_output=$(LX_SCHEDULE_ENABLED=n ./pve-toolbox --yes install lxc-update 2>&1); then
+    fail 'install -y accepted an invalid saved webhook'
+fi
+[[ $webhook_output == *"invalid value for DISCORD_WEBHOOK: $webhook_reason"* ]] \
+    || fail "install -y did not refuse the invalid saved webhook: $webhook_output"
+printf '\nnone\nn\n' | ./pve-toolbox install lxc-update >/dev/null 2>&1 \
+    || fail 'none did not clear an invalid saved webhook'
+[[ -z $(conf_get lxc-update DISCORD_WEBHOOK) ]] || fail 'none did not clear the webhook'
+pass 'the webhook is validated at the prompt, re-asked, and fails closed'
+
 # Re-enable so uninstall has a complete scheduled installation to remove.
 LX_SCHEDULE_ENABLED=y LX_SCHEDULE_PRESET=weekly LX_SCHEDULE_NOTIFY=n \
     ./pve-toolbox --yes install lxc-update >/dev/null

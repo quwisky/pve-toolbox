@@ -399,7 +399,9 @@ _nt_restore_previous() { # current globals are new; $1 old-conf or empty
 
 _nt_configure() {
     local target_existed=0 matcher_existed=0 target_action=create matcher_action=create
-    local old_conf="" snapshot asset_backup
+    local old_conf="" snapshot asset_backup was_owned=0 had_conf=0
+    state_exists "$MODULE_NAME" && was_owned=1
+    conf_exists "$MODULE_NAME" && had_conf=1
     asset_backup=$(mktemp -d)
     chmod 0700 "$asset_backup"
     _nt_backup_assets "$asset_backup"
@@ -442,19 +444,32 @@ _nt_configure() {
         die "native notification configuration or test delivery failed; previous owned objects were restored"
     fi
     [[ -z $old_conf ]] || rm -f -- "$old_conf"
-    rm -rf -- "$asset_backup"
-    # Not rolled back: restoring would re-read the same configuration file
-    # that just refused the write. The tested objects stay; say so and stop.
-    _nt_write_conf \
-        || die "the native notification objects are in place and tested, but $(conf_file "$MODULE_NAME") was not saved; fix it and run install again"
-    # Ownership state decides what a later install or uninstall may touch;
-    # without it they refuse the objects just created, so say how to recover.
-    { state_set "$MODULE_NAME" TARGET_TYPE "$(_nt_api_type)" \
+    local failed=""
+    if ! _nt_write_conf; then
+        failed="$(conf_file "$MODULE_NAME") was not saved"
+    elif ! { state_set "$MODULE_NAME" TARGET_TYPE "$(_nt_api_type)" \
         && state_set "$MODULE_NAME" TARGET_NAME "$NT_TARGET_NAME" \
         && state_set "$MODULE_NAME" MATCHER_NAME "$NT_MATCHER_NAME" \
         && state_set "$MODULE_NAME" ASSET_SUM "$(_nt_installed_asset_sum)" \
-        && state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"; } \
-        || die "the native notification objects are in place and tested, but ownership state was not recorded in $(_state_file "$MODULE_NAME"); fix it and run install again"
+        && state_set "$MODULE_NAME" INSTALLED_AT "$(date -Is)"; }; then
+        failed="ownership state was not recorded in $(_state_file "$MODULE_NAME")"
+    fi
+    if [[ -n $failed && $was_owned -eq 0 ]]; then
+        # Without ownership state a rerun and uninstall refuse what this run
+        # created, so remove it all again rather than orphan it.
+        if _nt_remove_matcher && _nt_remove_endpoint \
+            && _nt_restore_assets "$asset_backup" && state_clear "$MODULE_NAME" \
+            && { [[ $had_conf -eq 1 ]] || conf_clear "$MODULE_NAME"; }; then
+            rm -rf -- "$asset_backup"
+            die "native notification install failed: $failed; the objects created by this run were removed; fix it and run install again"
+        fi
+        die "native notification install failed: $failed, and removing what this run created failed; remove target $NT_TARGET_NAME and matcher $NT_MATCHER_NAME if present, restore assets from $asset_backup, and clear $(_state_file "$MODULE_NAME") before running install again"
+    fi
+    rm -rf -- "$asset_backup"
+    # Owned before this run: the tested objects stay and a rerun can adopt
+    # them, since the existing ownership state still names them.
+    [[ -z $failed ]] \
+        || die "the native notification objects are in place and tested, but $failed; fix it and run install again"
     ok "configured and tested $NT_KIND target $NT_TARGET_NAME"
 }
 

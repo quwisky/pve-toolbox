@@ -158,5 +158,8 @@ reported and rewritten through the same validated prompt. Every question is
 asked before the runner or any unit file changes, so answers that run out or an
 invalid answer stop `update` with nothing rewritten. Once unit files have
 changed, `update` runs `systemctl daemon-reload` even if saving a job then
-fails, and a failed reload fails the update. `check` reports that without
-changing anything.
+fails, and a failed reload fails the update. `install` and `update` also
+reload systemd before exiting on Ctrl-C or `SIGTERM` at that point. A runner
+or unit file that cannot be written, for example on a full disk, fails
+`install` or `update`, and the runner's checksum is only recorded once the
+runner is written. `check` reports that without changing anything.
