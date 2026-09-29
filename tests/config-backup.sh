@@ -56,6 +56,15 @@ source "$ROOT/modules/config-backup/pve-config-backup.sh"
 ) || exit 1
 pass "runner state writes keep the previous file when they fail"
 
+(
+    export CB_STATE_FILE="$WORK/state-durable/config-backup.state"
+    sync() { printf '%s\n' "${@: -1}" >> "$WORK/cb-sync.log"; command sync "$@"; }
+    _cb_state_set KEY v || fail "_cb_state_set failed"
+    [[ $(tail -n 1 "$WORK/cb-sync.log") == "$WORK/state-durable" ]] \
+        || fail "_cb_state_set did not sync the directory after renaming: $(<"$WORK/cb-sync.log")"
+) || exit 1
+pass "runner state writes sync the directory after the rename"
+
 # --- the fixture ------------------------------------------------------------
 
 FIX=$(mktemp -d "$WORK/fixXXXXXX")

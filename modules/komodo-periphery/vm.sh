@@ -118,13 +118,13 @@ kp_vm_machine_hash() { # <raw machine ID>; host state keeps only this digest (ma
     printf '%s' "${digest%% *}"
 }
 
-kp_vm_match() { # <vmid> <expected identity> <expected machine ID or its kp_vm_machine_hash>
+kp_vm_match() { # <vmid> <expected identity> <expected machine ID or its kp_vm_machine_hash>; 1 uninspectable, 2 identity changed
     local observed
     kp_vm_inspect "$1" || return 1
     observed=$(jq -r .machine_id <<<"$KP_INSPECTION_JSON")
     # The raw form is the in-memory value; in state it is a legacy record that the next save rewrites as a hash.
     [[ $KP_TARGET_IDENTITY == "$2" && ( $3 == "$observed" || $3 == "$(kp_vm_machine_hash "$observed")" ) ]] || {
-        warn 'VM identity changed; no further guest action applied'; return 1;
+        warn 'VM identity changed; no further guest action applied'; return 2;
     }
 }
 
@@ -161,10 +161,10 @@ kp_vm_cleanup() { # <vmid> <stage-directory>; leave pending on any uncertainty
     [[ $(jq -r .transaction <<<"$KP_INSPECTION_JSON") != pending ]] || return 1
     command=$(jq -nc --arg dir "$dir" --arg machine "$KP_VM_MACHINE" '["/bin/bash","-s","--",$dir,$machine]')
     kp_vm_command "$id" "$command" "$TOOLBOX_ROOT/modules/komodo-periphery/stage-cleanup.sh" >/dev/null || return 1
-    # A rolled-back uninstall must stay registered. Only remove the entry for
-    # the committed uninstall whose staging we have just verified as cleaned.
-    if jq -e --arg txn "${dir##*-}" '.transaction=="committed" and .transaction_id==$txn and .last_action=="uninstall"' \
-        <<<"$KP_INSPECTION_JSON" >/dev/null; then
+    # Deregister only a guest with no agent and no toolbox ownership: a committed
+    # uninstall or an install that never committed. A rolled-back uninstall or
+    # a drifted owned install must stay registered.
+    if jq -e '.layout=="absent" and .owned==false' <<<"$KP_INSPECTION_JSON" >/dev/null; then
         kp_vm_registry remove "$id" || return 1
     fi
     conf_set "komodo-periphery-qemu-$id" KP_PENDING '' || return 1
@@ -355,6 +355,7 @@ kp_vm_change() ( # <install|update|uninstall>; called after explicit VM selectio
         printf '%s' "$key" > "$KP_VM_WORK/key"; unset key
     fi
     info "Node $KP_NODE / VM $id ($transport): $action Periphery ${version:-absent} -> $release"
+    info "VM name: $(kp_display "$(jq -r --argjson id "$id" '.[] | select(.vmid==$id) | .name // "unnamed"' <<<"$PVE_QEMU_JSON")")"
     info "Guest machine ID: $KP_VM_MACHINE; PVE SMBIOS UUID: ${KP_VM_UUID:-not set}"
     if [[ $transport == ssh ]]; then info "SSH: $address:$port; pinned host key $fingerprint"; fi
     info "Service account: $(kp_display "$(jq -r .service_user <<<"$inspected")"); unit: /etc/systemd/system/periphery.service; binary: /usr/local/bin/periphery"
@@ -385,14 +386,19 @@ kp_vm_status() {
     kp_vm_ids || return 1
     ((${#KP_VM_IDS[@]})) || { printf 'no managed VMs\n'; return 0; }
     kp_host_require || return 1
-    local id record pending failed=0
+    local id record pending failed=0 rc
     for id in "${KP_VM_IDS[@]}"; do
         record="komodo-periphery-qemu-$id"
         pending=$(conf_get "$record" KP_PENDING)
         if [[ -n $pending ]]; then printf 'VM %s: pending transaction %s\n' "$id" "$pending"; failed=1; fi
-        if ! kp_vm_load_connection "$id" || ! kp_vm_match "$id" "$(conf_get "$record" KP_IDENTITY)" "$(state_get "$record" machine_id)"; then
-            printf 'VM %s: unreachable or identity changed\n' "$id"; failed=1; continue
-        fi
+        kp_vm_load_connection "$id" || { printf 'VM %s: saved connection settings unusable\n' "$id"; failed=1; continue; }
+        rc=0
+        kp_vm_match "$id" "$(conf_get "$record" KP_IDENTITY)" "$(state_get "$record" machine_id)" || rc=$?
+        case $rc in
+            0) ;;
+            2) printf 'VM %s: reachable over %s, but the guest identity changed\n' "$id" "$KP_VM_TRANSPORT"; failed=1; continue ;;
+            *) printf 'VM %s: %s transport unreachable\n' "$id" "$KP_VM_TRANSPORT"; failed=1; continue ;;
+        esac
         printf 'VM %s (%s): %s\n' "$id" "$KP_VM_TRANSPORT" "$(jq -r '[.layout,.version,.enabled,.active,.transaction]|join(" / ")' <<<"$KP_INSPECTION_JSON" | tr -d '\000-\037\177')"
         printf 'Core connectivity: unverified\n'
         if [[ -n $pending || $(jq -r .layout <<<"$KP_INSPECTION_JSON") != supported ||

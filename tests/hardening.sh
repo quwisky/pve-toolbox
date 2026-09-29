@@ -522,6 +522,72 @@ grep -qx daemon-reload "$WORK/zr-inst-fail/fake/systemctl.log" \
     || fail "zfs-replication install left a written timer without a daemon-reload: $ZR_OUT"
 pass "zfs-replication install reloads systemd when a save fails"
 
+# A runner or unit file that cannot be written fails install and update, and
+# SCRIPT_SUM is never recorded over a runner that was not written. A full disk
+# is a file-size limit here: 8 KiB passes the configs and discord.sh but not
+# the runner; a directory in the way of a unit file fails its write.
+zr_seed_job_a() { # zr_seed_job_a <dir> - job a configured, its timer missing
+    (
+        export TOOLBOX_CONF_DIR="$1/conf"
+        # shellcheck source=lib/common.sh
+        source "$ROOT/lib/common.sh"
+        conf_set zfs-replication JOBS a
+        conf_set zfs-replication JOB_A_SRC tank/a
+        conf_set zfs-replication JOB_A_DST backup/a
+    ) >/dev/null || exit 1
+    mkdir -p "$1/fake"
+}
+zr_refused() { # zr_refused <dir> <what> - failed, no success line, no SCRIPT_SUM
+    [[ $ZR_RC -ne 0 && $ZR_OUT != *'In sync'* && $ZR_OUT != *'Done -'* ]] \
+        || fail "zfs-replication $2 reported success: $ZR_OUT"
+    [[ -z $(find "$1/state" -type f -exec grep -l '^SCRIPT_SUM=' {} +) ]] \
+        || fail "zfs-replication $2 recorded SCRIPT_SUM: $ZR_OUT"
+}
+zr_full_disk="trap '' XFSZ; ulimit -f 8"
+inst_answers="$zr_hook\ntank/a\nbackup/a\n\nn\n\n\nn\nn\n"
+
+zr_seed_job_a "$WORK/zr-upd-runner"
+printf '%s\n' "$zr_full_disk" > "$WORK/zr-upd-runner/fake/hook.sh"
+zr_run "$WORK/zr-upd-runner" '\n\n\n\n\n' module_update
+zr_refused "$WORK/zr-upd-runner" "update over an unwritten runner"
+pass "zfs-replication update fails when the runner cannot be written"
+
+mkdir -p "$WORK/zr-inst-runner/fake"
+printf '%s\n' "$zr_full_disk" > "$WORK/zr-inst-runner/fake/hook.sh"
+zr_run "$WORK/zr-inst-runner" "$inst_answers" module_install ZFS_REPL_JOBS=a
+zr_refused "$WORK/zr-inst-runner" "install over an unwritten runner"
+grep -qx daemon-reload "$WORK/zr-inst-runner/fake/systemctl.log" \
+    || fail "zfs-replication install left a written timer without a daemon-reload: $ZR_OUT"
+pass "zfs-replication install fails when the runner cannot be written"
+
+zr_seed_job_a "$WORK/zr-upd-svc"
+mkdir -p "$WORK/zr-upd-svc/systemd/pve-toolbox-zfs-sync@.service"
+zr_run "$WORK/zr-upd-svc" '\n\n\n\n\n' module_update
+zr_refused "$WORK/zr-upd-svc" "update over an unwritten service"
+grep -qx daemon-reload "$WORK/zr-upd-svc/fake/systemctl.log" \
+    || fail "zfs-replication update left rewritten units without a daemon-reload: $ZR_OUT"
+pass "zfs-replication update fails when the service cannot be written"
+
+mkdir -p "$WORK/zr-inst-timer/systemd/pve-toolbox-zfs-sync@a.timer"
+zr_run "$WORK/zr-inst-timer" "$inst_answers" module_install ZFS_REPL_JOBS=a
+zr_refused "$WORK/zr-inst-timer" "install over an unwritten timer"
+pass "zfs-replication install fails when a timer cannot be written"
+
+# SIGTERM after a unit is rewritten still reloads systemd before exiting.
+for fn in module_install module_update; do
+    d="$WORK/zr-term-$fn"
+    zr_seed_job_a "$d"
+    cat > "$d/fake/hook.sh" <<'SH'
+eval "$(declare -f _zr_write_service | sed '1s/_zr_write_service/_real_zr_write_service/')"
+_zr_write_service() { _real_zr_write_service; kill -TERM $$; }
+SH
+    zr_run "$d" "$inst_answers" "$fn" ZFS_REPL_JOBS=a
+    [[ $ZR_RC -ne 0 ]] || fail "zfs-replication $fn ignored SIGTERM: $ZR_OUT"
+    grep -qx daemon-reload "$d/fake/systemctl.log" 2>/dev/null \
+        || fail "zfs-replication $fn exited on SIGTERM without a daemon-reload: $ZR_OUT"
+done
+pass "zfs-replication install and update reload systemd when interrupted"
+
 # --- zfs-scrub --------------------------------------------------------------
 
 (
