@@ -151,7 +151,9 @@ See [State versus config](../writing-a-module.md#state-versus-config).
 
 `conf_set` and `state_set` write the new file beside the old one and rename
 it into place, so a failed write (a full disk, a read-only filesystem) leaves
-the previous file whole. Module code checks both (`|| return 1`).
+the previous file whole. They sync the directory after the rename, so a crash
+soon after a reported success does not bring the old file back. Module code
+checks both (`|| return 1`).
 
 ## GitHub releases
 
