@@ -477,12 +477,13 @@ _state_file() { printf '%s/%s.state' "$TOOLBOX_STATE_DIR" "$1"; }
 # synced and then renamed, so a write that fails part way (a full disk) or a
 # crash leaves the old file whole. Beside it, not under TMPDIR: the directory
 # is the target's own. -T: <file> is the target itself, never a directory to
-# move into.
+# move into. The directory is synced last, or a crash soon after a reported
+# success could still bring back the old file.
 _replace_file() { # _replace_file <file> <mode> <content>
     local tmp
     tmp=$(mktemp "${1%/*}/.${1##*/}.XXXXXX") || return 1
     printf '%s\n' "$3" > "$tmp" && chmod "$2" "$tmp" && sync -- "$tmp" \
-        && mv -fT -- "$tmp" "$1" && return 0
+        && mv -fT -- "$tmp" "$1" && sync -- "${1%/*}" && return 0
     rm -f "$tmp"
     return 1
 }

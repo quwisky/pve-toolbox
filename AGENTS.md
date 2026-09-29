@@ -63,12 +63,15 @@ These instructions apply to the entire repository.
 
 - Update user documentation whenever commands, configuration, supported hosts,
   installation, migration, module behavior, or operational risks change.
-- Check `README.md`, the relevant page under `docs/`, and `debian/changelog`
-  before validation. Update each one that is affected; do not add filler entries
-  for purely internal changes.
+- Check `README.md` and the relevant page under `docs/` before validation and
+  update each one that is affected.
+- Do not hand-edit `CHANGELOG.md` or `debian/changelog`. Release Please
+  generates them from Conventional Commit pull-request titles, so the title is
+  the changelog entry.
 - Documentation commands must be safe to copy, must identify when root is
   required, and must use the same paths and URLs as the implementation.
-- Build documentation with `mkdocs build --strict`; warnings are failures.
+- Keep design specs and implementation plans out of the repository and the
+  published site; put them in the GitHub issue or an untracked location.
 
 ## Validation
 
@@ -78,12 +81,17 @@ set before handing off a change:
 ```bash
 make lint
 make test
-mkdocs build --strict
+mkdocs build --strict   # warnings are failures
 ```
 
-The complete Debian 13 validation installs all runner dependencies and runs:
+The complete Debian 13 validation runs as root (CI uses a `debian:13`
+container) with the runner dependencies from `.github/workflows/ci.yml`
+installed, plus `actionlint` and `pip install -r docs/requirements.txt`.
+Without `jq`, `shellcheck`, `expect`, `zsh`, `whiptail` or `sshd`, many suites
+skip or stop early:
 
 ```bash
+QGA_TEST_REQUIRED=1 \
 TUI_TEST_REQUIRED=1 \
 ZSH_TEST_REQUIRED=1 \
 CB_GATE_TESTS_REQUIRED=1 \
@@ -102,7 +110,7 @@ make test
 
 ## Completion and review
 
-- Complete issue work in this order: documentation and changelog review,
+- Complete issue work in this order: documentation review,
   validation, push, then a final review of the complete diff.
 - Keep each pull request focused on one concern. Its title and description must
   describe the actual diff, actual tests, secrets or infrastructure touched,

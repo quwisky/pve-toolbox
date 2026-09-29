@@ -100,6 +100,19 @@ conf_set lookalike OTHER "real"
 conf_clear lookalike
 pass "conf_set matches keys only at the start of a stored line"
 
+# A rename is only durable once its directory is synced: without that, a
+# crash soon after a reported success can bring back the previous file.
+(
+    sync() { printf '%s\n' "${@: -1}" >> "$WORK/sync.log"; command sync "$@"; }
+    : > "$WORK/sync.log"
+    conf_set durable KEY v || fail "conf_set failed"
+    state_set durable KEY v || fail "state_set failed"
+    [[ $(tail -n 1 "$WORK/sync.log") == "$TOOLBOX_STATE_DIR" ]] \
+        && grep -qxF -- "$TOOLBOX_CONF_DIR" "$WORK/sync.log" \
+        || fail "conf_set/state_set did not sync the directory after renaming: $(<"$WORK/sync.log")"
+) || exit 1
+pass "conf_set and state_set sync the directory after the rename"
+
 # A file an older version already broke (a stray continuation line leaves a
 # quote open) is refused untouched rather than written into the open quote.
 conf_set broken KEY "300"
