@@ -1,5 +1,53 @@
 # Changelog
 
+## [0.10.0](https://github.com/quwisky/pve-toolbox/compare/v0.9.0...v0.10.0) (2026-09-29)
+
+
+### Features
+
+* **cli:** generate the man page from the command table ([#94](https://github.com/quwisky/pve-toolbox/issues/94)) ([27daeb4](https://github.com/quwisky/pve-toolbox/commit/27daeb40be0b5565849c8a01e7f670ff5f21df34))
+* **cli:** list modules as JSON and compute status once per command ([#95](https://github.com/quwisky/pve-toolbox/issues/95)) ([18e3562](https://github.com/quwisky/pve-toolbox/commit/18e356293e3d97861a5e8afe6543310b25b5c124))
+* **cli:** per-command help, flag validation with suggestions, and per-stream colour ([#93](https://github.com/quwisky/pve-toolbox/issues/93)) ([4d5ca02](https://github.com/quwisky/pve-toolbox/commit/4d5ca02a7be1ac5a6aaf536cda6a0f57f7f6b17a))
+* **cli:** show a module's saved configuration with secrets hidden ([#99](https://github.com/quwisky/pve-toolbox/issues/99)) ([f1a7739](https://github.com/quwisky/pve-toolbox/commit/f1a773908528fcc7c781548be2fe7a43bc50c2c2))
+* **komodo-periphery:** manage agents in selected VMs via QGA or SSH ([#81](https://github.com/quwisky/pve-toolbox/issues/81)) ([dac0e4b](https://github.com/quwisky/pve-toolbox/commit/dac0e4b9b9968d6cbf46314b82f98057a877ad16))
+
+
+### Bug Fixes
+
+* **audit:** validate settings where they are asked ([#84](https://github.com/quwisky/pve-toolbox/issues/84)) ([0530b87](https://github.com/quwisky/pve-toolbox/commit/0530b878437a55ad2e7f1a7b2ff65d5ec43d2429))
+* **cli:** config show shows invalid UTF-8 as ? and keeps long UTF-8 values exact ([#102](https://github.com/quwisky/pve-toolbox/issues/102)) ([a6d9da9](https://github.com/quwisky/pve-toolbox/commit/a6d9da94d6642fa03b0205131691b7c331891f69))
+* **cli:** suggest every shared-prefix match and reject extra list/help args ([#120](https://github.com/quwisky/pve-toolbox/issues/120)) ([edd692e](https://github.com/quwisky/pve-toolbox/commit/edd692e99e1ca5067a290734a684dd88d75704ed))
+* **config-backup:** write runner state through a synced rename ([#111](https://github.com/quwisky/pve-toolbox/issues/111)) ([f775c80](https://github.com/quwisky/pve-toolbox/commit/f775c8069716318862e14d9ab141aba99d1b812c))
+* **conf:** replace conf and state files through a synced rename ([#110](https://github.com/quwisky/pve-toolbox/issues/110)) ([05f44cf](https://github.com/quwisky/pve-toolbox/commit/05f44cf15747608f40561be4ba434c5ced2b3d82))
+* **conf:** replace every line of a multi-line value and drop the TMPDIR dependency ([#101](https://github.com/quwisky/pve-toolbox/issues/101)) ([ad99abd](https://github.com/quwisky/pve-toolbox/commit/ad99abda2a539087d880fad29b374c34cea272c2))
+* **conf:** sync the directory after renaming conf and state files ([#116](https://github.com/quwisky/pve-toolbox/issues/116)) ([a3bb9bf](https://github.com/quwisky/pve-toolbox/commit/a3bb9bfb5b584d807ead446289c2ca668886c567))
+* **input:** tighten printable checks and polish scrutiny and restore-drill ([#91](https://github.com/quwisky/pve-toolbox/issues/91)) ([0d111e8](https://github.com/quwisky/pve-toolbox/commit/0d111e8747148bf5cb0130d08c939d1f73b03d6d))
+* **input:** validate prompts and fail closed on EOF ([#83](https://github.com/quwisky/pve-toolbox/issues/83)) ([9c1547e](https://github.com/quwisky/pve-toolbox/commit/9c1547e5bae4a244869b7e265b5f82ac1f192b1f))
+* **input:** validate scheduled-module settings at the prompt ([#85](https://github.com/quwisky/pve-toolbox/issues/85)) ([8700f98](https://github.com/quwisky/pve-toolbox/commit/8700f985fd84a14c5b789d8e1a55a9671833a073))
+* **input:** validate the remaining install prompts ([#88](https://github.com/quwisky/pve-toolbox/issues/88)) ([de5fdd0](https://github.com/quwisky/pve-toolbox/commit/de5fdd088c4a08a1fa6a88e3e3f191281f4ed38e))
+* **komodo-periphery:** bound guest systemctl calls within the VM transport limit ([#125](https://github.com/quwisky/pve-toolbox/issues/125)) ([9ad0361](https://github.com/quwisky/pve-toolbox/commit/9ad03613133a6072068077845714421f252ee176))
+* **komodo-periphery:** deregister a VM whose first install never committed ([#115](https://github.com/quwisky/pve-toolbox/issues/115)) ([818050c](https://github.com/quwisky/pve-toolbox/commit/818050caf03de0936a4c85cad0a9a8d2c6b2f5a1))
+* **komodo-periphery:** let an operator accept a rotated VM SSH host key ([#124](https://github.com/quwisky/pve-toolbox/issues/124)) ([f58e60f](https://github.com/quwisky/pve-toolbox/commit/f58e60fe6732be46d5e8d8ffb596a3aef77b0493))
+* **komodo-periphery:** re-ask invalid answers ([#86](https://github.com/quwisky/pve-toolbox/issues/86)) ([1c0ce03](https://github.com/quwisky/pve-toolbox/commit/1c0ce03ad9c4d340dcef7505666cd786cccfeaf4))
+* **komodo-periphery:** refuse stopped VMs, name the VM in the preview, split VM status ([#121](https://github.com/quwisky/pve-toolbox/issues/121)) ([782c8d2](https://github.com/quwisky/pve-toolbox/commit/782c8d2187a5fb8d41ec5a26c76bc254cb273e34))
+* **komodo-periphery:** store only a hash of the VM guest machine ID ([#123](https://github.com/quwisky/pve-toolbox/issues/123)) ([2d2b92b](https://github.com/quwisky/pve-toolbox/commit/2d2b92bdf6876293c8fe6fcfd63c7ae3668ffc98))
+* **komodo-periphery:** wait for agent readiness on startup ([#79](https://github.com/quwisky/pve-toolbox/issues/79)) ([891ba9d](https://github.com/quwisky/pve-toolbox/commit/891ba9df07cd2928d4abff9b124751ad426fcc48))
+* **lxc-update:** validate the Discord webhook at the prompt ([#117](https://github.com/quwisky/pve-toolbox/issues/117)) ([a6728e2](https://github.com/quwisky/pve-toolbox/commit/a6728e2550682663d990a954de8b8967e1b540e9))
+* **modules:** fail install and update when configuration cannot be saved ([#104](https://github.com/quwisky/pve-toolbox/issues/104)) ([12a7cf7](https://github.com/quwisky/pve-toolbox/commit/12a7cf744283986d944b51e65b2e27190e032ed7))
+* **modules:** fail install and update when state cannot be recorded ([#112](https://github.com/quwisky/pve-toolbox/issues/112)) ([544b12b](https://github.com/quwisky/pve-toolbox/commit/544b12b11ffe86f71dcfa475de0c1bb3a12a984a))
+* **native-notifications:** remove a first install's objects when its records cannot be saved ([#119](https://github.com/quwisky/pve-toolbox/issues/119)) ([3240d1c](https://github.com/quwisky/pve-toolbox/commit/3240d1c35d7574abaf8000dbb510f08176ce4d57))
+* **report:** redact URL passwords holding # or ? and ignore the caller's locale ([#114](https://github.com/quwisky/pve-toolbox/issues/114)) ([453e4ca](https://github.com/quwisky/pve-toolbox/commit/453e4cab2cb58b43e7ccf7d2f42c8bc27bab4436))
+* **report:** redact URL user information in any scheme ([#103](https://github.com/quwisky/pve-toolbox/issues/103)) ([5c8542c](https://github.com/quwisky/pve-toolbox/commit/5c8542c0e66d6e7709232cb582990d64d8d6f804))
+* **scrutiny-collectors:** validate host id, token and endpoint for YAML safety ([#89](https://github.com/quwisky/pve-toolbox/issues/89)) ([f622955](https://github.com/quwisky/pve-toolbox/commit/f6229550e5851efc9906f0a7a29e8416af884c52))
+* **zfs-replication:** fail install and update on unwritten runner or unit files ([#118](https://github.com/quwisky/pve-toolbox/issues/118)) ([4d545bf](https://github.com/quwisky/pve-toolbox/commit/4d545bf94dfd131a13afa23e9c30c5b5334da8eb))
+* **zfs-replication:** never leave rewritten units without a daemon-reload ([#108](https://github.com/quwisky/pve-toolbox/issues/108)) ([c3ace0e](https://github.com/quwisky/pve-toolbox/commit/c3ace0e8bc671bbcb03e92d179f047137aaa6319))
+
+
+### Documentation
+
+* **agents:** keep specs out of the repo and correct validation guidance ([#113](https://github.com/quwisky/pve-toolbox/issues/113)) ([e3e8eaa](https://github.com/quwisky/pve-toolbox/commit/e3e8eaab504cd25a1682c67cb19ecc03393a9429))
+* **komodo-periphery:** mark VM support experimental ([#122](https://github.com/quwisky/pve-toolbox/issues/122)) ([537aa26](https://github.com/quwisky/pve-toolbox/commit/537aa26bc0212a32ceeb3c0a2766127914860de1))
+
 ## [0.9.0](https://github.com/quwisky/pve-toolbox/compare/v0.8.1...v0.9.0) (2026-09-22)
 
 
