@@ -134,6 +134,11 @@ config_help=$(launch help config)
 [[ $config_help == *"pve-toolbox config show zfs-scrub"* \
     && $config_help == *"pve-toolbox config show --json config-backup"* ]] \
     || fail "help config lacks its examples: $config_help"
+# The redaction detail lives in the automation guide; help only points there.
+[[ $config_help == *"automation guide"* ]] \
+    || fail "help config does not point at the automation guide: $config_help"
+[[ $config_help != *"U+FFFD"* && $config_help != *"C1 range"* ]] \
+    || fail "help config still carries the full cleanup rules: $config_help"
 [[ $(launch help lxc-update) == *"--dry-run"* ]] || fail "help lxc-update lacks its flags"
 lxc_help=$(launch help lxc-update)
 lxc_root_count=$(grep -o "Requires root" <<<"$lxc_help" | wc -l)
@@ -246,6 +251,10 @@ expect_usage "--json is not supported by 'install'" install --json zfs-scrub
 expect_usage "--dry-run is not supported by 'status'" status --dry-run
 expect_usage "did you mean: zfs-scrub" status zfs-scrubb
 expect_usage "did you mean: storage" list storag
+# A shared prefix names every candidate that starts with it (up to three), in
+# the order given, not only when one candidate matches.
+expect_usage "did you mean: zfs-replication, zfs-scrub?" status zfs
+expect_usage "did you mean: zfs-replication, zfs-scrub?" config show zfs
 expect_usage "run 'pve-toolbox help install'" install --json zfs-scrub
 expect_usage "cannot be used together" status --json --quiet
 expect_usage "--quiet is not supported by 'list'" list --quiet
@@ -271,6 +280,11 @@ expect_usage "did you mean: status" help stauts
 expect_usage "did you mean: status" stauts --help
 expect_usage "run 'pve-toolbox help install'" install
 expect_usage "run 'pve-toolbox help doctor'" doctor extra
+# list takes one tag and help one command; an extra word is refused, not dropped.
+expect_usage "list takes at most one tag" list storage extra
+expect_usage "run 'pve-toolbox help list'" list --json storage extra
+expect_usage "help takes at most one command" help status extra
+expect_usage "run 'pve-toolbox help help'" help status extra
 expect_usage "did you mean: --color" --colr=never list
 expect_usage "unknown tag: nope" list nope
 # Nothing close enough: no suggestion line, still the help line.
