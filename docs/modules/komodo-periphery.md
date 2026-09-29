@@ -242,7 +242,10 @@ whose host bookkeeping failed before attempting another change. If identity or
 locality no longer matches, inspect it manually first. Incomplete cleanup retains
 the protected staging location's transaction identifier in host configuration.
 An uninstalled VM remains listed as pending until staging cleanup succeeds;
-rerun the flow for that VM to reconcile it.
+rerun the flow for that VM to reconcile it. The same applies to a VM whose first
+install failed or was interrupted: after that cleanup, a VM with no agent and no
+toolbox ownership is removed from the managed list. Do not edit the VM list by
+hand.
 
 Rollback covers agent binary, service and toolbox-owned configuration changes.
 It cannot undo commands already executed by Core or changes made to workloads.
