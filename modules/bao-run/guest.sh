@@ -17,7 +17,7 @@ BG_LOCK_FILE=/run/pve-toolbox-bao-run.lock
 BG_ROLE_RE='^[A-Za-z0-9_-]+$'
 BG_LIMIT=65536
 
-BG_MODE="" BG_EMITTED=0 BG_SWAPPING=0 BG_CLEAN=0
+BG_MODE="" BG_EMITTED=0 BG_SWAPPING=0 BG_CLEAN=0 BG_TMP="" BG_CHANGED=false
 BG_RESULT=failed BG_REASON='unexpected guest failure' BG_TX="" BG_STAGE="" BG_NEW_HASH=""
 BG_MACHINE="" BG_PLATFORM_ERR="" BG_P_MODE=systemd
 BG_ROLES=() BG_UNKNOWN=() BG_AFTER=() BG_REMAINING=() BG_ARGS=()
@@ -259,11 +259,11 @@ bg_backup() {
     fi
     BG_UNDO_PATHS+=("$1"); BG_UNDO_COPIES+=("$copy")
 }
-bg_swap() { # <source> <target> <mode>
-    local tmp
-    tmp=$(mktemp "${2%/*}/.bao-run.XXXXXXXX") || return 1
-    { cat -- "$1" > "$tmp" && chmod "$3" -- "$tmp" && sync -f "$tmp" && mv -fT -- "$tmp" "$2" && sync -f "${2%/*}"; } 2>/dev/null \
-        || { rm -f -- "$tmp"; return 1; }
+bg_swap() { # <source> <target> <mode>; BG_TMP lets bg_exit remove a temp a signal strands.
+    BG_TMP=$(mktemp "${2%/*}/.bao-run.XXXXXXXX") || { BG_TMP=""; return 1; }
+    { cat -- "$1" > "$BG_TMP" && chmod "$3" -- "$BG_TMP" && sync -f "$BG_TMP" && mv -fT -- "$BG_TMP" "$2" && sync -f "${2%/*}"; } 2>/dev/null \
+        || { rm -f -- "$BG_TMP"; BG_TMP=""; return 1; }
+    BG_TMP=""
 }
 bg_ensure_dir() { # <path> <mode>
     local mode
@@ -398,13 +398,15 @@ bg_install() { # <request>
     if [[ $ca_action == replace ]] && ! bg_same "$conf/ca.pem" "$BG_CONF/ca.pem" 600; then bg_plan "$BG_CONF/ca.pem" "$conf/ca.pem" 600; shared=1; fi
     if [[ $ca_action == remove && -e $BG_CONF/ca.pem ]]; then removals+=("$BG_CONF/ca.pem"); shared=1; fi
     for role in "${BG_AFTER[@]}"; do
-        [[ ${wanted[$role]:-keep} == replace ]] || continue
         dir=$(bg_role_dir "$conf" "$role")
         live=$(bg_role_dir "$BG_CONF" "$role")
         for name in role_id secret_id; do
-            if ! bg_same "$dir/$name" "$live/$name" 600; then
+            bg_same "$dir/$name" "$live/$name" 600 && continue
+            if [[ ${wanted[$role]:-keep} == replace ]]; then
                 bg_plan "$live/$name" "$dir/$name" 600
                 changed[$role]=1; creds=1
+            elif [[ $adopt == true ]]; then # Same content, so no login check: status needs 0600.
+                bg_plan "$live/$name" "$dir/$name" 600
             fi
         done
     done
@@ -477,6 +479,7 @@ bg_install() { # <request>
 bg_uninstall() { # <request>
     local req=$1 sha file entry name left=$BG_STAGE/backup/left remaining=() unmatched
     bg_check_paths
+    BG_CHANGED=true
     unmatched=$(jq -r .remove_unmatched_payload "$req" 2>/dev/null)
     if [[ -e $BG_PAYLOAD ]]; then
         sha=$(bg_hash "$BG_PAYLOAD")
@@ -524,8 +527,9 @@ bg_result_json() {
     done
     login_json=$(printf '%s\n' "${rows[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {name:.[0],login:.[1]})') || return 1
     remaining_json=$(bg_json_list "${BG_REMAINING[@]}") || return 1
-    printf '%s\n%s\n' "$login_json" "$remaining_json" | jq -cs --arg result "$BG_RESULT" --arg reason "$BG_REASON" --arg tx "$BG_TX" --arg sha "$BG_NEW_HASH" \
-        '{schema:1,result:$result,reason:$reason,transaction_id:$tx,payload_sha256:$sha,login:.[0],remaining:.[1]}'
+    # changed: this run may have left the guest differing from before, despite a failed result.
+    printf '%s\n%s\n' "$login_json" "$remaining_json" | jq -cs --arg result "$BG_RESULT" --arg reason "$BG_REASON" --arg tx "$BG_TX" --arg sha "$BG_NEW_HASH" --argjson changed "$BG_CHANGED" \
+        '{schema:1,result:$result,reason:$reason,transaction_id:$tx,payload_sha256:$sha,login:.[0],remaining:.[1],changed:$changed}'
 }
 bg_exit() { # <status of the exiting shell>
     trap '' HUP INT TERM # A signal now would abort the restore and the one JSON outcome.
@@ -533,16 +537,18 @@ bg_exit() { # <status of the exiting shell>
     trap - EXIT
     case $BG_MODE in
         apply)
+            # Before the restore: a stranded temp can hold a new secret and blocks rmdir of a new directory.
+            if [[ -n $BG_TMP ]]; then rm -f -- "$BG_TMP" 2>/dev/null || true; fi
             if ((BG_SWAPPING)); then
                 if bg_restore; then BG_REASON+='; previous files restored'
-                else BG_REASON+='; restore incomplete, manual repair required'; fi
+                else BG_REASON+='; restore incomplete, manual repair required'; BG_CHANGED=true; fi
             fi
             if ((BG_CLEAN)); then rm -rf -- "${BG_STAGE:?}/conf" "${BG_STAGE:?}/backup" 2>/dev/null || true; fi
             if json=$(bg_result_json 2>/dev/null); then
                 bg_emit "$json"
             else # jq is missing: reasons, the id and the result are all validated or static.
                 [[ $BG_RESULT == success ]] && BG_RESULT=failed
-                printf '{"schema":1,"result":"%s","reason":"%s","transaction_id":"%s","payload_sha256":"","login":[],"remaining":[]}\n' "$BG_RESULT" "$BG_REASON" "$BG_TX"
+                printf '{"schema":1,"result":"%s","reason":"%s","transaction_id":"%s","payload_sha256":"","login":[],"remaining":[],"changed":%s}\n' "$BG_RESULT" "$BG_REASON" "$BG_TX" "$BG_CHANGED"
             fi
             [[ $BG_RESULT == success ]] && exit 0
             exit 1 ;;

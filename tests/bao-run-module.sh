@@ -207,7 +207,93 @@ test_outcome_unknown_keeps_pending() {
         [[ ! -e $TOOLBOX_CONF_DIR/bao-run.conf && ! -e $TOOLBOX_CONF_DIR/bao-run-101.conf ]] || br_fail "$flag: uninstall left records"
     done
 }
-test_uninstall_unknown_outcome_prints_revocation() {
+br_seed_stage() { # A hard-killed guest's staging; prints nothing, sets BR_SEEDED.
+    BR_SEEDED=$BR_TEST_ROOT/run/pve-toolbox-bao-run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    mkdir -m 0700 "$BR_SEEDED" "$BR_SEEDED/conf" "$BR_SEEDED/conf/roles" "$BR_SEEDED/backup"
+    printf 'SENTINEL-KILLED\n' > "$BR_SEEDED/conf/roles/secret_id"
+    printf 'SENTINEL-KILLED\n' > "$BR_SEEDED/request.json"
+    : > "$BR_SEEDED/guest.sh"
+    (source lib/common.sh; conf_set bao-run-101 BR_PENDING aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa) || br_fail 'seeding pending'
+}
+test_pending_cleanup_after_hard_killed_guest() {
+    br_fixture
+    br_install
+    # Killed before any swap: conf holds credentials, backup is empty.
+    br_seed_stage
+    ans 'Container ID' 101; ans 'Clean up that protected staging' y
+    br_run install bao-run || br_fail 'cleanup of a killed guest failed'
+    br_no_stage
+    [[ -z $(br_conf bao-run-101 BR_PENDING) ]] || br_fail 'pending not cleared'
+    # Killed mid-swap: the backup may be the only copy, so it stays with instructions.
+    br_seed_stage
+    printf 'SENTINEL-PREVIOUS\n' > "$BR_SEEDED/backup/0"
+    ans 'Container ID' 101; ans 'Clean up that protected staging' y
+    if br_run install bao-run; then br_fail 'cleanup ignored a non-empty backup'; fi
+    br_has "/run/pve-toolbox-bao-run-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/backup"
+    br_has 'repair'
+    br_lacks 'SENTINEL'
+    [[ $(<"$BR_SEEDED/backup/0") == SENTINEL-PREVIOUS ]] || br_fail 'backup changed'
+    [[ ! -e $BR_SEEDED/conf && ! -e $BR_SEEDED/request.json ]] || br_fail 'new credentials left beside the backup'
+    [[ -n $(br_conf bao-run-101 BR_PENDING) ]] || br_fail 'pending dropped with a backup left'
+    # Repaired by hand: the next offer finishes it.
+    rm "$BR_SEEDED/backup/0"
+    ans 'Container ID' 101; ans 'Clean up that protected staging' y
+    br_run install bao-run || br_fail 'cleanup after the repair failed'
+    br_no_stage
+    # A lock that is not a plain file cannot be confirmed free.
+    br_seed_stage
+    rm -f "$BR_TEST_ROOT/run/pve-toolbox-bao-run.lock"
+    ln -s /etc/machine-id "$BR_TEST_ROOT/run/pve-toolbox-bao-run.lock"
+    ans 'Container ID' 101; ans 'Clean up that protected staging' y
+    if br_run install bao-run; then br_fail 'cleanup with a symlinked lock succeeded'; fi
+    [[ -e $BR_SEEDED/conf/roles/secret_id ]] || br_fail 'staging removed without confirming the lock'
+}
+test_status_reports_unknown_files() {
+    br_fixture
+    br_install
+    printf 'keep\n' > "$BR_TEST_ROOT/etc/bao-run/notes"
+    : > "$BR_TEST_ROOT/etc/bao-run/"$'evil\033[31m\xc2\x9bname'
+    # Listed, and not by itself a failure.
+    ./pve-toolbox --json status bao-run > "$BR_SESSION" 2>&1 || br_fail 'a listed file failed status'
+    ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1
+    br_has '/etc/bao-run/notes'
+    br_has '/etc/bao-run/evil[31mname'
+    if grep -aq $'\033\|\xc2\x9b' "$BR_SESSION"; then br_fail 'a file name reached the terminal'; fi
+    ans 'Container ID' 101; ans 'Periphery runs as'; ans 'OpenBao URL'; ans 'CA file'
+    ans 'Role default' keep; ans_apply n
+    br_run install bao-run || br_fail 'declined install failed'
+    br_has '/etc/bao-run/notes'
+    # A temp from an interrupted swap can hold a new secret.
+    printf 'SENTINEL-TEMP\n' > "$BR_TEST_ROOT/etc/bao-run/.bao-run.Abc12345"
+    br_status_fails temp '/etc/bao-run/.bao-run.Abc12345'
+    br_lacks 'SENTINEL'
+    ans 'Container ID' 101; ans 'Periphery runs as'; ans 'OpenBao URL'; ans 'CA file'
+    ans 'Role default' keep; ans_apply n
+    br_run install bao-run || br_fail 'declined install failed'
+    br_has '/etc/bao-run/.bao-run.Abc12345'
+    br_lacks 'SENTINEL'
+}
+test_revocation_commands_only_after_removal() {
+    # The guest refused: credentials are still in use.
+    br_fixture
+    br_install
+    exec 9> "$BR_TEST_ROOT/run/pve-toolbox-bao-run.lock"
+    flock -n 9
+    ans 'Container ID' 101; ans 'Apply this operation' y
+    if br_run uninstall bao-run; then br_fail 'failed uninstall exited 0'; fi
+    br_has 'another bao-run transaction'
+    br_lacks 'bao delete'
+    exec 9>&-
+    # Never reached the guest.
+    br_fixture
+    br_install
+    : > "$BR_HOST/replace-after-mkdir"
+    ans 'Container ID' 101; ans 'Apply this operation' y
+    if br_run uninstall bao-run; then br_fail 'pre-guest failure exited 0'; fi
+    br_lacks 'bao delete'
+    [[ -e $BR_TEST_ROOT/etc/bao-run/secret_id ]] || br_fail 'guest changed'
+}
+test_uninstall_unknown_outcome_holds_revocation() {
     local flag
     for flag in apply-timeout apply-garbage; do
         br_fixture
@@ -216,8 +302,8 @@ test_uninstall_unknown_outcome_prints_revocation() {
         ans 'Container ID' 101; ans 'Apply this operation' y
         if br_run uninstall bao-run; then br_fail "$flag: unknown uninstall exited 0"; fi
         br_has 'guest outcome unavailable'
-        br_has 'bao delete auth/approle/role/komodo-docker01'
-        br_has 'backups and snapshots'
+        br_lacks 'bao delete'
+        br_has 'only after confirming the credentials are gone or no longer wanted'
         [[ $(br_conf bao-run BR_IDS) == 101 && -n $(br_conf bao-run-101 BR_PENDING) ]] || br_fail "$flag: records dropped"
     done
 }
@@ -240,7 +326,8 @@ test_second_interrupt_during_cleanup() {
 }
 test_hostile_status_strings_refused() {
     local filter
-    for filter in '.payload.sha256 = "\u001b[31mEVIL"' '.tools += {"\u001b[2JTOOL": false}' '.periphery.sha256 = "\u001b[31mEVIL"'; do
+    for filter in '.payload.sha256 = "\u001b[31mEVIL"' '.tools += {"\u001b[2JTOOL": false}' '.periphery.sha256 = "\u001b[31mEVIL"' \
+        '.unknown_files = [7]' '.unknown_files = "x"' 'del(.unknown_files)'; do
         br_fixture
         br_install
         printf '%s' "$filter" > "$BR_HOST/status-filter"
@@ -272,6 +359,94 @@ test_cleanup_failure_keeps_pending() {
     if br_run uninstall bao-run; then br_fail 'failed cleanup exited 0 on uninstall'; fi
     br_has 'guest staging cleanup incomplete'
     [[ $(br_conf bao-run BR_IDS) == 101 && $(br_conf bao-run-101 BR_PENDING) =~ ^[0-9a-f]{32}$ ]] || br_fail 'records dropped with staging left'
+}
+test_incomplete_restore_keeps_first_install_record() {
+    local outcome='{schema:1,result:"failed",reason:"final login check failed; restore incomplete, manual repair required",payload_sha256:"",login:[],remaining:[],changed:$c}'
+    br_fixture
+    jq -n --argjson c true "$outcome" > "$BR_HOST/apply-outcome"
+    ans_to_role; ans_role default; ans_apply
+    if br_run install bao-run; then br_fail 'failed outcome exited 0'; fi
+    br_has 'restore incomplete'
+    [[ $(br_conf bao-run BR_IDS) == 101 && -n $(br_conf bao-run-101 BR_IDENTITY) && -z $(br_conf bao-run-101 BR_PENDING) ]] || br_fail 'changed guest was forgotten'
+    br_no_stage
+    # Restored: the guest is as it was, so a first install leaves no record.
+    br_fixture
+    jq -n --argjson c false "$outcome" > "$BR_HOST/apply-outcome"
+    ans_to_role; ans_role default; ans_apply
+    if br_run install bao-run; then br_fail 'failed outcome exited 0'; fi
+    [[ ! -e $TOOLBOX_CONF_DIR/bao-run.conf && ! -e $TOOLBOX_CONF_DIR/bao-run-101.conf ]] || br_fail 'unchanged guest kept a record'
+    # A success that the transport contradicts, or an outcome without the field, is unknown.
+    local filter
+    for filter in '.result = "success"' 'del(.changed)'; do
+        br_fixture
+        jq -n --argjson c false "$outcome" | jq "$filter" > "$BR_HOST/apply-outcome"
+        ans_to_role; ans_role default; ans_apply
+        if br_run install bao-run; then br_fail "$filter exited 0"; fi
+        br_has 'guest outcome unavailable'
+        [[ $(br_conf bao-run BR_IDS) == 101 ]] || br_fail "$filter: unknown outcome not listed"
+    done
+}
+test_flooding_guest_output_is_bounded() {
+    local started
+    br_fixture
+    br_install
+    : > "$BR_HOST/flood-status"
+    # Without the bound this runs into the 120 second inspection limit, still buffering.
+    timeout 20 ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1 || br_fail 'flooded status did not finish'
+    br_has 'oversized guest status'
+    br_fixture
+    : > "$BR_HOST/flood-apply"
+    started=$SECONDS
+    ans_to_role; ans_role default; ans_apply
+    if br_run install bao-run; then br_fail 'flooded apply succeeded'; fi
+    br_has 'guest outcome unavailable'
+    ((SECONDS - started < 30)) || br_fail 'flooded apply was not cut short'
+    [[ -n $(br_conf bao-run-101 BR_PENDING) ]] || br_fail 'unknown outcome not pending'
+}
+test_parallel_saves_keep_every_id() {
+    br_fixture
+    local ct pids=() pid
+    for ((ct = 100; ct < 130; ct++)); do
+        (
+            source lib/common.sh
+            source lib/report.sh
+            source lib/pve.sh
+            TOOLBOX_ROOT=$PWD
+            # shellcheck source=modules/bao-run/host.sh
+            source modules/bao-run/host.sh
+            br_save_ids add "$ct"
+        ) &
+        pids+=("$!")
+    done
+    for pid in "${pids[@]}"; do wait "$pid" || br_fail 'a parallel save failed'; done
+    local saved=()
+    read -r -a saved <<<"$(br_conf bao-run BR_IDS)"
+    ((${#saved[@]} == 30)) || br_fail "parallel adds kept ${#saved[@]} of 30"
+    # The lock path is validated before it is opened.
+    rm -f "$TOOLBOX_STATE_DIR/bao-run.lock"
+    ln -s "$BR_T/elsewhere" "$TOOLBOX_STATE_DIR/bao-run.lock"
+    if (
+        source lib/common.sh
+        source lib/report.sh
+        source lib/pve.sh
+        TOOLBOX_ROOT=$PWD
+        # shellcheck source=modules/bao-run/host.sh
+        source modules/bao-run/host.sh
+        br_save_ids add 131
+    ) > /dev/null 2>&1; then br_fail 'saved through a symlinked lock'; fi
+    [[ ! -e $BR_T/elsewhere && $(br_conf bao-run BR_IDS) != *131* ]] || br_fail 'symlinked lock was used'
+}
+test_interrupt_at_secret_prompt_restores_echo() {
+    br_fixture
+    ans_to_role
+    ans 'Add a role' y; ans 'Role name' default; ans 'AppRole name for default'
+    ans 'Role ID for default' '^C'
+    # A shell that stays on the same terminal, as the operator's does.
+    # shellcheck disable=SC2016 # Expanded by the inner shell.
+    br_drive bash -c 'trap : INT; ./pve-toolbox install bao-run; stty -a > "$1"' _ "$BR_HOST/stty" || true
+    [[ -s $BR_HOST/stty ]] || br_fail 'terminal state not captured'
+    grep -Eq '(^|[ ;])echo([ ;]|$)' "$BR_HOST/stty" || br_fail "echo left off: $(<"$BR_HOST/stty")"
+    br_no_work
 }
 test_host_save_failure_reconciles() {
     br_fixture
@@ -474,6 +649,21 @@ test_repeat_install_keep_all_is_noop() {
     [[ $(br_conf bao-run-101 BR_ROLES) == default=komodo-docker01 && -z $(br_conf bao-run-101 BR_PENDING) ]] || br_fail 'records changed'
     br_no_stage; br_no_work
 }
+test_update_up_to_date_refreshes_recorded_state() {
+    br_fixture
+    br_install
+    # An unknown outcome that really succeeded: the guest is current, the record is not.
+    sed -i 's/^payload_sha256=.*/payload_sha256=stale/' "$TOOLBOX_STATE_DIR/bao-run-101.state"
+    ans 'Container ID' 101
+    br_run update bao-run || br_fail 'update failed'
+    br_has 'up to date'
+    grep -Fxq "payload_sha256=$(br_sha modules/bao-run/bao-run.sh)" "$TOOLBOX_STATE_DIR/bao-run-101.state" || br_fail 'state not refreshed'
+    # So the next packaged payload is not mistaken for a hand edit.
+    br_age_payload
+    ans 'Container ID' 101; ans 'Apply this operation' n
+    br_run update bao-run || br_fail 'update preview failed'
+    br_lacks 'Adopt this edited payload'
+}
 br_age_payload() { # The payload as an earlier package installed and recorded it.
     local payload=$BR_TEST_ROOT/usr/local/bin/bao-run owner=$BR_TEST_ROOT/var/lib/pve-toolbox/bao-run/owner.json hash tmp
     printf '# older\n' >> "$payload"
@@ -653,6 +843,7 @@ test_uninstall_forget_destroyed_ct() {
     br_run uninstall bao-run || br_fail 'forget failed'
     br_has 'bao delete auth/approle/role/komodo-docker01'
     br_has 'stay valid'
+    br_has 'only if the container was really destroyed; on a migrated container these break working logins'
     [[ ! -e $TOOLBOX_CONF_DIR/bao-run.conf && ! -e $TOOLBOX_CONF_DIR/bao-run-101.conf ]] || br_fail 'records left'
     if grep -Eq '^(exec|push)' "$BR_PCT_LOG"; then br_fail 'touched a destroyed CT'; fi
     # Recreated under the same ID: refused unless forgotten, never pushed.
@@ -665,6 +856,7 @@ test_uninstall_forget_destroyed_ct() {
     ans 'Container ID' 101; ans 'Forget' y
     br_run uninstall bao-run || br_fail 'mismatch forget failed'
     br_has 'bao delete auth/approle/role/komodo-docker01'
+    br_has 'only if the container was really destroyed; on a migrated container these break working logins'
     [[ ! -e $TOOLBOX_CONF_DIR/bao-run-101.conf ]] || br_fail 'record left'
     if grep -q '^push' "$BR_PCT_LOG"; then br_fail 'pushed to a recreated CT'; fi
     # Stopped: refused, records kept, no forget offered.

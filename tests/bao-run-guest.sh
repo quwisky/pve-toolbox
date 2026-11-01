@@ -158,7 +158,7 @@ test_fresh_install_success() {
     bt_request '.ca_action="replace" | .ca_pem="-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n"
         | .roles += [{name:"app",action:"replace",role_id:"ROLE-SENTINEL-2",secret_id:"SECRET-SENTINEL-2"}]'
     bt_apply || fail "install failed: $(<"$BT_OUT")"
-    bt_out '.schema == 1 and .result == "success" and .reason == ""'
+    bt_out '.schema == 1 and .result == "success" and .reason == "" and .changed == false'
     bt_out ".transaction_id == \"$BT_TX\" and .payload_sha256 == \"$(bt_hash "$BT_STAGE/bao-run")\""
     bt_out '.login == [{name:"default",login:"ok"},{name:"app",login:"ok"}] and .remaining == []'
     bt_mode 755 /usr/local/bin/bao-run
@@ -224,8 +224,24 @@ test_swap_failure_restores() {
     bt_new_payload v2
     bt_request '.action="update" | .roles[0].role_id="ROLE-SENTINEL-NEW" | .roles[0].secret_id="SECRET-SENTINEL-NEW"'
     if bt_apply; then fail 'swap failure accepted'; fi
-    bt_out '.result == "failed" and (.reason | endswith("previous files restored"))'
+    bt_out '.result == "failed" and (.reason | endswith("previous files restored")) and .changed == false'
     [[ $(bt_tree) == "$tree" ]] || fail 'previous files not restored'
+}
+
+test_signal_during_swap_leaves_no_temp() {
+    local signal tree
+    for signal in TERM INT HUP; do
+        bt_install
+        tree=$(bt_tree)
+        # The signal lands during the first swap's mv, which fails, so the temp with the new secret is still there.
+        printf '/etc/bao-run/role_id\n' > "$BT_ROOT/fail-mv"
+        printf '1 %s\n' "$signal" > "$BT_ROOT/signal-at-mv"
+        bt_request '.action="update" | .roles[0].role_id="ROLE-SENTINEL-NEW" | .roles[0].secret_id="SECRET-SENTINEL-NEW"'
+        if bt_apply; then fail "$signal: interrupted swap accepted"; fi
+        bt_out '.result == "failed" and (.reason | endswith("previous files restored"))' "$signal"
+        [[ -z $(find "$BT_ROOT/etc/bao-run" -name '.bao-run.*') ]] || fail "$signal: temp left: $(find "$BT_ROOT/etc/bao-run" -name '.bao-run.*')"
+        [[ $(bt_tree) == "$tree" ]] || fail "$signal: previous files not restored"
+    done
 }
 
 test_restore_failure_is_visible() {
@@ -234,7 +250,7 @@ test_restore_failure_is_visible() {
     printf '/etc/bao-run/secret_id\n' > "$BT_ROOT/fail-mv-second"
     bt_request '.action="update" | .roles[0].secret_id="SECRET-SENTINEL-NEW"'
     if bt_apply; then fail 'restore failure accepted'; fi
-    bt_out '.result == "failed" and (.reason | test("restore incomplete"))'
+    bt_out '.result == "failed" and (.reason | test("restore incomplete")) and .changed == true'
 }
 
 test_signal_during_restore_is_ignored() {
@@ -301,6 +317,39 @@ test_adoption_required_then_keeps_credentials() {
     printf '# edited by hand\n' >> "$BT_ROOT/usr/local/bin/bao-run"
     bt_request '.action="update" | .addr="" | .roles=[]'
     bt_refused 'modified payload'
+}
+
+test_adoption_tightens_kept_credentials() {
+    bt_fixture
+    cp modules/bao-run/bao-run.sh "$BT_ROOT/usr/local/bin/bao-run"; chmod 0755 "$BT_ROOT/usr/local/bin/bao-run"
+    mkdir -m 0700 "$BT_ROOT/etc/bao-run" "$BT_ROOT/etc/bao-run/roles" "$BT_ROOT/etc/bao-run/roles/app"
+    printf 'https://manual.example:8200\n' > "$BT_ROOT/etc/bao-run/addr"
+    local file
+    for file in role_id secret_id roles/app/role_id roles/app/secret_id; do
+        printf 'SENTINEL-MANUAL-%s\n' "$file" > "$BT_ROOT/etc/bao-run/$file"
+        chmod 0640 "$BT_ROOT/etc/bao-run/$file"
+    done
+    chmod 0600 "$BT_ROOT/etc/bao-run/addr"
+    bt_guest status
+    bt_out '[.roles[].files_ok] == [false, false]'
+    # Without adoption a kept role is left exactly as it is.
+    bt_new_payload v2
+    bt_request '.action="install" | .addr="" | .roles=[] | .adopt=false'
+    bt_refused 'no adoption'
+    bt_request '.action="install" | .addr="" | .roles=[] | .adopt=true'
+    bt_apply || fail "adoption failed: $(<"$BT_OUT")"
+    for file in role_id secret_id roles/app/role_id roles/app/secret_id; do
+        bt_mode 600 "/etc/bao-run/$file"
+        [[ $(<"$BT_ROOT/etc/bao-run/$file") == "SENTINEL-MANUAL-$file" ]] || fail "$file content changed"
+    done
+    bt_no_network 'same-content swap'
+    bt_guest status
+    bt_out '[.roles[].files_ok] == [true, true]'
+    # Once owned, a repeat run has nothing to tighten and rewrites nothing.
+    bt_request '.action="install" | .addr="" | .roles=[]'
+    bt_snapshot
+    bt_apply || fail "repeat failed: $(<"$BT_OUT")"
+    bt_unchanged 'repeat after adoption'
 }
 
 test_symlink_targets_refused() {
@@ -420,7 +469,7 @@ test_missing_prerequisite_reported() {
     bt_guest status
     bt_out '(.tools.jq | not) and (.supported | not) and .roles == []'
     bt_refused 'no jq'
-    bt_out '.reason | test("jq")'
+    bt_out '(.reason | test("jq")) and .changed == false'
 }
 
 test_unsupported_platform_reported() {

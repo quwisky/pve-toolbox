@@ -16,13 +16,15 @@ BR_STATUS_SHAPE='type == "object" and .schema == 1 and (.machine_id | type == "s
     and (.roles | type == "array" and all(.[]; (.name | type == "string" and test("\\A[A-Za-z0-9_-]+\\z"))
         and (.files_ok | type == "boolean") and (.login | type == "string")))
     and (.periphery | type == "object" and (.mode | type == "string") and (.active | type == "string")
-        and (.user | type == "string") and (.can_read | type == "boolean") and (.sha256 | type == "string" and test("\\A([0-9a-f]{64})?\\z")) and (.tools_ok | type == "boolean"))'
+        and (.user | type == "string") and (.can_read | type == "boolean") and (.sha256 | type == "string" and test("\\A([0-9a-f]{64})?\\z")) and (.tools_ok | type == "boolean"))
+    and (.unknown_files | type == "array" and all(.[]; type == "string"))'
 # shellcheck disable=SC2016 # jq program, not shell.
 BR_OUTCOME_SHAPE='type == "object" and .schema == 1 and .transaction_id == $tx
     and (.result == "success" or .result == "failed" or .result == "partial")
     and (.reason | type == "string")
     and (.login | type == "array" and all(.[]; (.name | type == "string") and (.login | type == "string")))
-    and (.remaining | type == "array" and all(.[]; type == "string"))'
+    and (.remaining | type == "array" and all(.[]; type == "string"))
+    and (.changed | type == "boolean")'
 
 # Prompt validators for ask_valid and ask_secret (lib/common.sh), which read
 # ASK_REASON. A reason never repeats the value.
@@ -124,7 +126,7 @@ br_inspect() { # <ctid> [--login] [--container <name>] -> BR_STATUS_JSON, BR_TAR
     BR_STATUS_JSON="" BR_TARGET_IDENTITY="" BR_INSPECT_ERROR=""
     pve_lxc_ready "$BR_NODE" "$id" || { BR_INSPECT_ERROR=$PVE_LXC_ERROR; return 1; }
     # A failing status can still explain itself in JSON, so the shape decides.
-    result=$("${BR_INSPECT_LIMIT[@]}" pct exec "$id" -- bash -s -- status "$@" < "$(br_guest_source)" 2>/dev/null) || true
+    result=$("${BR_INSPECT_LIMIT[@]}" pct exec "$id" -- bash -s -- status "$@" < "$(br_guest_source)" 2>/dev/null | head -c 65537) || true
     [[ ${#result} -le 65536 ]] || { BR_INSPECT_ERROR='oversized guest status'; return 1; }
     jq -se "length == 1 and (.[0] | $BR_STATUS_SHAPE)" <<<"$result" > /dev/null 2>&1 \
         || { BR_INSPECT_ERROR='guest status unavailable or invalid'; return 1; }
@@ -147,23 +149,29 @@ br_lock() { # <ctid>
     flock -n "$BR_LOCK" || { warn 'another bao-run operation is active for this CT'; return 1; }
 }
 br_listed() { [[ " $(conf_get bao-run BR_IDS) " == *" $1 "* ]]; }
-br_save_ids() { # <add|drop> <ctid>
-    local kept=() old found=0
-    br_ids || return 1
-    for old in "${BR_MANAGED[@]}"; do
-        if [[ $old == "$2" ]]; then found=1; [[ $1 != drop ]] || continue; fi
-        kept+=("$old")
-    done
-    if [[ $1 == add && $found == 0 ]]; then kept+=("$2"); fi
-    if ((${#kept[@]})); then conf_set bao-run BR_IDS "${kept[*]}" || return 1
-    else conf_clear bao-run || return 1; fi
+br_save_ids() { # <add|drop> <ctid>; the list is shared between CTs, so not under the per-CT lock.
+    local path=$TOOLBOX_STATE_DIR/bao-run.lock
+    pve_host_path_safe "$path" && [[ ! -e $path || -f $path ]] || { warn 'unsafe lock path'; return 1; }
+    mkdir -p "$TOOLBOX_STATE_DIR" || return 1
+    (
+        local kept=() old found=0
+        flock -w 30 9 || { warn 'could not lock the managed-container list'; exit 1; }
+        br_ids || exit 1
+        for old in "${BR_MANAGED[@]}"; do
+            if [[ $old == "$2" ]]; then found=1; [[ $1 != drop ]] || continue; fi
+            kept+=("$old")
+        done
+        if [[ $1 == add && $found == 0 ]]; then kept+=("$2"); fi
+        if ((${#kept[@]})); then conf_set bao-run BR_IDS "${kept[*]}" || exit 1
+        else conf_clear bao-run || exit 1; fi
+    ) 9> "$path"
 }
 br_forget() { # <ctid>
     conf_clear "bao-run-$1" && state_clear "bao-run-$1" && br_save_ids drop "$1" \
         || { warn 'could not clear the host records'; return 1; }
 }
 br_stage_clean() { # Removes guest staging and settles BR_PENDING. Keeps both when it cannot.
-    local id=$BR_CTID
+    local id=$BR_CTID rc=0
     if ((BR_APPLYING)); then
         warn "the guest outcome is unknown, so its staging stays; it can hold credentials. Run the operation again to clean it up"
         return 1
@@ -172,16 +180,27 @@ br_stage_clean() { # Removes guest staging and settles BR_PENDING. Keeps both wh
         warn 'guest became unavailable; protected staging path retained in pending configuration'
         return 1
     fi
-    # A guest still holding its lock keeps its request. The guest removes conf and backup itself.
-    if ! timeout -k 5 120 pct exec "$id" -- bash -c '
+    # A guest still holding its lock keeps its request, and a lock that cannot be
+    # checked counts as held. A guest killed outright leaves conf and backup behind:
+    # conf only holds copies, but a non-empty backup may be the only previous files.
+    timeout -k 5 120 pct exec "$id" -- bash -c '
         [[ $1 =~ ^/run/pve-toolbox-bao-run-[a-f0-9]{32}$ && ! -L $1 ]] || exit 1
         [[ -e $1 ]] || exit 0
         [[ -d $1 && $(stat -c %u "$1") == 0 && $(stat -c %a "$1") == 700 ]] || exit 1
         lock=/run/pve-toolbox-bao-run.lock
-        if [[ -f $lock && ! -L $lock ]]; then exec 9< "$lock"; flock -n 9 || exit 1; fi
+        if [[ -e $lock || -L $lock ]]; then
+            [[ -f $lock && ! -L $lock ]] || exit 1
+            exec 9< "$lock"; flock -n 9 || exit 1
+        fi
         rm -f -- "$1/guest.sh" "$1/bao-run" "$1/request.json"
+        rm -rf -- "$1/conf"
+        if [[ -d $1/backup && ! -L $1/backup ]]; then rmdir -- "$1/backup" 2>/dev/null || exit 3; fi
         rmdir -- "$1"
-    ' _ "$BR_STAGE" < /dev/null > /dev/null 2>&1; then
+    ' _ "$BR_STAGE" < /dev/null > /dev/null 2>&1 || rc=$?
+    if ((rc == 3)); then
+        warn "$BR_STAGE/backup in CT $id still holds previous files, so a swap may be half done. To repair: compare its numbered copies (payload, addr, CA, then credentials, in swap order) with /usr/local/bin/bao-run and /etc/bao-run and put back what is wrong, then remove that backup directory and run the operation again"
+        return 1
+    elif ((rc)); then
         warn "guest staging cleanup incomplete; inspect $BR_STAGE in CT $id and the saved pending record"
         return 1
     fi
@@ -196,6 +215,8 @@ br_cleanup() {
     trap '' INT TERM HUP
     trap - EXIT
     [[ -z ${BR_WORK:-} ]] || rm -rf -- "$BR_WORK" || rc=1
+    # An interrupted read -s never gets to turn terminal echo back on.
+    if [[ -t 0 ]]; then stty echo 2>/dev/null || true; fi
     # Children inherit the ignored TERM, so only -k bounds them from here on.
     BR_INSPECT_LIMIT=(timeout -k 5 120)
     if [[ -n ${BR_STAGE:-} ]]; then br_stage_clean || rc=1; fi
@@ -213,6 +234,18 @@ br_login_hint() { # <login word>
         rejected) printf '%s' "$BR_LOGIN_REJECTED_HINT" ;;
         unavailable) printf '%s' "$BR_LOGIN_UNAVAILABLE_HINT" ;;
     esac
+}
+br_show_unknown() { # Files found in the CT's /etc/bao-run. False if any is a temp from an interrupted swap.
+    local path rc=0
+    while IFS= read -r -d '' path; do
+        if [[ ${path##*/} == .bao-run.* ]]; then
+            printf '  interrupted swap left a temporary file that can hold a secret; remove it in the CT: %s\n' "$(pve_display "$path")"
+            rc=1
+        else
+            printf '  unknown file, left in place: %s\n' "$(pve_display "$path")"
+        fi
+    done < <(jq -j '.unknown_files[] | ., "\u0000"' <<<"$BR_STATUS_JSON")
+    return "$rc"
 }
 br_show_outcome() { # Reason and per-role results from BR_OUTCOME_JSON.
     local reason name word hint
@@ -240,7 +273,7 @@ br_apply() { # <ctid> <request> <resulting roles> <push payload: 0|1> -> BR_OUTC
     BR_STAGE=/run/pve-toolbox-bao-run-$BR_TX
     # A first install is listed before staging, so an unknown outcome stays visible
     # to status, doctor and uninstall. It leaves the list only once staging is gone
-    # and the guest is known to be unchanged: a failed outcome, or apply never ran.
+    # and the guest is known to be unchanged: a failed outcome that says so, or apply never ran.
     br_listed "$id" || BR_FORGET=1
     br_save_ids add "$id" && conf_set "bao-run-$id" BR_PENDING "$BR_TX" && conf_set "bao-run-$id" BR_IDENTITY "$BR_IDENTITY" || return 1
     pct exec "$id" -- mkdir -m 0700 -- "$BR_STAGE" < /dev/null > /dev/null 2>&1 || { warn 'could not create protected guest staging'; return 1; }
@@ -251,7 +284,7 @@ br_apply() { # <ctid> <request> <resulting roles> <push payload: 0|1> -> BR_OUTC
     BR_APPLYING=1
     # No -k: the guest restores its files on TERM and must be left to finish.
     # stdin is not the terminal: timeout runs pct in a background process group.
-    result=$(timeout "$((120 + 60 * roles))" pct exec "$id" -- bash "$BR_STAGE/guest.sh" apply "$BR_STAGE/request.json" < /dev/null 2>/dev/null) || rc=$?
+    result=$(timeout "$((120 + 60 * roles))" pct exec "$id" -- bash "$BR_STAGE/guest.sh" apply "$BR_STAGE/request.json" < /dev/null 2>/dev/null | head -c 65537; exit "${PIPESTATUS[0]}") || rc=$?
     if ! { [[ ${#result} -le 65536 ]] && jq -se --arg tx "$BR_TX" "length == 1 and (.[0] | $BR_OUTCOME_SHAPE)" <<<"$result" > /dev/null 2>&1; } \
         || { [[ $rc != 0 ]] && [[ $(jq -r .result <<<"$result") == success ]]; }; then
         warn 'guest outcome unavailable; inspect the CT before retrying'
@@ -259,7 +292,7 @@ br_apply() { # <ctid> <request> <resulting roles> <push payload: 0|1> -> BR_OUTC
     fi
     BR_APPLYING=0
     BR_OUTCOME_JSON=$result
-    if [[ $(jq -r .result <<<"$result") == success ]]; then BR_FORGET=0; fi
+    if [[ $(jq -r 'if .result == "success" or .changed then "keep" else "" end' <<<"$result") == keep ]]; then BR_FORGET=0; fi
     br_show_outcome
 }
 br_missing_tools() { # <tool>...; prints the install command and fails if any is missing.
@@ -458,6 +491,7 @@ br_flow_install() {
     info "OpenBao: $addr; CA: $ca_action; Periphery: $mode${container:+ ($container)}"
     for role in "${BR_ROLE_ORDER[@]}"; do info "Role $role (${BR_APPROLE[$role]}): ${BR_ROLE_ACTION[$role]}"; done
     for role in "${!BR_ROLE_ACTION[@]}"; do [[ ${BR_ROLE_ACTION[$role]} != remove ]] || info "Role $role: remove"; done
+    br_show_unknown || true
     br_preview_periphery "$mode"
     confirm 'Apply this operation to the selected container' n || { info 'cancelled; guest unchanged'; return 0; }
     br_lock "$id" && br_match "$id" "$BR_IDENTITY" || return 1
@@ -494,8 +528,15 @@ br_flow_update() {
     case $rc in 0) ;; 2) return 0 ;; *) return 1 ;; esac
     expected=$(br_expected_payload) || return 1
     want=$(sha256sum < "$(br_payload_source)" | cut -d ' ' -f1)
-    if [[ $expected == "$want" ]]; then ok "CT $id: up to date"; return 0; fi
     recorded=$(state_get "bao-run-$id" payload_sha256)
+    if [[ $expected == "$want" ]]; then
+        # An unknown outcome may have really succeeded, or a host save failed afterward.
+        if [[ $recorded != "$want" ]]; then
+            br_lock "$id" && state_set "bao-run-$id" payload_sha256 "$want" || { warn 'could not refresh the host record'; return 1; }
+        fi
+        ok "CT $id: up to date"
+        return 0
+    fi
     if [[ $expected != "$recorded" || $(br_json .payload.owned) != true ]]; then
         info "CT $id: payload ${expected:0:12} matches neither the recorded $(br_short "$recorded") nor the packaged ${want:0:12}."
         confirm 'Adopt this edited payload and replace it' n || return 1
@@ -527,6 +568,10 @@ br_revoke_saved() { # What a CT leaving management owes OpenBao.
     br_revocation "${names[@]}"
     info 'CT backups and snapshots may still contain these credentials.'
 }
+br_forget_revoke() { # The guest was never inspected, so what happened to it is the operator's call.
+    br_revoke_saved
+    warn 'Run those only if the container was really destroyed; on a migrated container these break working logins.'
+}
 br_flow_uninstall() {
     local id="" saved rc=0 remove_unmatched=false result path
     br_ids || return 1
@@ -538,7 +583,7 @@ br_flow_uninstall() {
         info "CT $id is not on this node: destroyed, or moved to another node. Forgetting leaves anything inside it as it is."
         confirm 'Forget this container and clear its host records' n || return 1
         br_forget "$id" || return 1
-        br_revoke_saved
+        br_forget_revoke
         return 0
     fi
     br_inspect "$id" || { warn "$BR_INSPECT_ERROR; records kept"; return 1; }
@@ -547,7 +592,7 @@ br_flow_uninstall() {
         warn "CT $id does not match its recorded identity: replaced or recreated, so nothing will be changed inside it."
         confirm 'Forget this container and clear its host records' n || return 1
         br_forget "$id" || return 1
-        br_revoke_saved
+        br_forget_revoke
         return 0
     fi
     br_can_manage jq || return 1
@@ -566,14 +611,19 @@ br_flow_uninstall() {
     ( umask 077; jq -n --arg tx "$BR_TX" --arg machine "$(br_json .machine_id)" --argjson unmatched "$remove_unmatched" \
         '{schema:1,action:"uninstall",transaction_id:$tx,machine_id:$machine,remove_unmatched_payload:$unmatched}' > "$BR_WORK/request.json" ) \
         || { warn 'could not build the request'; return 1; }
-    if ! br_apply "$id" "$BR_WORK/request.json" 0 0; then br_revoke_saved; return 1; fi
+    # Revocation breaks credentials still in use, so its commands wait for a guest that removed them.
+    if ! br_apply "$id" "$BR_WORK/request.json" 0 0; then
+        if ((BR_APPLYING)); then info 'Outcome unknown: revoke these AppRoles at OpenBao only after confirming the credentials are gone or no longer wanted.'; fi
+        return 1
+    fi
     result=$(jq -r .result <<<"$BR_OUTCOME_JSON")
-    br_revoke_saved
     case $result in
         success)
+            br_revoke_saved
             BR_FORGET=1
             ok "CT $id: bao-run removed" ;;
         partial)
+            br_revoke_saved
             warn "CT $id: some files remain; host records kept:"
             while IFS= read -r path; do printf '  %s\n' "$(pve_display "$path")"; done < <(jq -r '.remaining[]' <<<"$BR_OUTCOME_JSON")
             return 1 ;;
@@ -644,6 +694,7 @@ br_status_one() { # <ctid>; prints one block. False when anything needs attentio
         [[ -n ${seen[$role]:-} ]] || { printf '  %s (%s): missing from the CT\n' "$role" "${BR_APPROLE[$role]}"; failed=1; }
     done
     if ((${#seen[@]} == 0 && ${#BR_SAVED_ROLES[@]} == 0)); then printf '  no roles\n'; failed=1; fi
+    br_show_unknown || failed=1
     return "$failed"
 }
 br_status() {

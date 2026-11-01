@@ -26,6 +26,16 @@ case ${0##*/} in
                 [[ $1 == -- ]] || exit 98
                 shift
                 if [[ -f $BR_HOST/apply-garbage && $* == *' apply '* ]]; then printf 'not json\n'; exit 0; fi
+                # A canned guest outcome, as a fault the chroot guest cannot reach here produces it. Exits 1.
+                if [[ -f $BR_HOST/apply-outcome && $* =~ pve-toolbox-bao-run-([0-9a-f]{32})/guest\.sh\ apply ]]; then
+                    jq -c --arg tx "${BASH_REMATCH[1]}" '.transaction_id = $tx' "$BR_HOST/apply-outcome"
+                    exit 1
+                fi
+                # A guest that never stops writing, slowly enough that buffering it would not exhaust the test.
+                if [[ -f $BR_HOST/flood-apply && $* == *' apply '* || -f $BR_HOST/flood-status && $* == *' status'* ]]; then
+                    chunk=$(printf 'x%.0s' {1..65536})
+                    while :; do printf '%s' "$chunk"; sleep 0.1; done
+                fi
                 if [[ -f $BR_HOST/replace-after-mkdir && $1 == mkdir ]]; then
                     printf 'fedcba9876543210fedcba9876543210\n' > "$BR_TEST_ROOT/etc/machine-id"
                 fi
