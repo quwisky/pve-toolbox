@@ -33,6 +33,7 @@ emit() { printf '%s' "$1"; if [[ $w == 1 ]]; then printf '\n%s' "$2"; fi; }
 case $url in
   */v1/auth/approle/login)
     echo login >> "$D/calls"
+    if [[ -f $D/curl_stderr ]]; then cat "$D/curl_stderr" >&2; fi
     if [[ -f $D/login_exit ]]; then emit '' 000; exit "$(<"$D/login_exit")"; fi
     st=200; [[ -f $D/login_status ]] && st=$(<"$D/login_status")
     if [[ $st == 200 ]]; then
@@ -59,12 +60,15 @@ echo "$*" >> "$D/bao.log"
 case "$*" in
   "secrets list "*) cat "$D/secrets.json" ;;
   "auth list "*) cat "$D/auth.json" ;;
-  "policy list "*) cat "$D/policies.json" ;;
+  "policy list "*) [[ ! -f $D/policy_list_fail ]] || { echo "boom" >&2; exit 2; }; cat "$D/policies.json" ;;
   "policy read "*) cat "$D/policy_$3" ;;
   "policy write "*) cat > "$D/policy_written" ;;
   "read -field=role_id "*) echo ROLEID-1234 ;;
   "write -f -field=secret_id "*) echo SECRETID-5678 ;;
-  "read auth/approle/role/"*) [[ -f $D/role_exists ]] || exit 2 ;;
+  "list -format=json auth/approle/role")
+    if [[ -f $D/role_list_error ]]; then echo "permission denied" >&2; exit 2; fi
+    if [[ -f $D/role_exists ]]; then echo '["other","komodo-a"]'
+    else echo "No value found at auth/approle/role" >&2; exit 2; fi ;;
 esac
 exit 0
 DBL
@@ -140,7 +144,9 @@ test_kv_keys_token_and_paths_do_not_break_revoke() {
 test_denied_keys_stop_before_exec() {
   local k
   for k in PATH IFS ENV BASH_ENV SHELLOPTS BASHOPTS PS4 HOME GCONV_PATH LOCPATH BAO_RUN_CONF \
-           LD_PRELOAD BASH_FUNC_x DOCKER_HOST COMPOSE_FILE _BR_x; do
+           LD_PRELOAD BASH_FUNC_x BASHPID DOCKER_HOST COMPOSE_FILE _BR_x \
+           RANDOM SRANDOM OPTIND OPTARG OPTERR HISTCMD LINENO SECONDS EPOCHSECONDS EPOCHREALTIME \
+           UID EUID PPID GROUPS FUNCNAME DIRSTACK PIPESTATUS; do
     mk; kv a "$(jq -n --arg k "$k" '{($k):"x"}')"
     run_br a -- child
     [[ $RC -ne 0 ]] || fail "denied $k: succeeded"
@@ -148,6 +154,20 @@ test_denied_keys_stop_before_exec() {
     revoked || fail "denied $k: token not revoked"
     grep -qF "bao-run: refused env var name '$k' in a" "$D/err" || fail "denied $k: message"
   done
+  # A refused key's value is never evaluated and never printed.
+  local mark=$WORK/MARK2 k
+  for k in RANDOM SRANDOM OPTIND HISTCMD _BR_PATHS; do
+    mk; rm -f "$mark"
+    kv a "$(jq -n --arg k "$k" --arg v "PIPESTATUS[\$(touch \"$mark\")0] hunter2 secret" '{($k):$v}')"
+    run_br a -- child
+    [[ $RC -ne 0 ]] && ! ran && [[ ! -e $mark ]] || fail "value of $k evaluated or command ran"
+    nosecret hunter2 || fail "value of refused $k printed"
+  done
+  # An allowed key whose value looks like arithmetic stays inert.
+  mk; rm -f "$mark"
+  kv a "$(jq -n --arg v "_BR_PATHS[\$(touch \"$mark\")0]" '{K:$v}')"
+  run_br a -- child K
+  [[ $RC -eq 0 && ! -e $mark ]] || fail "arithmetic value evaluated"
   mk; kv a '{"BASH_FUNC_x%%":"() { :; }"}'; run_br a -- child
   [[ $RC -ne 0 ]] && ! ran || fail "exported-function name accepted"
   pass "denied keys stop before exec"
@@ -224,6 +244,29 @@ test_check_results() {
   pass "check results"
 }
 
+test_run_mode_login_failure_shows_curl_stderr() {
+  mk; echo "curl: (60) SSL certificate problem" > "$D/curl_stderr"; echo 60 > "$D/login_exit"
+  run_br a -- child
+  [[ $RC -ne 0 ]] && ! ran || fail "login failure accepted"
+  grep -q 'SSL certificate problem' "$D/err" || fail "curl stderr hidden in run mode"
+  grep -q 'AppRole login failed' "$D/err" || fail "login message"
+  run_br --check
+  ! grep -q 'SSL certificate' "$D/err" || fail "check leaked curl stderr"
+  pass "run-mode login failure shows curl stderr"
+}
+
+test_blank_addr_fails() {
+  local c
+  for c in $'\n' '   '; do
+    mk; printf '%s\n' "$c" > "$CONF/addr"; kv a '{"K":"v"}'
+    run_br a -- child
+    [[ $RC -ne 0 ]] && ! ran || fail "blank addr accepted"
+    grep -q "no OpenBao address in $CONF/addr" "$D/err" || fail "blank addr message"
+    [[ ! -e $D/argv ]] || fail "curl called with blank addr"
+  done
+  pass "blank addr fails"
+}
+
 test_check_role_selects_role_dir() {
   mk
   run_br --check -r foo
@@ -270,6 +313,27 @@ primed() {
   { cat "$D/policy_written"; printf '  \n'; } > "$D/policy_komodo-a"
   printf '%s' '["default","komodo-a"]' > "$D/policies.json"
   touch "$D/role_exists"; rm -f "$D/bao.log"
+}
+
+test_setup_fails_closed_on_lookup_errors() {
+  mk; touch "$D/policy_list_fail"
+  run_setup a 10.0.0.5
+  [[ $RC -ne 0 ]] || fail "policy list failure ignored"
+  ! wrote '^policy write' && ! wrote '^write ' || fail "wrote after policy list failure"
+  mk; touch "$D/role_list_error"
+  run_setup a 10.0.0.5
+  [[ $RC -ne 0 ]] || fail "role list failure ignored"
+  ! wrote '^policy write' && ! wrote '^write ' || fail "wrote after role list failure"
+  ! grep -q SECRETID "$D/out" || fail "minted after role list failure"
+  pass "setup fails closed on lookup errors"
+}
+
+test_setup_rejects_empty_host() {
+  mk; run_setup "" 10.0.0.5
+  [[ $RC -ne 0 && ! -e $D/bao.log ]] || fail "empty host accepted"
+  mk; run_setup "" 10.0.0.5 web
+  [[ $RC -ne 0 && ! -e $D/bao.log ]] || fail "empty host with stack accepted"
+  pass "setup rejects an empty host"
 }
 
 test_setup_rerun_mints_no_secret() {

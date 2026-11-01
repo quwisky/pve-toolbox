@@ -49,8 +49,9 @@ fi
 command -v curl >/dev/null || die "curl not found"
 command -v jq   >/dev/null || die "jq not found"
 
-[[ -s $_BR_CONF/addr ]] || die "no OpenBao address in $_BR_CONF/addr"
-_BR_ADDR=$(<"$_BR_CONF/addr")
+_BR_ADDR=""
+[[ ! -r $_BR_CONF/addr ]] || _BR_ADDR=$(<"$_BR_CONF/addr")
+[[ -n ${_BR_ADDR//[[:space:]]/} ]] || die "no OpenBao address in $_BR_CONF/addr"
 _BR_MOUNT=$(cat "$_BR_CONF/mount" 2>/dev/null || echo kv)
 _BR_CURL=(curl -sS --fail-with-body --max-time 10 --proto "=https")
 [[ -f $_BR_CONF/ca.pem ]] && _BR_CURL+=(--cacert "$_BR_CONF/ca.pem")
@@ -58,10 +59,14 @@ _BR_CURL=(curl -sS --fail-with-body --max-time 10 --proto "=https")
 # Login. Credentials go via stdin, so they never appear in the process list.
 # -w appends the HTTP status after a newline; curl prints it even on failure.
 _BR_RC=0
-_BR_OUT=$(jq -n --rawfile r "$_BR_CREDS/role_id" --rawfile s "$_BR_CREDS/secret_id" \
-            '{role_id: ($r|rtrimstr("\n")), secret_id: ($s|rtrimstr("\n"))}' \
-          | "${_BR_CURL[@]}" -w '\n%{http_code}' -X POST --data @- "$_BR_ADDR/v1/auth/approle/login" \
-            2>/dev/null) || _BR_RC=$?
+_br_login() {
+  jq -n --rawfile r "$_BR_CREDS/role_id" --rawfile s "$_BR_CREDS/secret_id" \
+    '{role_id: ($r|rtrimstr("\n")), secret_id: ($s|rtrimstr("\n"))}' \
+    | "${_BR_CURL[@]}" -w '\n%{http_code}' -X POST --data @- "$_BR_ADDR/v1/auth/approle/login"
+}
+# curl's stderr is the operator's only diagnosis in run mode; --check stays quiet.
+if [[ $_BR_CHECK -eq 1 ]]; then _BR_OUT=$(_br_login 2>/dev/null) || _BR_RC=$?
+else _BR_OUT=$(_br_login) || _BR_RC=$?; fi
 _BR_STATUS=000
 [[ $_BR_OUT == *$'\n'* ]] && { _BR_STATUS=${_BR_OUT##*$'\n'}; _BR_OUT=${_BR_OUT%$'\n'*}; }
 _BR_TOKEN=""
@@ -106,11 +111,15 @@ for _BR_P in "${_BR_PATHS[@]}"; do
   # NUL-separated key/value pairs: safe for newlines, quotes and '$' in values
   while IFS= read -r -d '' _BR_KEY && IFS= read -r -d '' _BR_VAL; do
     [[ $_BR_KEY =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "invalid env var name '$_BR_KEY' in $_BR_P"
+    # Bash's special variables are evaluated arithmetically on export (RANDOM,
+    # OPTIND, HISTCMD ... would run a $(...) in the value) or silently ignore it.
     # This list reduces, and does not remove, the trust placed in whoever can
     # write to KV: they can still set any other name the command reads.
     case $_BR_KEY in
       PATH|IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|PS4|HOME|GCONV_PATH|LOCPATH|BAO_RUN_CONF \
-        |BASH_FUNC_*|LD_*|DOCKER_*|COMPOSE_*|_BR_*)
+        |RANDOM|SRANDOM|OPTIND|OPTARG|OPTERR|HISTCMD|LINENO|SECONDS|EPOCHSECONDS|EPOCHREALTIME \
+        |UID|EUID|PPID|GROUPS|FUNCNAME|DIRSTACK|PIPESTATUS \
+        |BASH*|LD_*|DOCKER_*|COMPOSE_*|_BR_*)
         die "refused env var name '$_BR_KEY' in $_BR_P" ;;
     esac
     _BR_SECRETS[$_BR_KEY]=$_BR_VAL

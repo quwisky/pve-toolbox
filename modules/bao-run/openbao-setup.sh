@@ -34,6 +34,7 @@ HOST=${ARGS[0]} IP=${ARGS[1]} STACK=${ARGS[2]:-}
 command -v bao >/dev/null || die "bao not found"
 command -v jq  >/dev/null || die "jq not found"
 
+[[ -n $HOST ]] || die "<host> must not be empty"
 for v in "$HOST" "$STACK"; do [[ -z $v || $v =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid name: $v"; done
 OCTET='(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])'
 [[ $IP =~ ^$OCTET(\.$OCTET){3}$ ]] || die "invalid IPv4 address: $IP"
@@ -61,13 +62,24 @@ fi
 AUTH=$(bao auth list -format=json)
 
 trim() { sed -e 's/[[:space:]]*$//'; }
-if jq -e --arg n "$NAME" 'index($n) != null' <<<"$(bao policy list -format=json)" >/dev/null; then
+POLICIES=$(bao policy list -format=json) || die "cannot list policies"
+if jq -e --arg n "$NAME" 'index($n) != null' <<<"$POLICIES" >/dev/null; then
   [[ $(bao policy read "$NAME" | trim) == "$(trim <<<"$POLICY")" ]] \
     || die "policy '$NAME' already exists with different rules; refusing to overwrite role $NAME"
 fi
 
+# Absent must be told apart from a failed lookup. Assumption: with no roles,
+# bao's LIST exits non-zero with "No value found"; any other failure is fatal.
+# Without the approle mount there are no roles to look up.
 ROLE_EXISTED=0
-bao read "auth/approle/role/$NAME" >/dev/null 2>&1 && ROLE_EXISTED=1
+if jq -e 'has("approle/")' <<<"$AUTH" >/dev/null; then
+  if ROLES=$(bao list -format=json auth/approle/role 2>&1); then
+    jq -e 'type == "array"' <<<"$ROLES" >/dev/null || die "unexpected AppRole listing"
+    if jq -e --arg n "$NAME" 'index($n) != null' <<<"$ROLES" >/dev/null; then ROLE_EXISTED=1; fi
+  elif [[ $ROLES != *"No value found"* ]]; then
+    die "cannot list AppRoles: $ROLES"
+  fi
+fi
 
 [[ $KV_EXISTS -eq 1 ]] || bao secrets enable -path=kv -version=2 kv
 jq -e 'has("approle/")' <<<"$AUTH" >/dev/null || bao auth enable approle
