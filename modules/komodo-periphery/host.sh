@@ -1,5 +1,8 @@
 # shellcheck shell=bash
 # Host orchestration. Source time must remain side-effect free.
+# Definitions only, and a no-op under the launcher, which already loaded it.
+# shellcheck source=lib/pve.sh
+source "${BASH_SOURCE[0]%/*}/../../lib/pve.sh"
 kp_target_key() { # <lxc|qemu> <numeric-id>; never use an unvalidated ID in a path.
     [[ $# -eq 2 && ( $1 == lxc || $1 == qemu ) && $2 =~ ^[1-9][0-9]{2,8}$ ]] || return 1
     printf '%s-%s' "$1" "$2"
@@ -95,22 +98,7 @@ kp_host_require() {
     KP_NODE=$(hostname -s)
     [[ $KP_NODE =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]] || return 1
 }
-kp_host_safe() { # Validate paths before shared persistence helpers mutate them.
-    local path=$1 mode
-    [[ $path == /* ]] || return 1
-    while [[ -n $path && $path != / ]]; do
-        [[ ! -L $path ]] || return 1
-        if [[ -e $path ]]; then
-            [[ $(stat -c %u -- "$path") == 0 ]] || return 1
-            mode=$(stat -c %a -- "$path") || return 1
-            # Root-owned sticky temporary ancestors are allowed; leaf files
-            # and ordinary parents must not be writable by group/others.
-            if [[ -d $path ]] && (( (8#$mode & 01000) != 0 )); then :
-            else (( (8#$mode & 0022) == 0 )) || return 1; fi
-        fi
-        path=${path%/*}
-    done
-}
+kp_host_safe() { pve_host_path_safe "$@"; }
 kp_host_ids() {
     KP_IDS=()
     local id ids
@@ -125,9 +113,7 @@ kp_host_ids() {
         KP_IDS+=("$id")
     done
 }
-kp_display() { # Untrusted guest strings must not control the host terminal.
-    report_clean_text "$1" | LC_ALL=C tr -d '\000-\037\177'
-}
+kp_display() { pve_display "$@"; }
 kp_host_diagnostics() { # <outcome JSON> <protected request>; human output only
     local result=$1 request=$2 message key
     jq -e '.diagnostics | type=="object" and (.service|type=="string") and
