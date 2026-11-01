@@ -288,8 +288,7 @@ The official images held this when checked on 2026-11-01. It can change:
 are absent, Docker creates directories in their place, and install refuses a
 directory at `/usr/local/bin/bao-run`. To recover, as root in the CT, remove the
 empty directory Docker left with `rmdir /usr/local/bin/bao-run`, install, then
-restart the container. A container that was first started while the path was a
-directory will not start on the new file; recreate it instead.
+recreate the container.
 
 ### Adding jq to the official image
 
@@ -320,8 +319,7 @@ Periphery update.
 A single-file bind mount keeps the old file after the host file is replaced, so
 **restart the Periphery container after every payload update**. Install and
 update remind you, and status reports `restart the Periphery container to load
-the new payload` while the container's copy differs. For the same reason, restart
-it after an uninstall followed by a new install: it still holds the deleted file.
+the new payload` while the container's copy differs.
 
 ## Status and doctor
 
@@ -444,10 +442,13 @@ Uninstall checks this first and changes nothing if it finds a problem:
   names the containers and tells you to remove those mounts and recreate them.
   There is no override.
 - If the `docker` command exists but cannot be queried, uninstall says the mount
-  check is unavailable. Start Docker and try again. If Docker cannot be started,
-  you can answer yes to `Remove bao-run without the mount check` (the default is
+  check is unavailable. Check that Docker is running and try again. If it cannot
+  be made to answer, you can answer yes to `Remove bao-run without the mount check` (the default is
   no), knowing that a container still using the mounts will not start again.
 - With no `docker` command the check passes.
+
+The check compares each bind mount's source path, so a bind through a symlink, or
+a named volume backed by these paths, is not detected; check those yourself.
 
 If Docker already made a directory, recover as described in
 [Periphery in a container](#periphery-in-a-container).
@@ -528,7 +529,7 @@ It does **not** protect against:
 | `CT ... lacks curl jq. Run this in the CT ...` | Run the printed `apt install` inside the container. If the tool is already there and will not run, fix its permissions instead |
 | `bao-run: jq not found or not executable` (or `curl`) | The wrapper proves both tools run before it logs in. In a Periphery container, see [Adding jq to the official image](#adding-jq-to-the-official-image); otherwise install the tool or fix its permissions |
 | `containers still bind-mount ...` during uninstall | Remove the named containers' mounts and recreate them, then uninstall again |
-| `mount check unavailable` during uninstall | Start Docker and try again, or confirm the removal without the check |
+| `mount check unavailable` during uninstall | Check that Docker is running and try again, or confirm the removal without the check |
 | `... is a directory` or `not a safe regular file` during install | Docker left a directory at `/usr/local/bin/bao-run`. See [Periphery in a container](#periphery-in-a-container) |
 | `bao-run changes require a terminal ...` | Run from an interactive terminal without `-y` or `--force` |
 | `refused env var name 'X'` | The KV key is on the deny-list; rename it |
