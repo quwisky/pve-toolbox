@@ -17,7 +17,7 @@
 #   addr                     e.g. https://openbao.lan:8200
 #   ca.pem                   optional, CA for OpenBao's cert
 #   mount                    optional, KV v2 mount (default: kv)
-#   role_id, secret_id       default AppRole (used when -r is not given)
+#   role_id, secret_id       default AppRole (used without -r, or with -r default)
 #   roles/<role>/role_id     additional AppRoles, selected with -r <role>
 #   roles/<role>/secret_id
 set -euo pipefail
@@ -31,6 +31,8 @@ while [[ ${1:-} == "-r" || ${1:-} == "--role" || ${1:-} == "--check" ]]; do
   if [[ $1 == "--check" ]]; then _BR_CHECK=1; shift; continue; fi
   _BR_ROLE="${2:-}"; shift 2 || die "-r needs a role name"
   [[ $_BR_ROLE =~ ^[A-Za-z0-9_-]+$ ]] || die "invalid role name '$_BR_ROLE'"
+  # default means the top-level files, as the guest module treats it.
+  [[ $_BR_ROLE != default ]] || _BR_ROLE=""
 done
 _BR_CREDS="$_BR_CONF${_BR_ROLE:+/roles/$_BR_ROLE}"
 [[ -r $_BR_CREDS/role_id && -r $_BR_CREDS/secret_id ]] || die "no credentials in $_BR_CREDS"
@@ -110,7 +112,7 @@ for _BR_P in "${_BR_PATHS[@]}"; do
     <<<"$_BR_JSON" >/dev/null 2>&1 || die "no usable secrets at $_BR_MOUNT/$_BR_P"
   # NUL-separated key/value pairs: safe for newlines, quotes and '$' in values
   while IFS= read -r -d '' _BR_KEY && IFS= read -r -d '' _BR_VAL; do
-    [[ $_BR_KEY =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "invalid env var name '$_BR_KEY' in $_BR_P"
+    [[ $_BR_KEY =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || die "invalid env var name in $_BR_P"
     # Bash's special variables are evaluated arithmetically on export (RANDOM,
     # OPTIND, HISTCMD ... would run a $(...) in the value) or silently ignore it.
     # This list reduces, and does not remove, the trust placed in whoever can
@@ -119,7 +121,7 @@ for _BR_P in "${_BR_PATHS[@]}"; do
       PATH|IFS|ENV|BASH_ENV|SHELLOPTS|BASHOPTS|PS4|HOME|GCONV_PATH|LOCPATH|BAO_RUN_CONF \
         |RANDOM|SRANDOM|OPTIND|OPTARG|OPTERR|HISTCMD|LINENO|SECONDS|EPOCHSECONDS|EPOCHREALTIME \
         |UID|EUID|PPID|GROUPS|FUNCNAME|DIRSTACK|PIPESTATUS \
-        |BASH*|LD_*|DOCKER_*|COMPOSE_*|_BR_*)
+        |BASH*|LD_*|DOCKER_*|COMPOSE_*|BUILDKIT_*|BUILDX_*|_BR_*)
         die "refused env var name '$_BR_KEY' in $_BR_P" ;;
     esac
     _BR_SECRETS[$_BR_KEY]=$_BR_VAL

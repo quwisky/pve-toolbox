@@ -67,8 +67,13 @@ case "$*" in
   "write -f -field=secret_id "*) echo SECRETID-5678 ;;
   "list -format=json auth/approle/role")
     if [[ -f $D/role_list_error ]]; then echo "permission denied" >&2; exit 2; fi
+    if [[ -f $D/role_list_warning ]]; then echo "WARNING! token expires soon" >&2; fi
+    if [[ -f $D/role_list_empty ]]; then echo '{}'; exit 2; fi
     if [[ -f $D/role_exists ]]; then echo '["other","komodo-a"]'
     else echo "No value found at auth/approle/role" >&2; exit 2; fi ;;
+  "read -format=json auth/approle/role/"*)
+    [[ ! -f $D/role_read_error ]] || { echo "permission denied" >&2; exit 2; }
+    if [[ -f $D/role_read ]]; then cat "$D/role_read"; else jq -n --arg n "${3##*/}" '{data:{token_policies:[$n]}}'; fi ;;
 esac
 exit 0
 DBL
@@ -144,7 +149,7 @@ test_kv_keys_token_and_paths_do_not_break_revoke() {
 test_denied_keys_stop_before_exec() {
   local k
   for k in PATH IFS ENV BASH_ENV SHELLOPTS BASHOPTS PS4 HOME GCONV_PATH LOCPATH BAO_RUN_CONF \
-           LD_PRELOAD BASH_FUNC_x BASHPID DOCKER_HOST COMPOSE_FILE _BR_x \
+           LD_PRELOAD BASH_FUNC_x BASHPID DOCKER_HOST COMPOSE_FILE BUILDKIT_HOST BUILDX_BUILDER _BR_x \
            RANDOM SRANDOM OPTIND OPTARG OPTERR HISTCMD LINENO SECONDS EPOCHSECONDS EPOCHREALTIME \
            UID EUID PPID GROUPS FUNCNAME DIRSTACK PIPESTATUS; do
     mk; kv a "$(jq -n --arg k "$k" '{($k):"x"}')"
@@ -171,6 +176,80 @@ test_denied_keys_stop_before_exec() {
   mk; kv a '{"BASH_FUNC_x%%":"() { :; }"}'; run_br a -- child
   [[ $RC -ne 0 ]] && ! ran || fail "exported-function name accepted"
   pass "denied keys stop before exec"
+}
+
+test_invalid_key_is_not_printed() {
+  mk; kv a '{"hunter2 key":"v"}'
+  run_br a -- child
+  [[ $RC -ne 0 ]] && ! ran || fail "invalid key accepted"
+  revoked || fail "invalid key: token not revoked"
+  nosecret hunter2 || fail "invalid key printed"
+  grep -qF 'bao-run: invalid env var name in a' "$D/err" || fail "invalid key: message"
+  pass "an invalid key is reported by path only"
+}
+
+test_role_default_means_top_level_files() {
+  mk; mkdir -p "$CONF/roles/default"
+  printf 'WRONG-ROLE\n' > "$CONF/roles/default/role_id"; printf 'WRONG-SID\n' > "$CONF/roles/default/secret_id"
+  run_br --check -r default
+  [[ $RC -eq 0 && $(<"$D/out") == ok ]] || fail "check -r default: rc=$RC"
+  grep -q "$RID_S" "$D/stdin" || fail "-r default: top-level creds not used"
+  ! grep -q WRONG "$D/stdin" || fail "-r default: read roles/default"
+  rm -r "$CONF/roles/default"; kv a '{"K":"v"}'
+  run_br -r default a -- child
+  [[ $RC -eq 0 ]] && ran || fail "run -r default: rc=$RC"
+  grep -q 'as default$' "$D/err" || fail "-r default: summary"
+  pass "-r default means the top-level files"
+}
+
+test_setup_refuses_a_stack_named_default() {
+  mk; run_setup a 10.0.0.5 default
+  [[ $RC -ne 0 && ! -e $D/bao.log ]] || fail "stack named default accepted"
+  grep -q default "$D/err" || fail "stack default: message"
+  pass "setup refuses a stack named default"
+}
+
+test_setup_refuses_existing_role_it_does_not_own() {
+  # Role present, same-named policy absent: it is bound to someone else's policy.
+  mk; touch "$D/role_exists"; printf '%s' '["default","team-policy"]' > "$D/policies.json"
+  printf '%s' '{"data":{"token_policies":["team-policy"]}}' > "$D/role_read"
+  run_setup a 10.0.0.5
+  [[ $RC -ne 0 ]] || fail "role without policy: succeeded"
+  grep -q komodo-a "$D/err" || fail "role without policy: role not named"
+  ! wrote '^policy write' && ! wrote '^write ' && ! wrote ' enable ' || fail "role without policy: wrote"
+  local body
+  # Same-named policy present, but the role does not use exactly that policy.
+  for body in '{"data":{"token_policies":["team-policy"]}}' '{"data":{"token_policies":["komodo-a","extra"]}}' \
+              '{"data":{"token_policies":[]}}' '{"data":{}}' 'not json'; do
+    primed; printf '%s' "$body" > "$D/role_read"
+    run_setup --new-secret-id a 10.0.0.5
+    [[ $RC -ne 0 ]] || fail "role policies $body: succeeded"
+    ! wrote '^policy write' && ! wrote '^write ' || fail "role policies $body: wrote"
+    ! grep -q SECRETID "$D/out" || fail "role policies $body: minted"
+  done
+  primed; touch "$D/role_read_error"
+  run_setup a 10.0.0.5
+  [[ $RC -ne 0 ]] && ! wrote '^policy write' && ! wrote '^write ' || fail "unreadable role: wrote"
+  pass "setup refuses an existing role it does not own"
+}
+
+test_setup_accepts_an_approle_mount_without_roles() {
+  mk; touch "$D/role_list_empty"
+  run_setup a 10.0.0.5
+  [[ $RC -eq 0 ]] || fail "empty listing: rc=$RC: $(<"$D/err")"
+  wrote 'field=secret_id' || fail "empty listing: not treated as a new role"
+  mk; touch "$D/role_list_empty" "$D/role_list_warning"
+  run_setup a 10.0.0.5
+  [[ $RC -eq 0 ]] || fail "empty listing with a warning: rc=$RC"
+  # A CLI warning on stderr must not corrupt the JSON on stdout.
+  primed; touch "$D/role_list_warning"
+  run_setup a 10.0.0.5
+  [[ $RC -eq 0 ]] || fail "warning with roles: rc=$RC: $(<"$D/err")"
+  ! wrote 'field=secret_id' || fail "warning hid an existing role"
+  mk; touch "$D/role_list_error"
+  run_setup a 10.0.0.5
+  grep -q 'cannot list AppRoles: permission denied' "$D/err" || fail "listing error text lost"
+  pass "setup accepts an approle mount without roles"
 }
 
 test_token_never_in_argv() {
@@ -373,11 +452,13 @@ test_setup_output_has_no_echo_commands() {
   [[ $RC -eq 0 ]] || fail "output: rc=$RC"
   ! grep -q "echo '" "$D/out" "$D/err" || fail "echo command printed"
   grep -qF 'pve-toolbox install bao-run' "$D/out" || fail "install step"
-  grep -qF 'bao-run -r web komodo/shared komodo/a/web -- [[COMPOSE_COMMAND]]' "$D/out" || fail "wrapper line"
+  grep -qF 'bao-run -r web komodo/a/web -- [[COMPOSE_COMMAND]]' "$D/out" || fail "wrapper line"
+  grep -qi 'komodo/shared.*first' "$D/out" || fail "shared values note"
   grep -q 'komodo-a-web' "$D/out" || fail "role name"
   ! grep -q ADMIN-SENT "$D/out" "$D/err" || fail "admin token printed"
   run_setup a 10.0.0.5
-  grep -qF 'bao-run komodo/shared komodo/a -- [[COMPOSE_COMMAND]]' "$D/out" || fail "host wrapper line"
+  grep -qF 'bao-run komodo/a/<stack> -- [[COMPOSE_COMMAND]]' "$D/out" || fail "host wrapper line"
+  ! grep -qE '^ +bao-run .*komodo/shared' "$D/out" || fail "default wrapper reads komodo/shared"
   pass "setup output has no echo commands"
 }
 
