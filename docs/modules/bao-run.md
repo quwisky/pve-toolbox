@@ -272,14 +272,50 @@ volumes:
   - /etc/bao-run:/etc/bao-run:ro
 ```
 
-and an image that contains `bash`, `curl` and `jq`. Whether the official
-Periphery image does is **unverified**; status reports `the Periphery container
-lacks bash, curl or jq` if not. The user inside the container must be able to
-read `/etc/bao-run`.
+and an image in which `bash`, `curl` and `jq` run. Status reports `the Periphery
+container lacks bash, curl or jq` if one does not. The user inside the container
+must be able to read `/etc/bao-run`.
+
+The official images held this when checked on 2026-11-01. It can change:
+
+- `ghcr.io/moghtech/komodo-periphery:2` (Periphery 2.3.4, Debian 13) has `bash`
+  and `curl` but **`jq` is missing**, so stacks fail with the wrapper's `jq not
+  found or not executable` until it is added.
+- `komodo-periphery:latest` is an old Debian 11 image from September 2025. Its
+  `curl` 7.74 lacks `--fail-with-body`, so do not use it. Pin `:2`.
 
 **Start that container only after the install has created these paths.** If they
 are absent, Docker creates directories in their place, and install refuses a
-directory at `/usr/local/bin/bao-run`.
+directory at `/usr/local/bin/bao-run`. To recover, as root in the CT, remove the
+empty directory Docker left with `rmdir /usr/local/bin/bao-run`, install, then
+restart the container. A container that was first started while the path was a
+directory will not start on the new file; recreate it instead.
+
+### Adding jq to the official image
+
+The module does not set up either of these. The recommended way is a static
+`jq` binary kept in the CT and mounted into the container. Run as **root in the
+LXC**, before starting the container:
+
+```bash
+curl -fsSL -o /tmp/jq-linux-amd64 https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64
+echo 'b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f  /tmp/jq-linux-amd64' | sha256sum -c - \
+  && install -m 0755 /tmp/jq-linux-amd64 /usr/local/lib/bao-run-jq
+rm -f /tmp/jq-linux-amd64
+```
+
+Then add this to the container's `volumes`:
+
+```yaml
+  - /usr/local/lib/bao-run-jq:/usr/local/bin/jq:ro
+```
+
+This survives image updates, is amd64 only, and is updated by hand. Do not mount
+the LXC's own `/usr/bin/jq`: Debian's build needs shared libraries the image does
+not have.
+
+The alternative is an image built on `:2` that installs `jq`, rebuilt for each
+Periphery update.
 
 A single-file bind mount keeps the old file after the host file is replaced, so
 **restart the Periphery container after every payload update**. Install and
@@ -306,7 +342,7 @@ or `credentials bad` plus a login word:
 | `unavailable` | OpenBao is reachable but not serving requests; it may be sealed |
 | `tls` | The TLS handshake or certificate check failed: wrong or missing CA |
 | `unreachable` | No connection: wrong URL, DNS, firewall, or OpenBao down |
-| `not-checked` | No check ran, for example because the credential files are not intact |
+| `not-checked` | No check ran, for example because the credential files are not intact, or the wrapper stopped before logging in (`jq not found or not executable`). Status fails on this word too |
 
 !!! note "Scripts and monitoring"
     Plain `pve-toolbox status` exits 0 even when it reports a problem, for every
@@ -320,6 +356,8 @@ unlimited ones). `pve-toolbox check bao-run` never logs in.
 
 Other things status reports, with what they mean:
 
+- `<tool> missing`: the tool is absent, or is there and will not run, such as a
+  file without execute permission.
 - `pending: staging left by an incomplete operation; run install or uninstall
   bao-run to clean it up`. A container whose last install ended with an unknown
   outcome stays listed as pending and keeps failing until a later install or
@@ -392,6 +430,28 @@ reported.
 pve-toolbox uninstall bao-run      # as root on the host
 ```
 
+!!! warning "With Periphery in a container, remove the mounts first"
+    Remove the `/usr/local/bin/bao-run` and `/etc/bao-run` mounts from the
+    container and recreate it **before** you uninstall. Docker cannot start a
+    container whose single-file bind source is gone: it fails with `not a
+    directory` and creates a directory at that path. A reboot of the LXC would
+    then take Periphery down, and the directory blocks a later install.
+
+Uninstall checks this first and changes nothing if it finds a problem:
+
+- If any container, running or stopped, has a bind mount from
+  `/usr/local/bin/bao-run`, `/etc/bao-run` or a path under it, uninstall fails,
+  names the containers and tells you to remove those mounts and recreate them.
+  There is no override.
+- If the `docker` command exists but cannot be queried, uninstall says the mount
+  check is unavailable. Start Docker and try again. If Docker cannot be started,
+  you can answer yes to `Remove bao-run without the mount check` (the default is
+  no), knowing that a container still using the mounts will not start again.
+- With no `docker` command the check passes.
+
+If Docker already made a directory, recover as described in
+[Periphery in a container](#periphery-in-a-container).
+
 Inside the container it removes `/usr/local/bin/bao-run` (only if this module
 installed it, unless you also agree to remove an unmatched one) and the files
 `addr`, `ca.pem`, `mount`, `role_id` and `secret_id` under `/etc/bao-run`
@@ -401,7 +461,8 @@ records for that container removed too.
 
 It does **not** remove other files in `/etc/bao-run` (the result is `partial`,
 they are listed and the host records stay), running containers, or anything in
-OpenBao. On `success` or `partial` it prints the
+OpenBao, nor a `jq` binary you added at `/usr/local/lib/bao-run-jq`. On `success`
+or `partial` it prints the
 `bao delete auth/approle/role/<name>` commands and a reminder that **container
 backups and snapshots may still contain these credentials** (see
 [Roles, rotation and revocation](#roles-rotation-and-revocation)). Stacks that
@@ -464,7 +525,11 @@ It does **not** protect against:
 | Login `unavailable` | OpenBao is sealed or not yet serving. Unseal it |
 | Login `tls` | Missing or wrong CA: install again with the correct CA file |
 | Login `unreachable` | Check the URL, DNS and firewall from the container |
-| `CT ... lacks curl jq. Run this in the CT ...` | Run the printed `apt install` inside the container |
+| `CT ... lacks curl jq. Run this in the CT ...` | Run the printed `apt install` inside the container. If the tool is already there and will not run, fix its permissions instead |
+| `bao-run: jq not found or not executable` (or `curl`) | The wrapper proves both tools run before it logs in. In a Periphery container, see [Adding jq to the official image](#adding-jq-to-the-official-image); otherwise install the tool or fix its permissions |
+| `containers still bind-mount ...` during uninstall | Remove the named containers' mounts and recreate them, then uninstall again |
+| `mount check unavailable` during uninstall | Start Docker and try again, or confirm the removal without the check |
+| `... is a directory` or `not a safe regular file` during install | Docker left a directory at `/usr/local/bin/bao-run`. See [Periphery in a container](#periphery-in-a-container) |
 | `bao-run changes require a terminal ...` | Run from an interactive terminal without `-y` or `--force` |
 | `refused env var name 'X'` | The KV key is on the deny-list; rename it |
 | `invalid env var name in ...` | A key at that path is not a valid variable name. The key itself is not printed; list the path's keys in OpenBao and rename it |
@@ -480,12 +545,17 @@ It does **not** protect against:
 ## Validation limits
 
 The automated tests exercise the real shell code against doubles for PVE
-(`pct`, `pvesh`) and for OpenBao. This module has **not been run against a live
-PVE 9 node or a real OpenBao**. Behaviour with a real AppRole, sealed instance,
-TLS chain and Periphery is therefore unverified.
+(`pct`, `pvesh`) and for OpenBao.
+
+On 2026-11-01 a manual end-to-end test ran the setup script, `guest.sh` and a
+compose deploy through the wrapper in the official image
+`komodo-periphery:2` against a real OpenBao 2.7.2 over TLS, with a Docker
+container standing in for the LXC. It was **not on a live PVE 9 node**, `pct` and
+`host.sh` were not exercised for real, and Komodo Core did not trigger the
+deploy. CI does not repeat that test. The uninstall mount check and the
+proof that `curl` and `jq` run were added because of it, and are tested only
+against doubles.
 
 Also not covered by CI: the Komodo setting names `compose_cmd_wrapper` and
 `compose_cmd_wrapper_include` and the `#1636` leak come from the operator's
-guide and Komodo's source and issue tracker, checked by hand and not by tests;
-and whether the official Periphery image contains `bash`, `curl` and `jq` is
-unverified.
+guide and Komodo's source and issue tracker, checked by hand and not by tests.
