@@ -539,11 +539,12 @@ br_container_install() { # A healthy install with Periphery in a container.
 BR_JQ_CHECKSUM=b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
 BR_JQ_DOCS=https://quwisky.github.io/pve-toolbox/modules/bao-run/#adding-jq-to-the-official-image
 br_has_jq_help() {
-    br_has 'static jq'; br_has 'does not manage'; br_has 'as root in the LXC'
-    br_has 'curl -fsSL -o /tmp/jq-linux-amd64 https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64'
-    br_has "echo '$BR_JQ_CHECKSUM  /tmp/jq-linux-amd64' | sha256sum -c - \\"
-    br_has '  && install -m 0755 /tmp/jq-linux-amd64 /usr/local/lib/bao-run-jq'
-    br_has 'rm -f /tmp/jq-linux-amd64'
+    br_has 'static jq'; br_has 'does not manage'; br_has 'as root in CT 101'
+    br_has 'jq_tmp=$(mktemp)'
+    br_has 'curl -fsSL -o "$jq_tmp" https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64'
+    br_has "echo \"$BR_JQ_CHECKSUM  \$jq_tmp\" | sha256sum -c - \\"
+    br_has '  && install -m 0755 "$jq_tmp" /usr/local/lib/bao-run-jq'
+    br_has 'rm -f "$jq_tmp"'
     br_has '/usr/local/lib/bao-run-jq:/usr/local/bin/jq:ro'; br_has 'recreate'
     br_has "$BR_JQ_DOCS"
 }
@@ -581,11 +582,25 @@ test_status_explains_missing_tools() {
     ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1
     br_lacks 'lacks'; br_lacks "$BR_JQ_CHECKSUM"
 }
+test_status_without_jq_in_the_ct_claims_nothing_else() {
+    local kind
+    for kind in absent unrunnable; do
+        br_fixture
+        br_container_install
+        br_run install bao-run || br_fail 'container install failed'
+        if [[ $kind == absent ]]; then rm "$BR_TEST_ROOT/usr/bin/jq"; else chmod 0644 "$BR_TEST_ROOT/usr/bin/jq"; fi
+        br_status_fails "$kind jq" 'install jq in the CT to check the rest: apt install jq'
+        ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1
+        br_has 'jq missing'; br_has 'payload not checked'
+        br_lacks 'could not check'; br_lacks 'cannot read credentials'; br_lacks 'missing from the CT'; br_lacks 'payload differs'
+    done
+}
 test_preview_explains_missing_jq_without_blocking() {
     br_fixture
     printf 'jq\n' > "$BR_TEST_ROOT/docker-missing"
     br_container_install
     br_run install bao-run || br_fail 'install blocked by a missing jq'
+    br_has 'Checking the tools in the Periphery container'
     br_has 'the Periphery container lacks jq'
     br_has_jq_help
     cmp -s modules/bao-run/bao-run.sh "$BR_TEST_ROOT/usr/local/bin/bao-run" || br_fail 'not installed'

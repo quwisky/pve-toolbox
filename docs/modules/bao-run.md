@@ -297,10 +297,11 @@ The module does not set up either of these. The recommended way is a static
 LXC**, before starting the container:
 
 ```bash
-curl -fsSL -o /tmp/jq-linux-amd64 https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64
-echo 'b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f  /tmp/jq-linux-amd64' | sha256sum -c - \
-  && install -m 0755 /tmp/jq-linux-amd64 /usr/local/lib/bao-run-jq
-rm -f /tmp/jq-linux-amd64
+jq_tmp=$(mktemp)
+curl -fsSL -o "$jq_tmp" https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64
+echo "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f  $jq_tmp" | sha256sum -c - \
+  && install -m 0755 "$jq_tmp" /usr/local/lib/bao-run-jq
+rm -f "$jq_tmp"
 ```
 
 Then add this to the container's `volumes`:
@@ -364,6 +365,9 @@ Other things status reports, with what they mean:
   is unreachable or did not answer, so nothing is known about its tools.
 - `<tool> missing`: the tool is absent, or is there and will not run, such as a
   file without execute permission.
+- `install jq in the CT to check the rest`: the LXC itself lacks `jq`, so the
+  module cannot report anything further about it. Status fails, shows
+  `payload not checked`, and stops there for that CT.
 - `pending: staging left by an incomplete operation; run install or uninstall
   bao-run to clean it up`. A container whose last install ended with an unknown
   outcome stays listed as pending and keeps failing until a later install or

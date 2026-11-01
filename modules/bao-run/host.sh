@@ -433,13 +433,14 @@ br_expected_payload() { # The current hash, or absent; refuses what the guest co
     [[ $sha =~ ^[0-9a-f]{64}$ ]] || { warn 'the existing payload is not a safe regular file. If Docker left an empty directory there, run rmdir /usr/local/bin/bao-run in the CT, install, then recreate the container; otherwise inspect it in the CT' >&2; return 1; }
     printf '%s' "$sha"
 }
-br_jq_help() {
-    info 'This adds a static jq that this module does not manage. Run these as root in the LXC:'
+br_jq_help() { # <ctid>
+    info "This adds a static jq that this module does not manage. Run these as root in CT $1:"
     cat <<'EOF'
-curl -fsSL -o /tmp/jq-linux-amd64 https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64
-echo 'b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f  /tmp/jq-linux-amd64' | sha256sum -c - \
-  && install -m 0755 /tmp/jq-linux-amd64 /usr/local/lib/bao-run-jq
-rm -f /tmp/jq-linux-amd64
+jq_tmp=$(mktemp)
+curl -fsSL -o "$jq_tmp" https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64
+echo "b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f  $jq_tmp" | sha256sum -c - \
+  && install -m 0755 "$jq_tmp" /usr/local/lib/bao-run-jq
+rm -f "$jq_tmp"
 EOF
     info 'Then add the mount /usr/local/lib/bao-run-jq:/usr/local/bin/jq:ro to that container and recreate it.'
     info "Details: $BR_JQ_DOCS"
@@ -466,10 +467,11 @@ br_preview_periphery() { # <systemd|container> <changes payload: 0|1>
 }
 
 br_preview_container_jq() { # <ctid> <container>. Never blocks: the mounts may come after install.
+    info 'Checking the tools in the Periphery container; this can take up to 2 minutes if it hangs...'
     # The subshell keeps this inspection out of the state the flow goes on to use.
     if ( br_inspect "$1" --container "$2" > /dev/null 2>&1 && [[ $(br_json '.periphery.missing_tools | index("jq") != null') == true ]] ); then
         warn 'the Periphery container lacks jq, so its stacks will fail to deploy until it is added'
-        br_jq_help
+        br_jq_help "$1"
     fi
 }
 
@@ -695,7 +697,9 @@ br_status_one() { # <ctid> [brief]; prints one block. False when anything needs 
     if ! br_inspect "$id" "${args[@]}"; then printf 'CT %s: unreachable: %s\n' "$id" "$BR_INSPECT_ERROR"; return 1; fi
     if [[ -z $BR_TARGET_IDENTITY || $BR_TARGET_IDENTITY != "$expected" ]]; then printf 'CT %s: identity mismatch\n' "$id"; return 1; fi
     want=$(sha256sum < "$(br_payload_source)" | cut -d ' ' -f1)
-    if [[ $(br_json .payload.sha256) == "$want" ]]; then payload='payload current'; else payload='payload differs from packaged'; failed=1; fi
+    if [[ $(br_json .tools.jq) != true ]]; then payload='payload not checked'
+    elif [[ $(br_json .payload.sha256) == "$want" ]]; then payload='payload current'
+    else payload='payload differs from packaged'; failed=1; fi
     if [[ $(br_json '.tools.curl and .tools.jq and .tools.bash') == true ]]; then tools='curl jq ok'
     else
         tools=$(pve_display "$(br_json '[.tools | to_entries[] | select(.value != true) | .key + " missing"] | join(", ")')")
@@ -706,6 +710,11 @@ br_status_one() { # <ctid> [brief]; prints one block. False when anything needs 
     if [[ $(br_json .supported) != true ]]; then
         printf '  cannot manage this CT: %s\n' "$(pve_display "$(br_json .reason)")"; failed=1
     fi
+    # Without jq the guest reports nothing else, so the checks below would only mislead.
+    if [[ $(br_json .tools.jq) != true ]]; then
+        printf '  install jq in the CT to check the rest: apt install jq\n'
+        return 1
+    fi
     if [[ $(br_json .periphery.can_read) != true ]]; then printf '  service user cannot read credentials\n'; failed=1; fi
     if [[ $mode == container ]]; then
         if [[ $(br_json .periphery.tools_ok) != true ]]; then
@@ -714,7 +723,7 @@ br_status_one() { # <ctid> [brief]; prints one block. False when anything needs 
             if [[ -z $missing ]]; then printf '  could not check bash, curl and jq in the Periphery container\n'
             elif [[ $missing != *jq* ]]; then printf '  the Periphery container lacks %s\n' "$missing"
             elif [[ -n $brief ]]; then printf '  the Periphery container lacks %s; see %s\n' "$missing" "$BR_JQ_DOCS"
-            else printf '  the Periphery container lacks %s\n' "$missing"; br_jq_help; fi
+            else printf '  the Periphery container lacks %s\n' "$missing"; br_jq_help "$id"; fi
         fi
         if [[ $(br_json .periphery.sha256) != "$(br_json .payload.sha256)" ]]; then
             printf '  restart the Periphery container to load the new payload\n'; failed=1
