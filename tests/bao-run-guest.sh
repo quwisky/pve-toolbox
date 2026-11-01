@@ -43,6 +43,11 @@ case ${0##*/} in
     uname) printf 'x86_64\n' ;;
     mv)
         dest=${*: -1}
+        if [[ -f /signal-at-mv ]]; then # <call number> <signal>, sent to the guest during that mv.
+            read -r at signal < /signal-at-mv
+            count=$(($(cat /mv-count 2>/dev/null || printf 0) + 1)); printf '%s\n' "$count" > /mv-count
+            [[ $count != "$at" ]] || kill "-$signal" "$PPID"
+        fi
         [[ ! -f /fail-mv || $(</fail-mv) != "$dest" ]] || exit 1
         if [[ -f /fail-mv-second && $(</fail-mv-second) == "$dest" ]]; then
             [[ ! -f /mv-seen ]] || exit 1
@@ -232,6 +237,22 @@ test_restore_failure_is_visible() {
     bt_out '.result == "failed" and (.reason | test("restore incomplete"))'
 }
 
+test_signal_during_restore_is_ignored() {
+    local signal tree
+    for signal in TERM INT HUP; do
+        bt_install
+        tree=$(bt_tree)
+        printf 'rejected\n' > "$BT_ROOT/curl-final-mode"
+        # Swaps are calls 1 and 2, so call 3 is the restore of secret_id, with role_id still to go.
+        printf '3 %s\n' "$signal" > "$BT_ROOT/signal-at-mv"
+        bt_request '.action="update" | .roles[0].role_id="ROLE-SENTINEL-NEW" | .roles[0].secret_id="SECRET-SENTINEL-NEW"'
+        if bt_apply; then fail "$signal: final failure accepted"; fi
+        [[ $(<"$BT_ROOT/mv-count") == 4 ]] || fail "$signal: restore did not finish"
+        bt_out '.result == "failed" and .reason == "final login check failed; previous files restored"' "$signal"
+        [[ $(bt_tree) == "$tree" ]] || fail "$signal: previous files not restored"
+    done
+}
+
 test_repeat_install_writes_nothing() {
     bt_install
     bt_request '.action="update"'
@@ -369,6 +390,19 @@ test_remove_role_and_missing_role() {
     [[ -f $BT_ROOT/etc/bao-run/secret_id ]] || fail 'kept role removed'
     # Only the role that went away changed: the survivor needs no final check.
     [[ $(grep -c '^curl' "$BT_ROOT/calls") == 2 ]] || fail 'expected only the candidate check'
+}
+
+test_remove_role_with_stray_file_refused() {
+    local stray
+    for stray in notes .hidden; do
+        bt_install '.roles += [{name:"app",action:"replace",role_id:"ROLE-SENTINEL-2",secret_id:"SECRET-SENTINEL-2"}]'
+        printf 'SENTINEL-STRAY-CONTENT\n' > "$BT_ROOT/etc/bao-run/roles/app/$stray"
+        bt_new_payload v2
+        bt_request '.action="update" | .roles=[{name:"app",action:"remove"}]'
+        bt_refused "stray $stray"
+        bt_out ".reason | contains(\"/etc/bao-run/roles/app/$stray\")" "stray $stray"
+        bt_no_network "stray $stray"
+    done
 }
 
 test_missing_prerequisite_reported() {

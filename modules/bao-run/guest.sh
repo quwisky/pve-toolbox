@@ -345,6 +345,16 @@ bg_install() { # <request>
         wanted[$name]=$action; index[$name]=$i; names+=("$name"); i=$((i + 1))
     done <<<"$rows"
     bg_scan
+    # rmdir would fail on these and leave a role without credentials that blocks every update.
+    for role in "${names[@]}"; do
+        [[ ${wanted[$role]} == remove && $role != default ]] || continue
+        for row in "$BG_CONF/roles/$role"/*; do
+            case ${row##*/} in
+                role_id|secret_id) ;;
+                *) bg_fail "cannot remove role $role: unknown file $row" ;;
+            esac
+        done
+    done
     for role in "${BG_ROLES[@]}"; do
         [[ ${wanted[$role]:-keep} == remove ]] || BG_AFTER+=("$role")
     done
@@ -517,8 +527,9 @@ bg_result_json() {
     printf '%s\n%s\n' "$login_json" "$remaining_json" | jq -cs --arg result "$BG_RESULT" --arg reason "$BG_REASON" --arg tx "$BG_TX" --arg sha "$BG_NEW_HASH" \
         '{schema:1,result:$result,reason:$reason,transaction_id:$tx,payload_sha256:$sha,login:.[0],remaining:.[1]}'
 }
-bg_exit() {
-    local rc=$? json
+bg_exit() { # <status of the exiting shell>
+    trap '' HUP INT TERM # A signal now would abort the restore and the one JSON outcome.
+    local rc=$1 json
     trap - EXIT
     case $BG_MODE in
         apply)
@@ -550,7 +561,7 @@ bg_usage() {
     exit 2
 }
 
-trap bg_exit EXIT
+trap 'bg_exit "$?"' EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
