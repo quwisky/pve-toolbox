@@ -272,9 +272,9 @@ volumes:
   - /etc/bao-run:/etc/bao-run:ro
 ```
 
-and an image in which `bash`, `curl` and `jq` run. Status reports `the Periphery
-container lacks bash, curl or jq` if one does not. The user inside the container
-must be able to read `/etc/bao-run`.
+and an image in which `bash`, `curl` and `jq` run. Status names any that do not,
+as in `the Periphery container lacks jq`. The user inside the container must be
+able to read `/etc/bao-run`.
 
 The official images held this when checked on 2026-11-01. It can change:
 
@@ -354,6 +354,14 @@ unlimited ones). `pve-toolbox check bao-run` never logs in.
 
 Other things status reports, with what they mean:
 
+- `the Periphery container lacks <tools>`: those tools do not run in the
+  container. When `jq` is one of them, status prints the commands from
+  [Adding jq to the official image](#adding-jq-to-the-official-image), and doctor
+  gives a link to that section. The install preview prints the same commands for
+  a reachable container without `jq`, and does not stop the install, because the
+  mount can be added afterwards.
+- `could not check bash, curl and jq in the Periphery container`: the container
+  is unreachable or did not answer, so nothing is known about its tools.
 - `<tool> missing`: the tool is absent, or is there and will not run, such as a
   file without execute permission.
 - `pending: staging left by an incomplete operation; run install or uninstall
@@ -527,7 +535,9 @@ It does **not** protect against:
 | Login `tls` | Missing or wrong CA: install again with the correct CA file |
 | Login `unreachable` | Check the URL, DNS and firewall from the container |
 | `CT ... lacks curl jq. Run this in the CT ...` | Run the printed `apt install` inside the container. If the tool is already there and will not run, fix its permissions instead |
-| `bao-run: jq not found or not executable` (or `curl`) | The wrapper proves both tools run before it logs in. In a Periphery container, see [Adding jq to the official image](#adding-jq-to-the-official-image); otherwise install the tool or fix its permissions |
+| `bao-run: jq not found or not executable; in a Periphery container, see ...` (or `curl not found or not executable`) | The wrapper proves both tools run before it logs in. In a Periphery container, see [Adding jq to the official image](#adding-jq-to-the-official-image); otherwise install the tool or fix its permissions |
+| `the Periphery container lacks jq` | Run the commands status prints, add the mount, and recreate the container. See [Adding jq to the official image](#adding-jq-to-the-official-image) |
+| `the Periphery container lacks bash` or `curl` | The image does not provide it. Use an image that does |
 | `containers still bind-mount ...` during uninstall | Remove the named containers' mounts and recreate them, then uninstall again |
 | `mount check unavailable` during uninstall | Check that Docker is running and try again, or confirm the removal without the check |
 | `... is a directory` or `not a safe regular file` during install | Docker left a directory at `/usr/local/bin/bao-run`. See [Periphery in a container](#periphery-in-a-container) |
