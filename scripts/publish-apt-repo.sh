@@ -164,10 +164,11 @@ apt-ftparchive \
     -o 'APT::FTPArchive::Release::Description=pve-toolbox packages for PVE 9 / Debian 13' \
     release "$release_dir" > "$release_file"
 install -m 0644 "$release_file" "$release_dir/Release"
-gpg --batch --yes --faked-system-time "$release_epoch" \
+# The ! freezes gpg's clock: otherwise a signature crossing a second boundary gets a later time and different bytes.
+gpg --batch --yes --faked-system-time "$release_epoch!" \
     --local-user "$fingerprint" --clearsign \
     --output "$release_dir/InRelease" "$release_dir/Release"
-gpg --batch --yes --faked-system-time "$release_epoch" \
+gpg --batch --yes --faked-system-time "$release_epoch!" \
     --local-user "$fingerprint" --detach-sign \
     --output "$release_dir/Release.gpg" "$release_dir/Release"
 install -m 0644 "$public_key" "$stage/pve-toolbox.asc"
