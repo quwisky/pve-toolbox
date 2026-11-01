@@ -307,8 +307,8 @@ redaction behavior, and monitoring examples.
 
 ## Non-interactive install
 
-Every module except komodo-periphery reads env vars in place of prompts under
-`-y`; komodo-periphery refuses `-y` for install, update and uninstall, because
+Every module except komodo-periphery and bao-run reads env vars in place of prompts under
+`-y`; those two refuse `-y` for install, update and uninstall, because
 each change needs a terminal and explicit confirmation:
 
 ```bash
