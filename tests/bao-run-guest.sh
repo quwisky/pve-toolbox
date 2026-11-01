@@ -112,7 +112,9 @@ bt_guest() {
     [[ ! -s $BT_ERR ]] || fail "guest wrote to stderr: $(<"$BT_ERR")"
     (( $(stat -c %s "$BT_OUT") <= 65536 )) || fail 'output exceeds 65536 bytes'
     jq -e 'type == "object"' "$BT_OUT" > /dev/null || fail "output is not one JSON object: $(<"$BT_OUT")"
-    [[ ! -e $BT_STAGE/conf && ! -e $BT_STAGE/backup ]] || fail 'stage conf or backup left behind'
+    [[ ! -e $BT_STAGE/conf ]] || fail 'stage conf left behind'
+    # After an incomplete restore the backup is the only copy of the previous files.
+    [[ ! -e $BT_STAGE/backup ]] || grep -q 'restore incomplete' "$BT_OUT" || fail 'stage backup left behind'
     return "$rc"
 }
 bt_out() { jq -e "$1" "$BT_OUT" > /dev/null || fail "${2:-unexpected output}: $1: $(<"$BT_OUT")"; }
@@ -251,6 +253,10 @@ test_restore_failure_is_visible() {
     bt_request '.action="update" | .roles[0].secret_id="SECRET-SENTINEL-NEW"'
     if bt_apply; then fail 'restore failure accepted'; fi
     bt_out '.result == "failed" and (.reason | test("restore incomplete")) and .changed == true'
+    [[ $(<"$BT_ROOT/etc/bao-run/secret_id") == SECRET-SENTINEL-NEW ]] || fail 'expected the failed restore to leave the new secret'
+    [[ -d $BT_STAGE/backup && ! -e $BT_STAGE/conf ]] || fail 'incomplete restore must keep backup and remove conf'
+    [[ $(<"$BT_STAGE/backup/0") == SECRET-SENTINEL ]] || fail 'backup lost the previous secret'
+    [[ $(stat -c %a "$BT_STAGE/backup/0") == 600 ]] || fail 'backup copy mode'
 }
 
 test_signal_during_restore_is_ignored() {

@@ -198,7 +198,7 @@ br_stage_clean() { # Removes guest staging and settles BR_PENDING. Keeps both wh
         rmdir -- "$1"
     ' _ "$BR_STAGE" < /dev/null > /dev/null 2>&1 || rc=$?
     if ((rc == 3)); then
-        warn "$BR_STAGE/backup in CT $id still holds previous files, so a swap may be half done. To repair: compare its numbered copies (payload, addr, CA, then credentials, in swap order) with /usr/local/bin/bao-run and /etc/bao-run and put back what is wrong, then remove that backup directory and run the operation again"
+        warn "$BR_STAGE/backup in CT $id still holds previous files, so a swap may be half done. To repair: compare its numbered copies (of the files that existed, in order: payload, addr, CA, credentials, removed files, owner record; owner.new and left are working files, not copies) with /usr/local/bin/bao-run, /etc/bao-run and /var/lib/pve-toolbox/bao-run/owner.json and put back what is wrong, then remove that backup directory and run the operation again. A reboot of the CT clears /run and this backup with it"
         return 1
     elif ((rc)); then
         warn "guest staging cleanup incomplete; inspect $BR_STAGE in CT $id and the saved pending record"

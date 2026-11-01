@@ -17,7 +17,7 @@ BG_LOCK_FILE=/run/pve-toolbox-bao-run.lock
 BG_ROLE_RE='^[A-Za-z0-9_-]+$'
 BG_LIMIT=65536
 
-BG_MODE="" BG_EMITTED=0 BG_SWAPPING=0 BG_CLEAN=0 BG_TMP="" BG_CHANGED=false
+BG_MODE="" BG_EMITTED=0 BG_SWAPPING=0 BG_CLEAN=0 BG_TMP="" BG_CHANGED=false BG_KEEP_BACKUP=0
 BG_RESULT=failed BG_REASON='unexpected guest failure' BG_TX="" BG_STAGE="" BG_NEW_HASH=""
 BG_MACHINE="" BG_PLATFORM_ERR="" BG_P_MODE=systemd
 BG_ROLES=() BG_UNKNOWN=() BG_AFTER=() BG_REMAINING=() BG_ARGS=()
@@ -541,9 +541,13 @@ bg_exit() { # <status of the exiting shell>
             if [[ -n $BG_TMP ]]; then rm -f -- "$BG_TMP" 2>/dev/null || true; fi
             if ((BG_SWAPPING)); then
                 if bg_restore; then BG_REASON+='; previous files restored'
-                else BG_REASON+='; restore incomplete, manual repair required'; BG_CHANGED=true; fi
+                else BG_REASON+='; restore incomplete, manual repair required'; BG_CHANGED=true; BG_KEEP_BACKUP=1; fi
             fi
-            if ((BG_CLEAN)); then rm -rf -- "${BG_STAGE:?}/conf" "${BG_STAGE:?}/backup" 2>/dev/null || true; fi
+            # After a failed restore the backup is the only copy of the previous files; the host reports it.
+            if ((BG_CLEAN)); then
+                rm -rf -- "${BG_STAGE:?}/conf" 2>/dev/null || true
+                if ((!BG_KEEP_BACKUP)); then rm -rf -- "${BG_STAGE:?}/backup" 2>/dev/null || true; fi
+            fi
             if json=$(bg_result_json 2>/dev/null); then
                 bg_emit "$json"
             else # jq is missing: reasons, the id and the result are all validated or static.

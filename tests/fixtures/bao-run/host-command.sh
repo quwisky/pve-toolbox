@@ -28,6 +28,11 @@ case ${0##*/} in
                 if [[ -f $BR_HOST/apply-garbage && $* == *' apply '* ]]; then printf 'not json\n'; exit 0; fi
                 # A canned guest outcome, as a fault the chroot guest cannot reach here produces it. Exits 1.
                 if [[ -f $BR_HOST/apply-outcome && $* =~ pve-toolbox-bao-run-([0-9a-f]{32})/guest\.sh\ apply ]]; then
+                    # As guest.sh leaves it after an incomplete restore.
+                    if [[ -f $BR_HOST/apply-outcome-backup ]]; then
+                        mkdir -m 0700 "$BR_TEST_ROOT/run/pve-toolbox-bao-run-${BASH_REMATCH[1]}/backup"
+                        printf 'previous\n' > "$BR_TEST_ROOT/run/pve-toolbox-bao-run-${BASH_REMATCH[1]}/backup/0"
+                    fi
                     jq -c --arg tx "${BASH_REMATCH[1]}" '.transaction_id = $tx' "$BR_HOST/apply-outcome"
                     exit 1
                 fi

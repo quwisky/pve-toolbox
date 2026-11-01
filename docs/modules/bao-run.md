@@ -272,14 +272,14 @@ volumes:
   - /etc/bao-run:/etc/bao-run:ro
 ```
 
-**Start that container only after the install has created these paths.** If they
-are absent, Docker creates directories in their place, and install refuses a
-directory at `/usr/local/bin/bao-run`.
-
 and an image that contains `bash`, `curl` and `jq`. Whether the official
 Periphery image does is **unverified**; status reports `the Periphery container
 lacks bash, curl or jq` if not. The user inside the container must be able to
 read `/etc/bao-run`.
+
+**Start that container only after the install has created these paths.** If they
+are absent, Docker creates directories in their place, and install refuses a
+directory at `/usr/local/bin/bao-run`.
 
 A single-file bind mount keeps the old file after the host file is replaced, so
 **restart the Periphery container after every payload update**. Install and
@@ -358,11 +358,18 @@ no guest operation holds the lock; a reboot of the container also clears `/run`.
 
 The cleanup removes everything except a non-empty `backup/` directory. That means
 a swap may be half done and these may be the only copies of the previous files,
-so it stays, its path is printed, and the operation stays pending. To repair it,
-as root in the container: compare the numbered copies (in swap order: payload,
-`addr`, `ca.pem`, then credentials) with `/usr/local/bin/bao-run` and
-`/etc/bao-run`, put back what is wrong, and remove that `backup` directory. Then
-accept the cleanup offer again.
+so it stays, its path is printed, and the operation stays pending. A failed
+install whose reason says `restore incomplete` leaves the same state. To repair
+it, as root in the container: compare the numbered copies with
+`/usr/local/bin/bao-run`, `/etc/bao-run` and
+`/var/lib/pve-toolbox/bao-run/owner.json`, put back what is wrong, and remove
+that `backup` directory. Then accept the cleanup offer again. The copies cover
+only files that existed, in this order: payload, `addr`, `ca.pem`, credentials,
+removed files, owner record. `owner.new` and `left` are working files, not
+copies.
+
+A reboot of the container clears `/run`, and with it this backup, so repair
+first if you still need the previous files.
 
 If the `pve-toolbox` process on the host is killed with `SIGKILL`, its working
 directory `/run/pve-toolbox-bao-run.<random>` stays on the host, and can hold

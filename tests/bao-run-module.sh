@@ -369,6 +369,18 @@ test_incomplete_restore_keeps_first_install_record() {
     br_has 'restore incomplete'
     [[ $(br_conf bao-run BR_IDS) == 101 && -n $(br_conf bao-run-101 BR_IDENTITY) && -z $(br_conf bao-run-101 BR_PENDING) ]] || br_fail 'changed guest was forgotten'
     br_no_stage
+    # With previous files to repair from: their copies stay, and so does pending.
+    br_fixture
+    jq -n --argjson c true "$outcome" > "$BR_HOST/apply-outcome"
+    : > "$BR_HOST/apply-outcome-backup"
+    ans_to_role; ans_role default; ans_apply
+    if br_run install bao-run; then br_fail 'failed outcome exited 0'; fi
+    br_has 'restore incomplete'
+    br_has '/backup in CT 101 still holds previous files'
+    br_has 'To repair'
+    [[ -n $(br_conf bao-run-101 BR_PENDING) && $(br_conf bao-run BR_IDS) == 101 ]] || br_fail 'pending dropped with a backup left'
+    [[ $(cat "$BR_TEST_ROOT"/run/pve-toolbox-bao-run-*/backup/0) == previous ]] || br_fail 'backup removed'
+    [[ -z $(compgen -G "$BR_TEST_ROOT/run/pve-toolbox-bao-run-*/request.json") ]] || br_fail 'request left beside the backup'
     # Restored: the guest is as it was, so a first install leaves no record.
     br_fixture
     jq -n --argjson c false "$outcome" > "$BR_HOST/apply-outcome"
