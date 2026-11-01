@@ -56,6 +56,7 @@ test: syntax
 	@./tests/lxc-schedule.sh
 	@./tests/lxc-update.sh
 	@./tests/bao-run.sh
+	@./tests/bao-run-guest.sh
 	@./tests/discord.sh
 	@./tests/config-backup.sh
 	@./tests/hardening.sh
