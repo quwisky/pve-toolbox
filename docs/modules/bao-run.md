@@ -553,9 +553,11 @@ compose deploy through the wrapper in the official image
 `komodo-periphery:2` against a real OpenBao 2.7.2 over TLS, with a Docker
 container standing in for the LXC. It was **not on a live PVE 9 node**, `pct` and
 `host.sh` were not exercised for real, and Komodo Core did not trigger the
-deploy. CI does not repeat that test. The uninstall mount check and the
-proof that `curl` and `jq` run were added because of it, and are tested only
-against doubles.
+deploy. CI does not repeat that test. The uninstall mount check and the proof
+that `curl` and `jq` run were added because of it. CI tests them against
+doubles. The mount check, its refusal and the directory recovery were also run
+by hand that day against a real Docker daemon inside the stand-in container, and
+a `jq` that cannot run was checked by hand in the official image.
 
 Also not covered by CI: the Komodo setting names `compose_cmd_wrapper` and
 `compose_cmd_wrapper_include` and the `#1636` leak come from the operator's
