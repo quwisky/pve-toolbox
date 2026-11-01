@@ -65,7 +65,8 @@ pve_host_path_safe() { # Validate paths before shared persistence helpers mutate
 }
 
 pve_display() { # Untrusted guest strings must not control the host terminal.
-    report_clean_text "$1" | LC_ALL=C tr -d '\000-\037\177'
+    # The sed loop also catches a UTF-8 C1 that only forms once an inner one is removed.
+    report_clean_text "$1" | LC_ALL=C tr -d '\000-\037\177' | LC_ALL=C sed -e ':a' -e 's/\xc2[\x80-\x9f]//g' -e 'ta'
 }
 
 # Shared local LXC inspection; these helpers never start, unlock or modify a CT.
