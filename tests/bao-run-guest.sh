@@ -89,7 +89,7 @@ case ${0##*/} in
                 exit ;;
             inspect)
                 [[ ! -f /docker-inspect-down ]] || exit 1
-                [[ ! -f /docker-inspect-garbage ]] || { printf 'not json\n'; exit 0; }
+                [[ ! -f /docker-inspect-raw ]] || { cat /docker-inspect-raw; exit 0; }
                 [[ $* == "inspect --type container $(jq -r 'map(.Id) | join(" ")' /docker-inspect)" ]] || exit 99
                 cat /docker-inspect
                 exit ;;
@@ -735,12 +735,20 @@ test_uninstall_proceeds_without_a_matching_mount() {
 
 test_uninstall_refused_when_docker_cannot_answer() {
     local flag
-    local unavailable='mount check unavailable: cannot query Docker; start Docker and try again'
-    for flag in docker-down docker-inspect-down docker-inspect-garbage docker-ps-raw non-executable; do
+    local unavailable='mount check unavailable: cannot query Docker; check that it is running and try again'
+    for flag in docker-down docker-inspect-down garbage empty whitespace no-entries too-few docker-ps-raw non-executable; do
         bt_install
         bt_container aaaaaaaaaaaa /unrelated true bind /srv/data | bt_containers
         case $flag in
             docker-ps-raw) printf -- '--help\n' > "$BT_ROOT/$flag" ;;
+            garbage) printf 'not json\n' > "$BT_ROOT/docker-inspect-raw" ;;
+            empty) : > "$BT_ROOT/docker-inspect-raw" ;;
+            whitespace) printf ' \n\t\n' > "$BT_ROOT/docker-inspect-raw" ;;
+            no-entries) printf '[]\n' > "$BT_ROOT/docker-inspect-raw" ;;
+            too-few) # Two listed, one answered: the unseen one could hold the mount.
+                { bt_container aaaaaaaaaaaa /unrelated true bind /srv/data
+                  bt_container bbbbbbbbbbbb /unseen true bind /srv/data; } | bt_containers
+                bt_container aaaaaaaaaaaa /unrelated true bind /srv/data | jq -s . > "$BT_ROOT/docker-inspect-raw" ;;
             non-executable) chmod 0644 "$BT_ROOT/usr/bin/docker" ;;
             *) : > "$BT_ROOT/$flag" ;;
         esac
@@ -791,7 +799,7 @@ test_install_explains_a_directory_docker_left() {
     mkdir -m 0755 "$BT_ROOT/etc/bao-run"
     bt_request
     bt_refused 'directory at the payload path'
-    bt_out '(.reason | contains("rmdir /usr/local/bin/bao-run")) and (.reason | contains("restart the container"))'
+    bt_out '(.reason | contains("rmdir /usr/local/bin/bao-run")) and (.reason | contains("recreate the container"))'
     # Following that advice works: the empty /etc/bao-run Docker also left is taken over.
     rmdir "$BT_ROOT/usr/local/bin/bao-run"
     bt_request

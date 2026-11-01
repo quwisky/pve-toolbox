@@ -6,7 +6,7 @@ BR_ROLE_RE='^[A-Za-z0-9_-]+$'
 BR_APPROLE_RE='^[A-Za-z0-9._-]+$'
 BR_LOGIN_REJECTED_HINT="check the role and secret ID, and that this CT's IP matches the AppRole's bound address"
 BR_LOGIN_UNAVAILABLE_HINT='OpenBao is reachable but not serving requests; it may be sealed'
-BR_MOUNT_UNAVAILABLE='mount check unavailable: cannot query Docker; start Docker and try again' # As guest.sh reports it.
+BR_MOUNT_UNAVAILABLE='mount check unavailable: cannot query Docker; check that it is running and try again' # As guest.sh reports it.
 declare -gA BR_APPROLE=() BR_ROLE_ACTION=()
 BR_SAVED_ROLES=() BR_MANAGED=() BR_INSPECT_LIMIT=(timeout 120)
 # shellcheck disable=SC2016 # jq program, not shell.
@@ -428,7 +428,7 @@ br_expected_payload() { # The current hash, or absent; refuses what the guest co
     if [[ $(br_json .payload.present) != true ]]; then printf absent; return 0; fi
     local sha
     sha=$(br_json .payload.sha256)
-    [[ $sha =~ ^[0-9a-f]{64}$ ]] || { warn 'the existing payload is not a safe regular file. If Docker left an empty directory there, run rmdir /usr/local/bin/bao-run in the CT, install, then restart the container; otherwise inspect it in the CT' >&2; return 1; }
+    [[ $sha =~ ^[0-9a-f]{64}$ ]] || { warn 'the existing payload is not a safe regular file. If Docker left an empty directory there, run rmdir /usr/local/bin/bao-run in the CT, install, then recreate the container; otherwise inspect it in the CT' >&2; return 1; }
     printf '%s' "$sha"
 }
 br_preview_common() { # <ctid> <action> <expected hash> <packaged hash>

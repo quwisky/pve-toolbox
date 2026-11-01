@@ -869,7 +869,7 @@ test_uninstall_mount_check_unavailable_needs_confirmation() {
     # The default answer is no.
     ans 'Container ID' 101; ans 'Apply this operation' y; ans 'without the mount check'
     if br_run uninstall bao-run; then br_fail 'declined uninstall exited 0'; fi
-    br_has 'mount check unavailable'; br_has 'start Docker'
+    br_has 'mount check unavailable'; br_has 'check that it is running'
     br_has 'will not start again'
     br_lacks 'bao delete'
     [[ $(br_guest_tree) == "$before" ]] || br_fail 'declined uninstall changed the guest'
@@ -900,7 +900,7 @@ test_install_explains_a_directory_docker_left() {
     mkdir "$BR_TEST_ROOT/usr/local/bin/bao-run"
     ans 'Container ID' 101
     if br_run install bao-run; then br_fail 'directory accepted'; fi
-    br_has 'rmdir /usr/local/bin/bao-run'; br_has 'restart'
+    br_has 'rmdir /usr/local/bin/bao-run'; br_has 'recreate the container'
     if grep -q '^push' "$BR_PCT_LOG"; then br_fail 'pushed over a directory'; fi
 }
 test_login_not_checked_fails_status() {

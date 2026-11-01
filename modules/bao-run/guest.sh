@@ -16,7 +16,7 @@ BG_OWNER=$BG_STORE/owner.json
 BG_LOCK_FILE=/run/pve-toolbox-bao-run.lock
 BG_ROLE_RE='^[A-Za-z0-9_-]+$'
 BG_LIMIT=65536
-BG_MOUNT_UNAVAILABLE='mount check unavailable: cannot query Docker; start Docker and try again' # host.sh matches this.
+BG_MOUNT_UNAVAILABLE='mount check unavailable: cannot query Docker; check that it is running and try again' # host.sh matches this.
 
 BG_MODE="" BG_EMITTED=0 BG_SWAPPING=0 BG_CLEAN=0 BG_TMP="" BG_CHANGED=false BG_KEEP_BACKUP=0
 BG_RESULT=failed BG_REASON='unexpected guest failure' BG_TX="" BG_STAGE="" BG_NEW_HASH=""
@@ -242,11 +242,11 @@ elif ([.roles[].name] | length) != ([.roles[].name] | unique | length) then "dup
 elif any(.roles[]; .action == "replace" and ((.role_id | credential | not) or (.secret_id | credential | not))) then "invalid role credentials"
 else "" end'
 
-# Fails on anything but docker inspect's array of objects with a Mounts array.
+# Fails on anything but docker inspect's array with one object with a Mounts array per listed ID.
 # Container names are guest-controlled, so only plain ones reach the reason.
 # shellcheck disable=SC2016 # jq program, not shell.
 BG_MOUNT_USERS='
-if type != "array" or any(.[]; (.Mounts | type) != "array") then error("unexpected docker inspect output") else . end
+if type != "array" or length != $count or any(.[]; (.Mounts | type) != "array") then error("unexpected docker inspect output") else . end
 | [.[] | select(any(.Mounts[]; .Type == "bind" and (.Source == $payload or .Source == $conf or (.Source | startswith($conf + "/")))))
     | (.Name | if type == "string" then ltrimstr("/") else "" end)
     | if test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") then . else "(unnamed)" end]
@@ -258,7 +258,8 @@ bg_mount_users() { # Containers, running or stopped, bind-mounting our paths. Fa
     mapfile -t ids <<<"$out"
     for id in "${ids[@]}"; do [[ $id =~ ^[0-9a-f]+$ ]] || return 1; done
     out=$(timeout 20 docker inspect --type container "${ids[@]}" 2>/dev/null < /dev/null) || return 1
-    jq -r --arg payload "$BG_PAYLOAD" --arg conf "$BG_CONF" "$BG_MOUNT_USERS" 2>/dev/null <<<"$out"
+    [[ -n ${out//[[:space:]]/} ]] || return 1 # jq runs no filter on empty input, which would read as no mounts.
+    jq -r --argjson count "${#ids[@]}" --arg payload "$BG_PAYLOAD" --arg conf "$BG_CONF" "$BG_MOUNT_USERS" 2>/dev/null <<<"$out"
 }
 bg_mount_check() { # <ignore an unavailable check: true|false>. A match has no override.
     local users
@@ -273,7 +274,7 @@ bg_mount_check() { # <ignore an unavailable check: true|false>. A match has no o
 
 bg_check_paths() {
     local path entry name
-    [[ -L $BG_PAYLOAD || ! -d $BG_PAYLOAD ]] || bg_fail "$BG_PAYLOAD is a directory. If Docker left it empty, remove it with rmdir $BG_PAYLOAD and try again; restart the container after install"
+    [[ -L $BG_PAYLOAD || ! -d $BG_PAYLOAD ]] || bg_fail "$BG_PAYLOAD is a directory. If Docker left it empty, remove it with rmdir $BG_PAYLOAD and try again; recreate the container after install"
     for path in "$BG_STORE" "$BG_CONF" "$BG_CONF/roles"; do
         bg_dir_ok "$path" || bg_fail "unsafe path: $path"
     done

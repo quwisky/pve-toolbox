@@ -34,7 +34,7 @@ case ${0##*/} in
                 exit ;;
             inspect)
                 [[ ! -f /docker-inspect-down ]] || exit 1
-                [[ ! -f /docker-inspect-garbage ]] || { printf 'not json\n'; exit 0; }
+                [[ ! -f /docker-inspect-raw ]] || { cat /docker-inspect-raw; exit 0; }
                 [[ $* == "inspect --type container $(jq -r 'map(.Id) | join(" ")' /docker-inspect)" ]] || exit 99
                 cat /docker-inspect
                 exit ;;
