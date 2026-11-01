@@ -19,6 +19,7 @@ jq -e '
     .prerelease == false and
     .["bump-minor-pre-major"] == true and
     .["bump-patch-for-minor-pre-major"] == false and
+    .["pull-request-title-pattern"] == "release: cut the v${version} release" and
     .packages["."].["release-type"] == "simple" and
     .packages["."].["version-file"] == "VERSION"
 ' release-please-config.json >/dev/null \

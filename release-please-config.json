@@ -54,6 +54,7 @@
   "include-component-in-tag": false,
   "include-v-in-tag": true,
   "prerelease": false,
+  "pull-request-title-pattern": "release: cut the v${version} release",
   "packages": {
     ".": {
       "release-type": "simple",
