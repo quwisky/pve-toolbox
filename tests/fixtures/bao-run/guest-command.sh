@@ -20,6 +20,25 @@ case ${0##*/} in
     runuser)
         [[ -f /runuser-can-read ]] ;;
     docker)
+        # /docker-inspect is the world: every container, running or stopped, as docker inspect shows it.
+        [[ ! -f /docker-down ]] || { printf 'Cannot connect to the Docker daemon\n' >&2; exit 1; }
+        case $1 in
+            ps)
+                [[ ! -f /docker-ps-raw ]] || { cat /docker-ps-raw; exit 0; }
+                [[ -f /docker-inspect ]] || exit 0
+                case $2 in
+                    -aq) jq -r '.[].Id' /docker-inspect ;;
+                    -q) jq -r '.[] | select(.State.Running).Id' /docker-inspect ;;
+                    *) exit 99 ;;
+                esac
+                exit ;;
+            inspect)
+                [[ ! -f /docker-inspect-down ]] || exit 1
+                [[ ! -f /docker-inspect-garbage ]] || { printf 'not json\n'; exit 0; }
+                [[ $* == "inspect --type container $(jq -r 'map(.Id) | join(" ")' /docker-inspect)" ]] || exit 99
+                cat /docker-inspect
+                exit ;;
+        esac
         [[ $1 == exec ]] || exit 99
         shift 2
         case $* in

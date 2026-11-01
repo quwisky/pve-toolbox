@@ -75,7 +75,25 @@ case ${0##*/} in
         [[ $* == '-u komodo -- test -r /etc/bao-run/addr' ]] || exit 99
         [[ -f /runuser-can-read ]] ;;
     docker)
-        [[ ! -f /docker-down ]] || { printf 'Error: No such container\n' >&2; exit 1; }
+        # /docker-inspect is the world: every container, running or stopped, as docker inspect shows it.
+        [[ ! -f /docker-down ]] || { printf 'Cannot connect to the Docker daemon\n' >&2; exit 1; }
+        case $1 in
+            ps)
+                [[ ! -f /docker-ps-raw ]] || { cat /docker-ps-raw; exit 0; }
+                [[ -f /docker-inspect ]] || exit 0
+                case $2 in
+                    -aq) jq -r '.[].Id' /docker-inspect ;;
+                    -q) jq -r '.[] | select(.State.Running).Id' /docker-inspect ;;
+                    *) exit 99 ;;
+                esac
+                exit ;;
+            inspect)
+                [[ ! -f /docker-inspect-down ]] || exit 1
+                [[ ! -f /docker-inspect-garbage ]] || { printf 'not json\n'; exit 0; }
+                [[ $* == "inspect --type container $(jq -r 'map(.Id) | join(" ")' /docker-inspect)" ]] || exit 99
+                cat /docker-inspect
+                exit ;;
+        esac
         [[ $1 == exec ]] || exit 99
         shift 2
         case $* in
@@ -656,6 +674,130 @@ test_uninstall_keeps_unmatched_payload() {
     bt_apply || fail "forced uninstall failed: $(<"$BT_OUT")"
     bt_out '.result == "success"'
     bt_gone /usr/local/bin/bao-run /var/lib/pve-toolbox/bao-run
+}
+
+bt_container() { # <id> <name> <running> <mount type> <mount source>: one docker inspect entry.
+    jq -nc --arg id "$1" --arg name "$2" --argjson running "$3" --arg type "$4" --arg source "$5" \
+        '{Id:$id,Name:$name,State:{Running:$running},Mounts:[{Type:$type,Source:$source,Destination:"/mounted"}]}'
+}
+bt_containers() { jq -s . > "$BT_ROOT/docker-inspect"; } # Entries on stdin.
+bt_mount_refused() { # <label> <request filter>: an installed guest refuses, whatever else the request says.
+    bt_request ".action=\"uninstall\" | ${2:-.}"
+    bt_refused "$1"
+    bt_out '.changed == false and .remaining == []' "$1"
+    bt_out '(.reason | contains("remove those mounts")) and (.reason | contains("recreate"))' "$1"
+}
+
+test_uninstall_refused_while_a_container_mounts_our_paths() {
+    local source running
+    for source in /usr/local/bin/bao-run /etc/bao-run /etc/bao-run/role_id /etc/bao-run/roles/app; do
+        for running in true false; do
+            bt_install
+            bt_container aaaaaaaaaaaa /periphery "$running" bind "$source" | bt_containers
+            bt_mount_refused "$source running=$running"
+            bt_out '.reason | contains("periphery")'
+            grep -q '^docker ps -aq' "$BT_ROOT/calls" || fail 'stopped containers were not listed'
+        done
+    done
+    # Only the matching containers are named.
+    bt_install
+    { bt_container aaaaaaaaaaaa /periphery true bind /etc/bao-run
+      bt_container bbbbbbbbbbbb /unrelated true bind /srv/data
+      bt_container cccccccccccc /second false bind /usr/local/bin/bao-run; } | bt_containers
+    bt_mount_refused 'several containers'
+    bt_out '(.reason | contains("periphery, second")) and (.reason | contains("unrelated") | not)'
+    # The override is for a Docker that cannot answer, never for one that says yes.
+    bt_mount_refused 'ignore_mount_check on a match' '.ignore_mount_check=true'
+}
+
+test_uninstall_proceeds_without_a_matching_mount() {
+    bt_install
+    { bt_container aaaaaaaaaaaa /sibling-dir true bind /etc/bao-run-other
+      bt_container bbbbbbbbbbbb /sibling-file false bind /usr/local/bin/bao-run.bak
+      bt_container cccccccccccc /below-payload true bind /usr/local/bin/bao-run/x
+      bt_container dddddddddddd /parent true bind /etc
+      bt_container eeeeeeeeeeee /named-volume true volume /etc/bao-run; } | bt_containers
+    bt_request '.action="uninstall"'
+    bt_apply || fail "uninstall failed: $(<"$BT_OUT")"
+    bt_out '.result == "success"'
+    grep -q '^docker inspect' "$BT_ROOT/calls" || fail 'containers were not inspected'
+    bt_gone /usr/local/bin/bao-run /etc/bao-run
+    # No containers at all, and no Docker at all.
+    bt_install
+    bt_request '.action="uninstall"'
+    bt_apply || fail "uninstall without containers failed: $(<"$BT_OUT")"
+    bt_install
+    rm "$BT_ROOT/usr/bin/docker"
+    bt_request '.action="uninstall"'
+    bt_apply || fail "uninstall without docker failed: $(<"$BT_OUT")"
+    bt_gone /usr/local/bin/bao-run /etc/bao-run
+}
+
+test_uninstall_refused_when_docker_cannot_answer() {
+    local flag
+    local unavailable='mount check unavailable: cannot query Docker; start Docker and try again'
+    for flag in docker-down docker-inspect-down docker-inspect-garbage docker-ps-raw non-executable; do
+        bt_install
+        bt_container aaaaaaaaaaaa /unrelated true bind /srv/data | bt_containers
+        case $flag in
+            docker-ps-raw) printf -- '--help\n' > "$BT_ROOT/$flag" ;;
+            non-executable) chmod 0644 "$BT_ROOT/usr/bin/docker" ;;
+            *) : > "$BT_ROOT/$flag" ;;
+        esac
+        bt_request '.action="uninstall"'
+        bt_refused "$flag"
+        bt_out ".reason == \"$unavailable\" and .changed == false" "$flag"
+        bt_request '.action="uninstall" | .ignore_mount_check=false'
+        bt_refused "$flag, explicit false"
+        bt_request '.action="uninstall" | .ignore_mount_check=true'
+        bt_apply || fail "$flag: ignore_mount_check failed: $(<"$BT_OUT")"
+        bt_out '.result == "success"' "$flag"
+        bt_gone /usr/local/bin/bao-run /etc/bao-run
+    done
+    bt_install
+    local bad
+    for bad in '"yes"' 1 null; do
+        bt_request ".action=\"uninstall\" | .ignore_mount_check=$bad"
+        bt_refused "ignore_mount_check=$bad"
+        bt_out '.reason == "invalid ignore_mount_check"'
+    done
+    # Install has nothing to ask Docker.
+    : > "$BT_ROOT/docker-down"
+    bt_request '.action="update"'
+    bt_apply || fail "update failed: $(<"$BT_OUT")"
+    if grep -q '^docker' "$BT_ROOT/calls"; then fail 'install asked Docker'; fi
+}
+
+test_uninstall_refusal_cannot_carry_a_hostile_container_name() {
+    local name
+    for name in $'/evil\e[31m' '/evil;$(touch /pwned)' $'/evil\nforged' '/evil name' '/-evil' '//evil' ''; do
+        bt_install
+        { bt_container aaaaaaaaaaaa "$name" true bind /etc/bao-run
+          bt_container bbbbbbbbbbbb /good_1.x-y false bind /etc/bao-run; } | bt_containers
+        bt_mount_refused "name [$name]"
+        bt_out '(.reason | contains("(unnamed), good_1.x-y")) and (.reason | contains("evil") | not)' "name [$name]"
+        [[ ! -e $BT_ROOT/pwned ]] || fail 'a container name ran'
+    done
+    # A name that is not even a string.
+    bt_install
+    bt_container aaaaaaaaaaaa /x true bind /etc/bao-run | jq -c '.Name = 7' | bt_containers
+    bt_mount_refused 'numeric name'
+    bt_out '.reason | contains("(unnamed)")'
+}
+
+test_install_explains_a_directory_docker_left() {
+    bt_fixture
+    mkdir "$BT_ROOT/usr/local/bin/bao-run"
+    mkdir -m 0755 "$BT_ROOT/etc/bao-run"
+    bt_request
+    bt_refused 'directory at the payload path'
+    bt_out '(.reason | contains("rmdir /usr/local/bin/bao-run")) and (.reason | contains("restart the container"))'
+    # Following that advice works: the empty /etc/bao-run Docker also left is taken over.
+    rmdir "$BT_ROOT/usr/local/bin/bao-run"
+    bt_request
+    bt_apply || fail "install after rmdir failed: $(<"$BT_OUT")"
+    bt_mode 755 /usr/local/bin/bao-run
+    bt_mode 700 /etc/bao-run
 }
 
 test_tools_that_will_not_run_are_false() {

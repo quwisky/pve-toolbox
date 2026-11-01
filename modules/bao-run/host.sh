@@ -6,6 +6,7 @@ BR_ROLE_RE='^[A-Za-z0-9_-]+$'
 BR_APPROLE_RE='^[A-Za-z0-9._-]+$'
 BR_LOGIN_REJECTED_HINT="check the role and secret ID, and that this CT's IP matches the AppRole's bound address"
 BR_LOGIN_UNAVAILABLE_HINT='OpenBao is reachable but not serving requests; it may be sealed'
+BR_MOUNT_UNAVAILABLE='mount check unavailable: cannot query Docker; start Docker and try again' # As guest.sh reports it.
 declare -gA BR_APPROLE=() BR_ROLE_ACTION=()
 BR_SAVED_ROLES=() BR_MANAGED=() BR_INSPECT_LIMIT=(timeout 120)
 # shellcheck disable=SC2016 # jq program, not shell.
@@ -427,7 +428,7 @@ br_expected_payload() { # The current hash, or absent; refuses what the guest co
     if [[ $(br_json .payload.present) != true ]]; then printf absent; return 0; fi
     local sha
     sha=$(br_json .payload.sha256)
-    [[ $sha =~ ^[0-9a-f]{64}$ ]] || { warn 'the existing payload is not a safe regular file; inspect it in the CT' >&2; return 1; }
+    [[ $sha =~ ^[0-9a-f]{64}$ ]] || { warn 'the existing payload is not a safe regular file. If Docker left an empty directory there, run rmdir /usr/local/bin/bao-run in the CT, install, then restart the container; otherwise inspect it in the CT' >&2; return 1; }
     printf '%s' "$sha"
 }
 br_preview_common() { # <ctid> <action> <expected hash> <packaged hash>
@@ -572,6 +573,17 @@ br_forget_revoke() { # The guest was never inspected, so what happened to it is 
     br_revoke_saved
     warn 'Run those only if the container was really destroyed; on a migrated container these break working logins.'
 }
+br_uninstall_apply() { # <remove unmatched> <ignore mount check>
+    br_new_transaction || return 1
+    ( umask 077; jq -n --arg tx "$BR_TX" --arg machine "$(br_json .machine_id)" --argjson unmatched "$1" --argjson ignore "$2" \
+        '{schema:1,action:"uninstall",transaction_id:$tx,machine_id:$machine,remove_unmatched_payload:$unmatched,ignore_mount_check:$ignore}' > "$BR_WORK/request.json" ) \
+        || { warn 'could not build the request'; return 1; }
+    # Revocation breaks credentials still in use, so its commands wait for a guest that removed them.
+    if ! br_apply "$BR_CTID" "$BR_WORK/request.json" 0 0; then
+        if ((BR_APPLYING)); then info 'Outcome unknown: revoke these AppRoles at OpenBao only after confirming the credentials are gone or no longer wanted.'; fi
+        return 1
+    fi
+}
 br_flow_uninstall() {
     local id="" saved rc=0 remove_unmatched=false result path
     br_ids || return 1
@@ -607,14 +619,14 @@ br_flow_uninstall() {
     warn 'Stacks using the wrapper will fail on their next deploy; running containers are untouched.'
     confirm 'Apply this operation to the selected container' n || { info 'cancelled; guest unchanged'; return 0; }
     br_lock "$id" && br_match "$id" "$BR_IDENTITY" || return 1
-    br_new_transaction && br_work || return 1
-    ( umask 077; jq -n --arg tx "$BR_TX" --arg machine "$(br_json .machine_id)" --argjson unmatched "$remove_unmatched" \
-        '{schema:1,action:"uninstall",transaction_id:$tx,machine_id:$machine,remove_unmatched_payload:$unmatched}' > "$BR_WORK/request.json" ) \
-        || { warn 'could not build the request'; return 1; }
-    # Revocation breaks credentials still in use, so its commands wait for a guest that removed them.
-    if ! br_apply "$id" "$BR_WORK/request.json" 0 0; then
-        if ((BR_APPLYING)); then info 'Outcome unknown: revoke these AppRoles at OpenBao only after confirming the credentials are gone or no longer wanted.'; fi
-        return 1
+    br_work || return 1
+    br_uninstall_apply "$remove_unmatched" false || return 1
+    # The guest stays the judge: asked again with the override, it still refuses a mount it can see.
+    if [[ $(jq -r 'if .result == "failed" then .reason else "" end' <<<"$BR_OUTCOME_JSON") == "$BR_MOUNT_UNAVAILABLE" ]]; then
+        warn 'Docker could not say whether a container still bind-mounts these paths. A container still using those mounts will not start again after this removal.'
+        confirm 'Remove bao-run without the mount check' n || { info 'cancelled; guest unchanged'; return 1; }
+        if ! br_stage_clean; then BR_STAGE=""; return 1; fi
+        br_uninstall_apply "$remove_unmatched" true || return 1
     fi
     result=$(jq -r .result <<<"$BR_OUTCOME_JSON")
     case $result in

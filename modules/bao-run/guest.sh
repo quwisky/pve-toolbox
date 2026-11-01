@@ -16,6 +16,7 @@ BG_OWNER=$BG_STORE/owner.json
 BG_LOCK_FILE=/run/pve-toolbox-bao-run.lock
 BG_ROLE_RE='^[A-Za-z0-9_-]+$'
 BG_LIMIT=65536
+BG_MOUNT_UNAVAILABLE='mount check unavailable: cannot query Docker; start Docker and try again' # host.sh matches this.
 
 BG_MODE="" BG_EMITTED=0 BG_SWAPPING=0 BG_CLEAN=0 BG_TMP="" BG_CHANGED=false BG_KEEP_BACKUP=0
 BG_RESULT=failed BG_REASON='unexpected guest failure' BG_TX="" BG_STAGE="" BG_NEW_HASH=""
@@ -225,7 +226,9 @@ elif (.action | IN("install","update","uninstall") | not) then "invalid request 
 elif .transaction_id != $tx then "transaction id does not match the request path"
 elif .machine_id != $machine then "machine id does not match this guest"
 elif .action == "uninstall" then
-    (if (.remove_unmatched_payload | type) != "boolean" then "invalid remove_unmatched_payload" else "" end)
+    (if (.remove_unmatched_payload | type) != "boolean" then "invalid remove_unmatched_payload"
+     elif has("ignore_mount_check") and (.ignore_mount_check | type) != "boolean" then "invalid ignore_mount_check"
+     else "" end)
 elif (.payload_sha256 | hex(64) | not) then "invalid payload_sha256"
 elif ((.expected_payload_sha256 == "absent") or (.expected_payload_sha256 | hex(64)) | not) then "invalid expected_payload_sha256"
 elif (.adopt | type) != "boolean" then "invalid adopt"
@@ -239,8 +242,38 @@ elif ([.roles[].name] | length) != ([.roles[].name] | unique | length) then "dup
 elif any(.roles[]; .action == "replace" and ((.role_id | credential | not) or (.secret_id | credential | not))) then "invalid role credentials"
 else "" end'
 
+# Fails on anything but docker inspect's array of objects with a Mounts array.
+# Container names are guest-controlled, so only plain ones reach the reason.
+# shellcheck disable=SC2016 # jq program, not shell.
+BG_MOUNT_USERS='
+if type != "array" or any(.[]; (.Mounts | type) != "array") then error("unexpected docker inspect output") else . end
+| [.[] | select(any(.Mounts[]; .Type == "bind" and (.Source == $payload or .Source == $conf or (.Source | startswith($conf + "/")))))
+    | (.Name | if type == "string" then ltrimstr("/") else "" end)
+    | if test("\\A[A-Za-z0-9][A-Za-z0-9_.-]*\\z") then . else "(unnamed)" end]
+| join(", ")'
+bg_mount_users() { # Containers, running or stopped, bind-mounting our paths. False when Docker cannot answer.
+    local out id ids=()
+    out=$(timeout 20 docker ps -aq 2>/dev/null < /dev/null) || return 1
+    [[ -n $out ]] || return 0
+    mapfile -t ids <<<"$out"
+    for id in "${ids[@]}"; do [[ $id =~ ^[0-9a-f]+$ ]] || return 1; done
+    out=$(timeout 20 docker inspect --type container "${ids[@]}" 2>/dev/null < /dev/null) || return 1
+    jq -r --arg payload "$BG_PAYLOAD" --arg conf "$BG_CONF" "$BG_MOUNT_USERS" 2>/dev/null <<<"$out"
+}
+bg_mount_check() { # <ignore an unavailable check: true|false>. A match has no override.
+    local users
+    command -v docker > /dev/null 2>&1 || return 0
+    if ! users=$(bg_mount_users); then
+        [[ $1 == true ]] || bg_fail "$BG_MOUNT_UNAVAILABLE"
+        return 0
+    fi
+    # Docker cannot start a container whose bind source is gone, and turns that source into a directory.
+    [[ -z $users ]] || bg_fail "containers still bind-mount $BG_PAYLOAD or $BG_CONF: $users; remove those mounts and recreate the containers first"
+}
+
 bg_check_paths() {
     local path entry name
+    [[ -L $BG_PAYLOAD || ! -d $BG_PAYLOAD ]] || bg_fail "$BG_PAYLOAD is a directory. If Docker left it empty, remove it with rmdir $BG_PAYLOAD and try again; restart the container after install"
     for path in "$BG_STORE" "$BG_CONF" "$BG_CONF/roles"; do
         bg_dir_ok "$path" || bg_fail "unsafe path: $path"
     done
@@ -303,7 +336,7 @@ bg_apply_prepare() { # Everything both install and uninstall need before reading
     [[ $request =~ ^/run/pve-toolbox-bao-run-([0-9a-f]{32})/request\.json$ ]] || bg_fail 'invalid request path'
     BG_TX=${BASH_REMATCH[1]}
     BG_STAGE=${request%/*}
-    for cmd in jq stat realpath sha256sum sed head tr uname flock mktemp mkdir chmod rm rmdir find; do
+    for cmd in jq stat realpath sha256sum sed head tr uname flock mktemp mkdir chmod rm rmdir find timeout; do
         bg_tool_runs "$cmd" || bg_fail "missing guest prerequisite: $cmd"
     done
     bg_platform
@@ -328,7 +361,7 @@ bg_install() { # <request>
     local shared=0 creds=0 keep target
     local -A wanted=() index=() changed=()
     local removals=() names=()
-    for cmd in curl timeout env sync mv cp cat cmp; do
+    for cmd in curl env sync mv cp cat cmp; do
         bg_tool_runs "$cmd" || bg_fail "missing guest prerequisite: $cmd"
     done
     bg_check_paths
@@ -485,6 +518,7 @@ bg_install() { # <request>
 
 bg_uninstall() { # <request>
     local req=$1 sha file entry name left=$BG_STAGE/backup/left remaining=() unmatched
+    bg_mount_check "$(jq -r '.ignore_mount_check // false' "$req" 2>/dev/null)"
     bg_check_paths
     BG_CHANGED=true
     unmatched=$(jq -r .remove_unmatched_payload "$req" 2>/dev/null)

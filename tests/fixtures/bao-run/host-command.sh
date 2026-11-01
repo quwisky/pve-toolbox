@@ -62,6 +62,12 @@ case ${0##*/} in
                     mkdir "$TOOLBOX_STATE_DIR/bao-run-101.state"
                     exit "$rc"
                 fi
+                if [[ -f $BR_HOST/docker-up-after-first-apply && $* == *' apply '* ]]; then
+                    rc=0
+                    chroot "$BR_TEST_ROOT" "$@" || rc=$?
+                    rm -f "$BR_HOST/docker-up-after-first-apply" "$BR_TEST_ROOT/docker-down"
+                    exit "$rc"
+                fi
                 exec chroot "$BR_TEST_ROOT" "$@" ;;
             push)
                 [[ $3 == --perms && $4 == 0600 && $2 =~ ^/run/pve-toolbox-bao-run-[a-f0-9]{32}/(guest\.sh|bao-run|request\.json)$ ]] || exit 98

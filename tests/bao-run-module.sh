@@ -840,6 +840,69 @@ test_uninstall_clean_and_partial() {
     br_run uninstall bao-run || br_fail 'unmatched uninstall failed'
     [[ ! -e $BR_TEST_ROOT/usr/local/bin/bao-run ]] || br_fail 'unmatched payload kept'
 }
+br_mounting_container() { # A stopped container still holding the bind mount.
+    printf '[{"Id":"aaaaaaaaaaaa","Name":"/periphery","State":{"Running":false},"Mounts":[{"Type":"bind","Source":"/etc/bao-run","Destination":"/etc/bao-run"}]}]' \
+        > "$BR_TEST_ROOT/docker-inspect"
+}
+test_uninstall_refused_while_a_container_mounts_our_paths() {
+    br_fixture
+    br_install
+    br_mounting_container
+    local before
+    before=$(br_guest_tree)
+    # No answer is scripted for an override: the driver fails if one is offered.
+    ans 'Container ID' 101; ans 'Apply this operation' y
+    if br_run uninstall bao-run; then br_fail 'refused uninstall exited 0'; fi
+    br_has 'periphery'; br_has 'remove those mounts'; br_has 'recreate'
+    br_lacks 'without the mount check'
+    br_lacks 'bao delete'
+    [[ $(br_guest_tree) == "$before" ]] || br_fail 'guest changed'
+    [[ $(br_conf bao-run BR_IDS) == 101 && -f $TOOLBOX_CONF_DIR/bao-run-101.conf && -z $(br_conf bao-run-101 BR_PENDING) ]] || br_fail 'records changed'
+    br_no_stage; br_no_work
+}
+test_uninstall_mount_check_unavailable_needs_confirmation() {
+    br_fixture
+    br_install
+    : > "$BR_TEST_ROOT/docker-down"
+    local before
+    before=$(br_guest_tree)
+    # The default answer is no.
+    ans 'Container ID' 101; ans 'Apply this operation' y; ans 'without the mount check'
+    if br_run uninstall bao-run; then br_fail 'declined uninstall exited 0'; fi
+    br_has 'mount check unavailable'; br_has 'start Docker'
+    br_has 'will not start again'
+    br_lacks 'bao delete'
+    [[ $(br_guest_tree) == "$before" ]] || br_fail 'declined uninstall changed the guest'
+    [[ $(br_conf bao-run BR_IDS) == 101 && -z $(br_conf bao-run-101 BR_PENDING) ]] || br_fail 'declined uninstall changed the records'
+    br_no_stage; br_no_work
+    # Confirmed: a fresh request carries the override and the outcome rules are unchanged.
+    ans 'Container ID' 101; ans 'Apply this operation' y; ans 'without the mount check' y
+    br_run uninstall bao-run || br_fail 'confirmed uninstall failed'
+    br_has 'bao delete auth/approle/role/komodo-docker01'
+    [[ ! -e $BR_TEST_ROOT/etc/bao-run && ! -e $BR_TEST_ROOT/usr/local/bin/bao-run ]] || br_fail 'guest files left'
+    [[ ! -e $TOOLBOX_CONF_DIR/bao-run.conf && ! -e $TOOLBOX_CONF_DIR/bao-run-101.conf ]] || br_fail 'records left'
+    br_no_stage; br_no_work
+    # Docker came back between the two tries and says the mount is there: no override.
+    br_fixture
+    br_install
+    printf '[{"Id":"aaaaaaaaaaaa","Name":"/periphery","Mounts":[{"Type":"bind","Source":"/etc/bao-run"}]}]' > "$BR_TEST_ROOT/docker-inspect"
+    : > "$BR_TEST_ROOT/docker-down"
+    : > "$BR_HOST/docker-up-after-first-apply"
+    ans 'Container ID' 101; ans 'Apply this operation' y; ans 'without the mount check' y
+    if br_run uninstall bao-run; then br_fail 'override applied to a match'; fi
+    br_has 'remove those mounts'
+    br_lacks 'bao delete'
+    [[ -e $BR_TEST_ROOT/etc/bao-run/secret_id && $(br_conf bao-run BR_IDS) == 101 ]] || br_fail 'match was overridden'
+    br_no_stage; br_no_work
+}
+test_install_explains_a_directory_docker_left() {
+    br_fixture
+    mkdir "$BR_TEST_ROOT/usr/local/bin/bao-run"
+    ans 'Container ID' 101
+    if br_run install bao-run; then br_fail 'directory accepted'; fi
+    br_has 'rmdir /usr/local/bin/bao-run'; br_has 'restart'
+    if grep -q '^push' "$BR_PCT_LOG"; then br_fail 'pushed over a directory'; fi
+}
 test_login_not_checked_fails_status() {
     br_fixture
     br_install
