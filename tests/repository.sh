@@ -129,6 +129,10 @@ verify_release_indexes() {
             || fail "Release metadata does not match $relative"
     done
 }
+# The retry below only hits an unfrozen clock when signing crosses a second boundary, so pin the flag.
+[[ $(grep -c -- '--faked-system-time "$release_epoch!"' scripts/publish-apt-repo.sh) == 2 ]] \
+    && ! grep -q -- '--faked-system-time "$release_epoch"' scripts/publish-apt-repo.sh \
+    || fail "repository signatures must use a frozen clock"
 # A workflow retry after the APT branch was pushed must be a no-op, not a
 # blocker that prevents the GitHub Release or Pages steps from running.
 snapshot_repository "$repo" "$WORK/repository-before-retry"
