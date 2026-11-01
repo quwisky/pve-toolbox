@@ -7,16 +7,16 @@ BR_APPROLE_RE='^[A-Za-z0-9._-]+$'
 BR_LOGIN_REJECTED_HINT="check the role and secret ID, and that this CT's IP matches the AppRole's bound address"
 BR_LOGIN_UNAVAILABLE_HINT='OpenBao is reachable but not serving requests; it may be sealed'
 declare -gA BR_APPROLE=() BR_ROLE_ACTION=()
-BR_SAVED_ROLES=() BR_MANAGED=()
+BR_SAVED_ROLES=() BR_MANAGED=() BR_INSPECT_LIMIT=(timeout 120)
 # shellcheck disable=SC2016 # jq program, not shell.
 BR_STATUS_SHAPE='type == "object" and .schema == 1 and (.machine_id | type == "string")
     and (.supported | type == "boolean") and (.reason | type == "string")
-    and (.tools | type == "object" and (.bash | type == "boolean") and (.curl | type == "boolean") and (.jq | type == "boolean"))
-    and (.payload | type == "object" and (.present | type == "boolean") and (.sha256 | type == "string") and (.owned | type == "boolean"))
+    and (.tools | type == "object" and (keys == ["bash", "curl", "jq"]) and all(.[]; type == "boolean"))
+    and (.payload | type == "object" and (.present | type == "boolean") and (.sha256 | type == "string" and test("\\A([0-9a-f]{64})?\\z")) and (.owned | type == "boolean"))
     and (.roles | type == "array" and all(.[]; (.name | type == "string" and test("\\A[A-Za-z0-9_-]+\\z"))
         and (.files_ok | type == "boolean") and (.login | type == "string")))
     and (.periphery | type == "object" and (.mode | type == "string") and (.active | type == "string")
-        and (.user | type == "string") and (.can_read | type == "boolean") and (.sha256 | type == "string") and (.tools_ok | type == "boolean"))'
+        and (.user | type == "string") and (.can_read | type == "boolean") and (.sha256 | type == "string" and test("\\A([0-9a-f]{64})?\\z")) and (.tools_ok | type == "boolean"))'
 # shellcheck disable=SC2016 # jq program, not shell.
 BR_OUTCOME_SHAPE='type == "object" and .schema == 1 and .transaction_id == $tx
     and (.result == "success" or .result == "failed" or .result == "partial")
@@ -124,7 +124,7 @@ br_inspect() { # <ctid> [--login] [--container <name>] -> BR_STATUS_JSON, BR_TAR
     BR_STATUS_JSON="" BR_TARGET_IDENTITY="" BR_INSPECT_ERROR=""
     pve_lxc_ready "$BR_NODE" "$id" || { BR_INSPECT_ERROR=$PVE_LXC_ERROR; return 1; }
     # A failing status can still explain itself in JSON, so the shape decides.
-    result=$(timeout 120 pct exec "$id" -- bash -s -- status "$@" < "$(br_guest_source)" 2>/dev/null) || true
+    result=$("${BR_INSPECT_LIMIT[@]}" pct exec "$id" -- bash -s -- status "$@" < "$(br_guest_source)" 2>/dev/null) || true
     [[ ${#result} -le 65536 ]] || { BR_INSPECT_ERROR='oversized guest status'; return 1; }
     jq -se "length == 1 and (.[0] | $BR_STATUS_SHAPE)" <<<"$result" > /dev/null 2>&1 \
         || { BR_INSPECT_ERROR='guest status unavailable or invalid'; return 1; }
@@ -173,7 +173,7 @@ br_stage_clean() { # Removes guest staging and settles BR_PENDING. Keeps both wh
         return 1
     fi
     # A guest still holding its lock keeps its request. The guest removes conf and backup itself.
-    if ! pct exec "$id" -- bash -c '
+    if ! timeout -k 5 120 pct exec "$id" -- bash -c '
         [[ $1 =~ ^/run/pve-toolbox-bao-run-[a-f0-9]{32}$ && ! -L $1 ]] || exit 1
         [[ -e $1 ]] || exit 0
         [[ -d $1 && $(stat -c %u "$1") == 0 && $(stat -c %a "$1") == 700 ]] || exit 1
@@ -187,16 +187,18 @@ br_stage_clean() { # Removes guest staging and settles BR_PENDING. Keeps both wh
     fi
     BR_STAGE=""
     if ((BR_FORGET)); then br_forget "$id"
-    elif br_listed "$id"; then conf_set "bao-run-$id" BR_PENDING "" || { warn 'could not clear host pending record'; return 1; }
-    else # Nothing was recorded for this CT, so a first attempt leaves no record.
-        conf_clear "bao-run-$id" && state_clear "bao-run-$id"
+    else conf_set "bao-run-$id" BR_PENDING "" || { warn 'could not clear host pending record'; return 1; }
     fi
 }
 br_cleanup() {
     local rc=$?
-    trap - EXIT INT TERM HUP
-    if [[ -n ${BR_STAGE:-} ]]; then br_stage_clean || rc=1; fi
+    # Another interrupt must not strand credentials here or an unsettled record.
+    trap '' INT TERM HUP
+    trap - EXIT
     [[ -z ${BR_WORK:-} ]] || rm -rf -- "$BR_WORK" || rc=1
+    # Children inherit the ignored TERM, so only -k bounds them from here on.
+    BR_INSPECT_LIMIT=(timeout -k 5 120)
+    if [[ -n ${BR_STAGE:-} ]]; then br_stage_clean || rc=1; fi
     exit "$rc"
 }
 br_work() { # Protected host files; created before the first secret is read.
@@ -236,7 +238,11 @@ br_push() { # <ctid> <source> <stage file>
 br_apply() { # <ctid> <request> <resulting roles> <push payload: 0|1> -> BR_OUTCOME_JSON
     local id=$1 request=$2 roles=$3 payload=$4 result rc=0
     BR_STAGE=/run/pve-toolbox-bao-run-$BR_TX
-    conf_set "bao-run-$id" BR_PENDING "$BR_TX" && conf_set "bao-run-$id" BR_IDENTITY "$BR_IDENTITY" || return 1
+    # A first install is listed before staging, so an unknown outcome stays visible
+    # to status, doctor and uninstall. It leaves the list only once staging is gone
+    # and the guest is known to be unchanged: a failed outcome, or apply never ran.
+    br_listed "$id" || BR_FORGET=1
+    br_save_ids add "$id" && conf_set "bao-run-$id" BR_PENDING "$BR_TX" && conf_set "bao-run-$id" BR_IDENTITY "$BR_IDENTITY" || return 1
     pct exec "$id" -- mkdir -m 0700 -- "$BR_STAGE" < /dev/null > /dev/null 2>&1 || { warn 'could not create protected guest staging'; return 1; }
     br_push "$id" "$(br_guest_source)" guest.sh || return 1
     if ((payload)); then br_push "$id" "$(br_payload_source)" bao-run || return 1; fi
@@ -253,6 +259,7 @@ br_apply() { # <ctid> <request> <resulting roles> <push payload: 0|1> -> BR_OUTC
     fi
     BR_APPLYING=0
     BR_OUTCOME_JSON=$result
+    if [[ $(jq -r .result <<<"$result") == success ]]; then BR_FORGET=0; fi
     br_show_outcome
 }
 br_missing_tools() { # <tool>...; prints the install command and fails if any is missing.
@@ -289,8 +296,7 @@ br_open() { # <ctid> <record required: 0|1>; inspection and every refusal shared
     BR_IDENTITY=$BR_TARGET_IDENTITY
     saved=$(conf_get "bao-run-$id" BR_IDENTITY)
     if [[ $saved != "$BR_IDENTITY" ]] && [[ -n $saved || $2 == 1 ]]; then
-        if br_listed "$id"; then warn 'recorded CT identity differs; inspect replacement or migration, or forget it with uninstall'
-        else warn "recorded CT identity differs; inspect replacement or migration, then remove $(conf_file "bao-run-$id")"; fi
+        warn 'recorded CT identity differs; inspect replacement or migration, or forget it with uninstall'
         return 1
     fi
 }
@@ -560,7 +566,7 @@ br_flow_uninstall() {
     ( umask 077; jq -n --arg tx "$BR_TX" --arg machine "$(br_json .machine_id)" --argjson unmatched "$remove_unmatched" \
         '{schema:1,action:"uninstall",transaction_id:$tx,machine_id:$machine,remove_unmatched_payload:$unmatched}' > "$BR_WORK/request.json" ) \
         || { warn 'could not build the request'; return 1; }
-    br_apply "$id" "$BR_WORK/request.json" 0 0 || return 1
+    if ! br_apply "$id" "$BR_WORK/request.json" 0 0; then br_revoke_saved; return 1; fi
     result=$(jq -r .result <<<"$BR_OUTCOME_JSON")
     br_revoke_saved
     case $result in
@@ -608,7 +614,7 @@ br_status_one() { # <ctid>; prints one block. False when anything needs attentio
     if [[ $(br_json .payload.sha256) == "$want" ]]; then payload='payload current'; else payload='payload differs from packaged'; failed=1; fi
     if [[ $(br_json '.tools.curl and .tools.jq and .tools.bash') == true ]]; then tools='curl jq ok'
     else
-        tools=$(br_json '[.tools | to_entries[] | select(.value != true) | .key + " missing"] | join(", ")')
+        tools=$(pve_display "$(br_json '[.tools | to_entries[] | select(.value != true) | .key + " missing"] | join(", ")')")
         failed=1
     fi
     printf 'CT %s: %s, %s, periphery %s %s\n' "$id" "$payload" "$tools" \
@@ -638,9 +644,6 @@ br_status_one() { # <ctid>; prints one block. False when anything needs attentio
         [[ -n ${seen[$role]:-} ]] || { printf '  %s (%s): missing from the CT\n' "$role" "${BR_APPROLE[$role]}"; failed=1; }
     done
     if ((${#seen[@]} == 0 && ${#BR_SAVED_ROLES[@]} == 0)); then printf '  no roles\n'; failed=1; fi
-    if [[ -n $(conf_get "bao-run-$id" BR_PENDING) ]]; then
-        printf '  staging left by an incomplete operation; run install bao-run to clean it up\n'; failed=1
-    fi
     return "$failed"
 }
 br_status() {
@@ -648,7 +651,12 @@ br_status() {
     ((${#BR_MANAGED[@]})) || { printf 'no managed containers\n'; return 0; }
     br_host_require || return 1
     local id failed=0
-    for id in "${BR_MANAGED[@]}"; do br_status_one "$id" || failed=1; done
+    for id in "${BR_MANAGED[@]}"; do
+        br_status_one "$id" || failed=1
+        if [[ -n $(conf_get "bao-run-$id" BR_PENDING) ]]; then # Also when the CT cannot be reached.
+            printf '  pending: staging left by an incomplete operation; run install or uninstall bao-run to clean it up\n'; failed=1
+        fi
+    done
     return "$failed"
 }
 br_check() { # Read-only and no login.
@@ -664,7 +672,7 @@ br_check() { # Read-only and no login.
         fi
         current=$(br_json .payload.sha256)
         if [[ $current == "$want" ]]; then printf 'CT %s: up to date\n' "$id"
-        else printf 'update available: CT %s %s -> %s\n' "$id" "$(br_short "$current")" "${want:0:12}"; fi
+        else printf 'update available: CT %s %s -> %s\n' "$id" "$(pve_display "$(br_short "$current")")" "${want:0:12}"; fi
     done
     return "$failed"
 }

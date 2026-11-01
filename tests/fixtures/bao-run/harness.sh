@@ -89,7 +89,7 @@ br_install() { # A successful fresh install of the default role.
     br_run install bao-run || br_fail 'install failed'
     : > "$BR_PCT_LOG"; : > "$BR_TEST_ROOT/calls"
 }
-br_fail() { printf 'FAIL %s\n' "$*" >&2; cat "$BR_SESSION" >&2 2>/dev/null; exit 1; }
+br_fail() { printf 'FAIL %s\n' "$*" >&2; cat "$BR_SESSION" >&2 2>/dev/null; printf '\n' >&2; exit 1; }
 br_has() { grep -aFq -- "$1" "$BR_SESSION" || br_fail "session lacks: $1"; }
 br_lacks() { if grep -aFq -- "$1" "$BR_SESSION"; then br_fail "session has: $1"; fi; }
 br_sha() { sha256sum "$1" | cut -d ' ' -f1; }

@@ -172,6 +172,7 @@ test_identity_change_refuses_push() {
     if br_run install bao-run; then br_fail 'CT replaced mid-install accepted'; fi
     if grep -q '^push' "$BR_PCT_LOG"; then br_fail 'pushed after the identity changed'; fi
     [[ $(br_conf bao-run-101 BR_PENDING) =~ ^[0-9a-f]{32}$ ]] || br_fail 'pending record lost'
+    [[ $(br_conf bao-run BR_IDS) == 101 ]] || br_fail 'retained staging not listed'
     br_no_work
 }
 test_outcome_unknown_keeps_pending() {
@@ -183,20 +184,72 @@ test_outcome_unknown_keeps_pending() {
         if br_run install bao-run; then br_fail "$flag succeeded"; fi
         br_has 'guest outcome unavailable'
         [[ $(br_conf bao-run-101 BR_PENDING) =~ ^[0-9a-f]{32}$ ]] || br_fail "$flag: BR_PENDING not kept"
+        [[ $(br_conf bao-run BR_IDS) == 101 ]] || br_fail "$flag: unknown first install not listed"
         [[ -n $(br_stages) ]] || br_fail "$flag: staging of an unknown outcome removed"
         br_no_work
         rm -f "$BR_HOST/$flag"
+        # Visible everywhere an operator looks, and the list drives uninstall.
+        [[ $(./pve-toolbox list) == *configured* ]] || br_fail "$flag: list says not installed"
+        br_status_fails "$flag" 'pending'
         # A guest still holding its lock keeps its staging.
         exec 9> "$BR_TEST_ROOT/run/pve-toolbox-bao-run.lock"
         flock -n 9
         ans 'Container ID' 101; ans 'Clean up that protected staging' y
-        if br_run install bao-run; then br_fail "$flag: removed staging under a running guest"; fi
+        if br_run uninstall bao-run; then br_fail "$flag: removed staging under a running guest"; fi
         [[ -n $(br_stages) && -n $(br_conf bao-run-101 BR_PENDING) ]] || br_fail "$flag: running guest's staging lost"
         exec 9>&-
         ans 'Container ID' 101; ans 'Clean up that protected staging' y
-        br_run install bao-run || br_fail "$flag: staging cleanup failed"
+        br_run uninstall bao-run || br_fail "$flag: staging cleanup failed"
         br_no_stage
-        [[ ! -e $TOOLBOX_CONF_DIR/bao-run-101.conf ]] || br_fail "$flag: first-install record left"
+        [[ -z $(br_conf bao-run-101 BR_PENDING) && $(br_conf bao-run BR_IDS) == 101 ]] || br_fail "$flag: cleanup settled the record wrongly"
+        ans 'Container ID' 101; ans 'Apply this operation' y
+        br_run uninstall bao-run || br_fail "$flag: uninstall failed"
+        [[ ! -e $TOOLBOX_CONF_DIR/bao-run.conf && ! -e $TOOLBOX_CONF_DIR/bao-run-101.conf ]] || br_fail "$flag: uninstall left records"
+    done
+}
+test_uninstall_unknown_outcome_prints_revocation() {
+    local flag
+    for flag in apply-timeout apply-garbage; do
+        br_fixture
+        br_install
+        : > "$BR_HOST/$flag"
+        ans 'Container ID' 101; ans 'Apply this operation' y
+        if br_run uninstall bao-run; then br_fail "$flag: unknown uninstall exited 0"; fi
+        br_has 'guest outcome unavailable'
+        br_has 'bao delete auth/approle/role/komodo-docker01'
+        br_has 'backups and snapshots'
+        [[ $(br_conf bao-run BR_IDS) == 101 && -n $(br_conf bao-run-101 BR_PENDING) ]] || br_fail "$flag: records dropped"
+    done
+}
+test_second_interrupt_during_cleanup() {
+    br_fixture
+    printf 'rejected\n' > "$BR_TEST_ROOT/curl-mode"
+    : > "$BR_HOST/slow-after-apply"
+    ans_to_role; ans_role default; ans 'Add a role' n; ans 'Apply this operation' y
+    printf 'bound address\t^C2\n' >> "$BR_ANS"
+    br_run install bao-run || true
+    br_no_work
+    # Ignoring the interrupts also lets the slow guest cleanup finish, after the launcher may have gone.
+    local i
+    for ((i = 0; i < 60; i++)); do
+        [[ -n $(br_stages) || -e $TOOLBOX_CONF_DIR/bao-run-101.conf ]] || break
+        sleep 0.5
+    done
+    br_no_stage
+    [[ ! -e $TOOLBOX_CONF_DIR/bao-run-101.conf && ! -e $TOOLBOX_CONF_DIR/bao-run.conf ]] || br_fail 'interrupted cleanup left records'
+}
+test_hostile_status_strings_refused() {
+    local filter
+    for filter in '.payload.sha256 = "\u001b[31mEVIL"' '.tools += {"\u001b[2JTOOL": false}' '.periphery.sha256 = "\u001b[31mEVIL"'; do
+        br_fixture
+        br_install
+        printf '%s' "$filter" > "$BR_HOST/status-filter"
+        ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1
+        if grep -aq $'\033' "$BR_SESSION"; then br_fail "status reached the terminal: $filter"; fi
+        br_has 'guest status unavailable or invalid'
+        if ./pve-toolbox --json status bao-run > "$BR_SESSION" 2>&1; then br_fail "--json status passed: $filter"; fi
+        if ./pve-toolbox check bao-run > "$BR_SESSION" 2>&1; then br_fail "check passed: $filter"; fi
+        if grep -aq $'\033' "$BR_SESSION"; then br_fail "check reached the terminal: $filter"; fi
     done
 }
 test_cleanup_failure_keeps_pending() {
@@ -232,10 +285,11 @@ test_host_save_failure_reconciles() {
     rmdir "$TOOLBOX_STATE_DIR/bao-run-101.state"
     local before
     before=$(br_guest_tree)
-    ans 'Container ID' 101; ans 'Periphery runs as' systemd; ans 'OpenBao URL' https://bao.example:8200; ans 'CA file'
-    ans 'Role default' keep; ans 'AppRole name for default'; ans_apply
+    ans 'Container ID' 101; ans 'Periphery runs as'; ans 'OpenBao URL'; ans 'CA file'
+    ans 'Role default' keep; ans_apply
     br_run install bao-run || br_fail 'reconcile failed'
     [[ $(br_guest_tree) == "$before" ]] || br_fail 'reconcile changed the guest'
+    grep -Fxq "payload_sha256=$(br_sha modules/bao-run/bao-run.sh)" "$TOOLBOX_STATE_DIR/bao-run-101.state" || br_fail 'state not reconciled'
     [[ $(br_conf bao-run BR_IDS) == 101 && $(br_conf bao-run-101 BR_ROLES) == default=komodo-docker01 ]] || br_fail 'not reconciled'
 }
 test_interrupt_removes_protected_files() {
@@ -260,6 +314,12 @@ test_dhcp_warning_and_ips_in_preview() {
     ans_to_role; ans_role default; ans_apply n
     br_run install bao-run || br_fail 'declined preview failed'
     br_lacks 'uses DHCP'
+    # A second NIC counts too.
+    br_fixture
+    printf '{"ostype":"debian","hostname":"docker01","rootfs":"local:vm-101-disk-0","net0":"name=eth0,bridge=vmbr0,ip=192.0.2.50/24","net1":"name=eth1,bridge=vmbr1,ip=dhcp"}' > "$BR_HOST/config"
+    ans_to_role; ans_role default; ans_apply n
+    br_run install bao-run || br_fail 'declined preview failed'
+    br_has 'this CT uses DHCP; AppRoles are bound to one IP, so a new lease stops logins'
     # After a lease changed, status says rejected with the bound-IP hint.
     br_install
     printf 'rejected\n' > "$BR_TEST_ROOT/curl-mode"
@@ -471,11 +531,13 @@ test_check_is_read_only() {
     : > "$BR_HOST/pct-down"
     if ./pve-toolbox check bao-run > "$BR_SESSION" 2>&1; then br_fail 'check passed on an uninspectable CT'; fi
 }
+# The launcher keeps plain status at exit 0 for a named module, so that form is
+# read for its text; --json status and doctor are the scripted interfaces.
 br_status_fails() { # <label> <text the status must show>
-    if ./pve-toolbox --json status bao-run > "$BR_SESSION" 2>&1; then br_fail "$1: status exited 0"; fi
-    ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1
+    if ./pve-toolbox --json status bao-run > "$BR_SESSION" 2>&1; then br_fail "$1: --json status exited 0"; fi
+    ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1 || br_fail "$1: plain status exit changed"
     br_has "$2"
-    ./pve-toolbox --json doctor > "$BR_SESSION" 2>&1 || true
+    if ./pve-toolbox --json doctor > "$BR_SESSION" 2>&1; then br_fail "$1: doctor exited 0"; fi
     jq -e '[.results[] | select(.id == "module.bao-run.agents")] | length == 1 and .[0].state == "fail"' "$BR_SESSION" > /dev/null || br_fail "$1: doctor did not fail"
 }
 test_status_failure_modes() {

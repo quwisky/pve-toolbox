@@ -1,7 +1,8 @@
 #!/usr/bin/expect -f
 # drive.exp <answers> <command...>
 # Each answers line is "<prompt regex><TAB><reply>", answered strictly in order.
-# The reply ^C sends an interrupt. A prompt that never comes fails the run.
+# The reply ^C sends an interrupt, and ^C2 two later ones, once the command has
+# moved on from that text. A prompt that never comes fails the run.
 set timeout 60
 set handle [open [lindex $argv 0]]
 set lines [split [read -nonewline $handle] "\n"]
@@ -14,7 +15,13 @@ foreach line $lines {
         timeout { puts stderr "FAIL prompt timeout: $pattern"; exit 90 }
         eof { puts stderr "FAIL ended before prompt: $pattern"; exit 91 }
     }
-    if {$reply eq "^C"} { send -- "\003" } else { send -- "$reply\r" }
+    if {$reply eq "^C"} {
+        send -- "\003"
+    } elseif {$reply eq "^C2"} {
+        after 1500; send -- "\003"; after 1000; send -- "\003"
+    } else {
+        send -- "$reply\r"
+    }
 }
 expect {
     eof {}

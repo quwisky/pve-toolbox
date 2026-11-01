@@ -29,6 +29,18 @@ case ${0##*/} in
                 if [[ -f $BR_HOST/replace-after-mkdir && $1 == mkdir ]]; then
                     printf 'fedcba9876543210fedcba9876543210\n' > "$BR_TEST_ROOT/etc/machine-id"
                 fi
+                if [[ -f $BR_HOST/status-filter && $* == *' status'* ]]; then
+                    chroot "$BR_TEST_ROOT" "$@" | jq -c "$(<"$BR_HOST/status-filter")"
+                    exit 0
+                fi
+                # Hangs the inspection that guest staging cleanup starts with.
+                if [[ -f $BR_HOST/slow-status && $* == *' status'* ]]; then sleep 6; fi
+                if [[ -f $BR_HOST/slow-after-apply && $* == *' apply '* ]]; then
+                    rc=0
+                    chroot "$BR_TEST_ROOT" "$@" || rc=$?
+                    : > "$BR_HOST/slow-status"
+                    exit "$rc"
+                fi
                 if [[ -f $BR_HOST/break-state-after-apply && $* == *' apply '* ]]; then
                     rc=0
                     chroot "$BR_TEST_ROOT" "$@" || rc=$?
