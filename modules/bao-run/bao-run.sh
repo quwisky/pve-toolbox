@@ -48,8 +48,9 @@ else
   [[ ${#_BR_PATHS[@]} -gt 0 ]] || die "no secret path given"
 fi
 
-command -v curl >/dev/null || die "curl not found"
-command -v jq   >/dev/null || die "jq not found"
+# command -v also accepts a file that cannot run; OpenBao would then get the blame.
+curl --version >/dev/null 2>&1 || die "curl not found or not executable"
+jq -n 1 >/dev/null 2>&1 || die "jq not found or not executable"
 
 _BR_ADDR=""
 [[ ! -r $_BR_CONF/addr ]] || _BR_ADDR=$(<"$_BR_CONF/addr")

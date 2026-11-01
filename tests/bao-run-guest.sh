@@ -37,6 +37,7 @@ mv "$BT_BASE/usr/bin/jq" "$BT_BASE/usr/bin/jq-real"
 cat > "$BT_BASE/usr/bin/bt-double" <<'DOUBLE'
 #!/bin/bash
 # One double per command name. Every call is logged so tests can inspect argv.
+[[ ${0##*/} != curl || ${1:-} != --version ]] || exit 0 # A tool check, not a network call.
 printf '%s %s\n' "${0##*/}" "$*" >> /calls
 case ${0##*/} in
     jq) exec /usr/bin/jq-real "$@" ;;
@@ -79,7 +80,7 @@ case ${0##*/} in
         shift 2
         case $* in
             'sh -c :') ;;
-            'sh -c command -v bash && command -v curl && command -v jq') printf '/bin/x\n/bin/y\n/bin/z\n' ;;
+            'sh -c bash -c : && curl --version && jq -n 1') [[ ! -f /docker-tools-broken ]] ;;
             'test -r /etc/bao-run/addr') ;;
             'sha256sum /usr/local/bin/bao-run') printf '%s  /usr/local/bin/bao-run\n' "$(</docker-sha)" ;;
             '/usr/local/bin/bao-run --check'*)
@@ -655,6 +656,31 @@ test_uninstall_keeps_unmatched_payload() {
     bt_apply || fail "forced uninstall failed: $(<"$BT_OUT")"
     bt_out '.result == "success"'
     bt_gone /usr/local/bin/bao-run /var/lib/pve-toolbox/bao-run
+}
+
+test_tools_that_will_not_run_are_false() {
+    bt_fixture
+    chmod 0644 "$BT_ROOT/usr/bin/curl"
+    bt_guest status
+    bt_out '(.tools.curl | not) and .tools.jq and .tools.bash and (.periphery.tools_ok | not)'
+    bt_request
+    bt_refused 'curl will not run'
+    bt_out '.reason | test("curl")'
+    bt_fixture
+    bt_request
+    chmod 0644 "$BT_ROOT/usr/bin/jq"
+    bt_guest status
+    bt_out '(.tools.jq | not) and (.supported | not) and .roles == [] and (.periphery.tools_ok | not)'
+    bt_refused 'jq will not run'
+    bt_out '(.reason | test("jq")) and .changed == false'
+    # In the container, the same proof.
+    bt_install
+    printf '%s\n' "$(printf '0%.0s' {1..64})" > "$BT_ROOT/docker-sha"
+    bt_guest status --container periphery
+    bt_out '.periphery.tools_ok'
+    : > "$BT_ROOT/docker-tools-broken"
+    bt_guest status --container periphery
+    bt_out '(.periphery.tools_ok | not) and .periphery.active == "active"'
 }
 
 failed=0

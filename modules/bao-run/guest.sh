@@ -48,7 +48,14 @@ bg_dir_ok() { bg_safe_path "$1" && [[ ! -e $1 || -d $1 ]]; }
 bg_hash() { local value; value=$(sha256sum -- "$1") || return 1; printf '%s' "${value%% *}"; }
 bg_role_dir() { if [[ $2 == default ]]; then printf '%s' "$1"; else printf '%s/roles/%s' "$1" "$2"; fi; }
 bg_role_args() { BG_ARGS=(--check); [[ $1 == default ]] || BG_ARGS+=(-r "$1"); }
-bg_tool() { if command -v "$1" > /dev/null 2>&1; then printf true; else printf false; fi; }
+bg_tool_runs() { # command -v also accepts a file that cannot run.
+    case $1 in
+        jq) jq -n 1 ;;
+        curl) curl --version ;;
+        *) command -v "$1" ;;
+    esac > /dev/null 2>&1 < /dev/null
+}
+bg_tool() { if bg_tool_runs "$1"; then printf true; else printf false; fi; }
 
 bg_platform() {
     local os version arch machine
@@ -134,7 +141,7 @@ bg_status() {
         esac
     done
     bg_platform
-    command -v jq > /dev/null 2>&1 || { bg_status_fallback 'jq is required'; exit 0; }
+    bg_tool_runs jq || { bg_status_fallback 'jq is required'; exit 0; }
     tool_bash=$(bg_tool bash); tool_curl=$(bg_tool curl); tool_jq=$(bg_tool jq)
     [[ -z $BG_PLATFORM_ERR ]] || { supported=false; reason=$BG_PLATFORM_ERR; }
 
@@ -156,7 +163,7 @@ bg_status() {
     if ((use_container)); then
         if [[ $container =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] && timeout 20 docker exec "$container" sh -c : > /dev/null 2>&1 < /dev/null; then
             reachable=1; active=active
-            if timeout 20 docker exec "$container" sh -c 'command -v bash && command -v curl && command -v jq' > /dev/null 2>&1 < /dev/null; then tools_ok=true; fi
+            if timeout 20 docker exec "$container" sh -c 'bash -c : && curl --version && jq -n 1' > /dev/null 2>&1 < /dev/null; then tools_ok=true; fi
             if timeout 20 docker exec "$container" test -r /etc/bao-run/addr > /dev/null 2>&1 < /dev/null; then can_read=true; fi
             word=$(timeout 20 docker exec "$container" sha256sum /usr/local/bin/bao-run 2>/dev/null < /dev/null | head -c 128) || word=""
             word=${word%% *}
@@ -297,7 +304,7 @@ bg_apply_prepare() { # Everything both install and uninstall need before reading
     BG_TX=${BASH_REMATCH[1]}
     BG_STAGE=${request%/*}
     for cmd in jq stat realpath sha256sum sed head tr uname flock mktemp mkdir chmod rm rmdir find; do
-        command -v "$cmd" > /dev/null 2>&1 || bg_fail "missing guest prerequisite: $cmd"
+        bg_tool_runs "$cmd" || bg_fail "missing guest prerequisite: $cmd"
     done
     bg_platform
     [[ -z $BG_PLATFORM_ERR ]] || bg_fail "$BG_PLATFORM_ERR"
@@ -322,7 +329,7 @@ bg_install() { # <request>
     local -A wanted=() index=() changed=()
     local removals=() names=()
     for cmd in curl timeout env sync mv cp cat cmp; do
-        command -v "$cmd" > /dev/null 2>&1 || bg_fail "missing guest prerequisite: $cmd"
+        bg_tool_runs "$cmd" || bg_fail "missing guest prerequisite: $cmd"
     done
     bg_check_paths
     [[ ! -e $BG_CONF/roles/default && ! -L $BG_CONF/roles/default ]] || bg_fail "refusing $BG_CONF/roles/default: default means the top-level files"

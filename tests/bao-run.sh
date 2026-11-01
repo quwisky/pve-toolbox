@@ -23,6 +23,7 @@ RID_S=ROLEID-SENT
 # curl double: records argv (one line per call) and stdin, answers by URL.
 cat > "$BIN/curl" <<'DBL'
 #!/usr/bin/env bash
+[[ ${1:-} != --version ]] || exit 0
 D=$BR_D
 echo "$*" >> "$D/argv"
 url=${*: -1}
@@ -332,6 +333,30 @@ test_run_mode_login_failure_shows_curl_stderr() {
   run_br --check
   ! grep -q 'SSL certificate' "$D/err" || fail "check leaked curl stderr"
   pass "run-mode login failure shows curl stderr"
+}
+
+test_tools_must_run() {
+  local tool state only=$WORK/only
+  for tool in jq curl; do
+    for state in non-executable absent; do
+      # Only this directory is on PATH: bash skips a non-executable file if a working one follows.
+      mk; rm -rf "$only"; mkdir "$only"; kv a '{"K":"v"}'
+      ln -s "$(command -v bash)" "$only/bash"
+      ln -s "$(command -v jq)" "$only/jq"
+      ln -s "$BIN/curl" "$only/curl"
+      rm "$only/$tool"
+      [[ $state == absent ]] || install -m 0644 /dev/null "$only/$tool"
+      RC=0; PATH=$only BAO_RUN_CONF=$CONF BR_D=$D "$BASH" "$BR" a -- "$BIN/child" >"$D/out" 2>"$D/err" </dev/null || RC=$?
+      [[ $RC -ne 0 ]] && ! ran || fail "$tool $state: run accepted"
+      grep -qF "bao-run: $tool not found or not executable" "$D/err" || fail "$tool $state: message: $(<"$D/err")"
+      [[ ! -e $D/argv ]] || fail "$tool $state: reached OpenBao"
+      RC=0; PATH=$only BAO_RUN_CONF=$CONF BR_D=$D "$BASH" "$BR" --check >"$D/out" 2>"$D/err" </dev/null || RC=$?
+      [[ $RC -ne 0 && ! -s $D/out ]] || fail "$tool $state: --check rc=$RC out=$(<"$D/out")"
+      grep -qF "bao-run: $tool not found or not executable" "$D/err" || fail "$tool $state: --check message"
+      [[ ! -e $D/argv ]] || fail "$tool $state: --check reached OpenBao"
+    done
+  done
+  pass "tools must run, not only exist"
 }
 
 test_blank_addr_fails() {

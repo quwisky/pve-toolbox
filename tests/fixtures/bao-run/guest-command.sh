@@ -1,5 +1,6 @@
 #!/bin/bash
 # Guest commands inside the chroot, one per name. Every call is logged so tests can inspect argv.
+[[ ${0##*/} != curl || ${1:-} != --version ]] || exit 0 # A tool check, not a network call.
 printf '%s %s\n' "${0##*/}" "$*" >> /calls
 case ${0##*/} in
     uname) printf 'x86_64\n' ;;
@@ -23,7 +24,7 @@ case ${0##*/} in
         shift 2
         case $* in
             'sh -c :') ;;
-            'sh -c command -v bash && command -v curl && command -v jq') printf '/bin/x\n/bin/y\n/bin/z\n' ;;
+            'sh -c bash -c : && curl --version && jq -n 1') [[ ! -f /docker-tools-broken ]] ;;
             'test -r /etc/bao-run/addr') ;;
             'sha256sum /usr/local/bin/bao-run') printf '%s  /usr/local/bin/bao-run\n' "$(</docker-sha)" ;;
             '/usr/local/bin/bao-run --check'*) printf 'ok\n' ;;

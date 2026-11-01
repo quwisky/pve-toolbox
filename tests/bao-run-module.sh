@@ -773,6 +773,10 @@ test_status_failure_modes() {
     br_status_fails tool 'curl missing'
     br_fixture
     br_install
+    chmod 0644 "$BR_TEST_ROOT/usr/bin/curl"
+    br_status_fails 'tool that will not run' 'curl missing'
+    br_fixture
+    br_install
     rm -rf "$BR_TEST_ROOT/etc/bao-run/role_id" "$BR_TEST_ROOT/etc/bao-run/secret_id"
     br_status_fails 'missing role' 'missing from the CT'
     br_fixture
@@ -835,6 +839,12 @@ test_uninstall_clean_and_partial() {
     ans 'Container ID' 101; ans 'Remove the unmatched payload' y; ans 'Apply this operation' y
     br_run uninstall bao-run || br_fail 'unmatched uninstall failed'
     [[ ! -e $BR_TEST_ROOT/usr/local/bin/bao-run ]] || br_fail 'unmatched payload kept'
+}
+test_login_not_checked_fails_status() {
+    br_fixture
+    br_install
+    printf '%s' '.roles[0].login = "not-checked"' > "$BR_HOST/status-filter"
+    br_status_fails 'valid files, no check' 'credentials ok, login not-checked'
 }
 test_uninstall_keeps_other_ct() {
     br_fixture
