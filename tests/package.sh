@@ -189,6 +189,13 @@ done
 PVE_TOOLBOX_ROOT="$WORK/root/usr/lib/pve-toolbox" \
     bash "$WORK/root/usr/bin/pve-toolbox" _complete modules \
     | grep -Fxq komodo-periphery || fail "packaged Periphery discovery failed"
+for helper in module.sh guest.sh host.sh bao-run.sh openbao-setup.sh; do
+    [[ -f $WORK/root/usr/lib/pve-toolbox/modules/bao-run/$helper ]] \
+        || fail "package is missing bao-run helper $helper"
+done
+PVE_TOOLBOX_ROOT="$WORK/root/usr/lib/pve-toolbox" \
+    bash "$WORK/root/usr/bin/pve-toolbox" _complete modules \
+    | grep -Fxq bao-run || fail "packaged bao-run discovery failed"
 if [[ $EUID == 0 ]] && command -v expect >/dev/null; then
     PVE_TOOLBOX_ROOT="$WORK/root/usr/lib/pve-toolbox" \
         bash "$ROOT/tests/komodo-periphery.sh" > "$WORK/periphery-runtime.log" 2>&1 \

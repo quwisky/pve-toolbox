@@ -47,6 +47,28 @@ pve_collect_node_tasks() { # pve_collect_node_tasks <nodes-json> [pvesh options.
     PVE_TASKS_JSON=$(printf '%s\n' "${task_sets[@]}" | jq -cs 'add')
 }
 
+pve_host_path_safe() { # Validate paths before shared persistence helpers mutate them.
+    local path=$1 mode
+    [[ $path == /* ]] || return 1
+    while [[ -n $path && $path != / ]]; do
+        [[ ! -L $path ]] || return 1
+        if [[ -e $path ]]; then
+            [[ $(stat -c %u -- "$path") == 0 ]] || return 1
+            mode=$(stat -c %a -- "$path") || return 1
+            # Root-owned sticky temporary ancestors are allowed; leaf files
+            # and ordinary parents must not be writable by group/others.
+            if [[ -d $path ]] && (( (8#$mode & 01000) != 0 )); then :
+            else (( (8#$mode & 0022) == 0 )) || return 1; fi
+        fi
+        path=${path%/*}
+    done
+}
+
+pve_display() { # Untrusted guest strings must not control the host terminal.
+    # The sed loop also catches a UTF-8 C1 that only forms once an inner one is removed.
+    report_clean_text "$1" | LC_ALL=C tr -d '\000-\037\177' | LC_ALL=C sed -e ':a' -e 's/\xc2[\x80-\x9f]//g' -e 'ta'
+}
+
 # Shared local LXC inspection; these helpers never start, unlock or modify a CT.
 pve_lxc_inventory() { # <node> -> PVE_LXC_JSON, PVE_LXC_ERROR
     PVE_LXC_JSON="" PVE_LXC_ERROR="invalid local node"

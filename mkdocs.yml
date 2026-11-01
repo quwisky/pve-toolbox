@@ -68,6 +68,7 @@ nav:
   - Modules:
       - Overview: modules/index.md
       - backup-audit: modules/backup-audit.md
+      - bao-run: modules/bao-run.md
       - certificate-watch: modules/certificate-watch.md
       - config-backup: modules/config-backup.md
       - komodo-periphery: modules/komodo-periphery.md

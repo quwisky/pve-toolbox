@@ -5,7 +5,8 @@ FILES := pve-toolbox $(sort $(wildcard lib/*.sh)) $(sort $(wildcard modules/*/*.
          $(sort $(wildcard debian/legacy/*/*.sh)) \
          completions/pve-toolbox.bash $(sort $(wildcard migrations/*.sh)) \
          scripts/pve-toolbox-native-notify $(sort $(wildcard scripts/*.sh)) \
-         $(sort $(wildcard tests/*.sh)) $(sort $(wildcard tests/fixtures/komodo-periphery/*.sh))
+         $(sort $(wildcard tests/*.sh)) $(sort $(wildcard tests/fixtures/komodo-periphery/*.sh)) \
+         $(sort $(wildcard tests/fixtures/bao-run/*.sh))
 
 .PHONY: lint syntax test test-tui package package-test
 
@@ -55,6 +56,9 @@ test: syntax
 	@./tests/restore-drill.sh
 	@./tests/lxc-schedule.sh
 	@./tests/lxc-update.sh
+	@./tests/bao-run.sh
+	@./tests/bao-run-guest.sh
+	@./tests/bao-run-module.sh
 	@./tests/discord.sh
 	@./tests/config-backup.sh
 	@./tests/hardening.sh

@@ -24,6 +24,7 @@ pve-toolbox/
 ├── modules/
 │   ├── _template/           # copy this to start a new module (underscore = hidden)
 │   ├── backup-audit/        # read-only guest backup protection and freshness audit
+│   ├── bao-run/             # OpenBao secrets wrapper for Komodo stacks in containers
 │   ├── certificate-watch/   # read-only cluster TLS and ACME health audit
 │   ├── config-backup/       # snapshots /etc/pve and host config, reported to Discord
 │   ├── lxc-update/          # confirmed or scheduled container package updates
@@ -144,6 +145,7 @@ without regenerating anything. See
 | Module | What it does |
 | --- | --- |
 | [backup-audit](https://quwisky.github.io/pve-toolbox/modules/backup-audit/) | Finds uncovered guests, stale or failed backups, excluded volumes, weak retention, and unhealthy backup storage |
+| [bao-run](https://quwisky.github.io/pve-toolbox/modules/bao-run/) | Installs a compose wrapper and AppRole credentials into selected Debian 13 LXCs so Komodo stacks read their secrets from OpenBao at deploy time |
 | [certificate-watch](https://quwisky.github.io/pve-toolbox/modules/certificate-watch/) | Checks cluster TLS expiry, hostname coverage, chains, reachability, and ACME task history |
 | [komodo-periphery](https://quwisky.github.io/pve-toolbox/modules/komodo-periphery/) | Installs, updates and reconfigures a systemd Periphery v2 agent in a selected Debian 13 LXC or VM (experimental) through QGA or pinned SSH, including adoption and rollback |
 | [lxc-update](https://quwisky.github.io/pve-toolbox/modules/lxc-update/) | Updates local running Debian/Ubuntu containers through confirmed runs or an opt-in safe schedule, with exclusions, previews, and optional Discord reporting |

@@ -6,6 +6,7 @@ launcher discovers them at runtime; directories starting with `_` are skipped.
 | Module | Tags | Host only | Helper installed |
 | --- | --- | --- | --- |
 | [backup-audit](backup-audit.md) | `backup audit monitoring` | yes | none; contributes doctor checks |
+| [bao-run](bao-run.md) | `lxc komodo openbao secrets` | yes | none; deploys into selected containers |
 | [certificate-watch](certificate-watch.md) | `monitoring tls certificate acme notify` | yes | none; contributes doctor checks |
 | [config-backup](config-backup.md) | `backup config notify` | yes | `pve-config-backup` |
 | [lxc-update](lxc-update.md) | `lxc upgrade apt notify schedule` | yes | `pve-toolbox-lxc-update` when scheduled |
@@ -42,3 +43,9 @@ selected local Debian 13 containers or QEMU VMs. VM access uses QGA or pinned SS
 It supports adoption of existing Periphery
 v2 installations, protected credentials and rollback. Guest creation and
 Docker installation are outside its scope.
+
+## bao-run
+
+[bao-run](bao-run.md) installs a compose wrapper and AppRole credentials into selected
+local Debian 13 containers so Komodo stacks get their secrets from OpenBao at
+deploy time. OpenBao itself is set up from a workstation script.

@@ -950,6 +950,7 @@ pass "config show code uses no here-string or here-document"
 # arrive unclassified, and no public pattern may match a hidden key.
 declare -A audit_hidden=(
     [backup-audit]=""
+    [bao-run]=""
     [certificate-watch]=""
     [config-backup]="DISCORD_WEBHOOK CB_AGE_RECIPIENT CB_GIT_REMOTE CB_GIT_SSH_KEY CB_GIT_TOKEN_FILE"
     [komodo-periphery]="KP_KEY_FILE KP_KNOWN_HOSTS"

@@ -74,3 +74,16 @@ for invalid in '[]' '[{"node":"../escape"}]' '[{"node":null}]' '{"node":"pve1"}'
         && fail "invalid node inventory was accepted: $invalid"
 done
 pass "empty, unsafe, and malformed node inventories are rejected"
+
+(
+    # shellcheck source=lib/report.sh
+    source "$ROOT/lib/report.sh"
+    # CSI, OSC, ST and NEL as UTF-8 C1, and a C1 that only forms once another is removed.
+    [[ $(pve_display $'a\xc2\x9b31mb\xc2\x9d0;xc\xc2\x9cd\xc2\x85e') == 'a31mb0;xcde' ]] || exit 1
+    [[ $(pve_display $'a\xc2\xc2\x80\x9bb') == ab ]] || exit 1
+    [[ $(pve_display $'a\xc2\x1b\x9bb') == ab ]] || exit 1
+    # C0 stays stripped; NBSP, copyright and other non-ASCII text survive.
+    [[ $(pve_display $'a\033[1m\x7f') == 'a[1m' ]] || exit 1
+    [[ $(pve_display $'caf\xc3\xa9 \xc2\xa0\xc2\xa9 \xe2\x9c\x93') == $'caf\xc3\xa9 \xc2\xa0\xc2\xa9 \xe2\x9c\x93' ]] || exit 1
+) || fail "pve_display passed a control character or damaged text"
+pass "pve_display strips C0 and UTF-8 C1 controls"
