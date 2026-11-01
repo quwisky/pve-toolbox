@@ -26,7 +26,7 @@ bt_copy_bin() {
     cp --parents "$bin" "$BT_BASE"
     while IFS= read -r path; do cp --parents "$path" "$BT_BASE"; done < <(ldd "$bin" 2>/dev/null | awk '$2 == "=>" && $3 ~ /^\// {print $3} $1 ~ /^\// {print $1}')
 }
-for cmd in bash jq env cat chmod cmp cp cut find flock head mkdir mktemp mv readlink realpath rm rmdir sed sha256sum sort stat sync timeout tr; do bt_copy_bin "$cmd"; done
+for cmd in bash sh jq env cat chmod cmp cp cut find flock head mkdir mktemp mv readlink realpath rm rmdir sed sha256sum sort stat sync timeout tr; do bt_copy_bin "$cmd"; done
 ln -s usr/bin "$BT_BASE/bin"
 : > "$BT_BASE/dev/null" # A regular file also collects whatever the guest hides from stderr.
 cp /etc/ld.so.cache "$BT_BASE/etc/"
@@ -98,7 +98,10 @@ case ${0##*/} in
         shift 2
         case $* in
             'sh -c :') ;;
-            'sh -c bash -c : && curl --version && jq -n 1') [[ ! -f /docker-tools-broken ]] ;;
+            'sh -c bash -c : '*) # The real probe, against what /container-bin holds.
+                [[ ! -f /docker-tools-fail ]] || exit 1
+                [[ ! -f /docker-tools-raw ]] || { cat /docker-tools-raw; exit 0; }
+                PATH=/container-bin /usr/bin/sh -c "$3" ;;
             'test -r /etc/bao-run/addr') ;;
             'sha256sum /usr/local/bin/bao-run') printf '%s  /usr/local/bin/bao-run\n' "$(</docker-sha)" ;;
             '/usr/local/bin/bao-run --check'*)
@@ -111,6 +114,7 @@ DOUBLE
 chmod 0755 "$BT_BASE/usr/bin/bt-double"
 for cmd in uname mv jq curl systemctl runuser docker; do cp "$BT_BASE/usr/bin/bt-double" "$BT_BASE/usr/bin/$cmd"; done
 
+bt_container_tool() { printf '#!/bin/bash\nexit 0\n' > "$BT_ROOT/container-bin/$1"; chmod 0755 "$BT_ROOT/container-bin/$1"; }
 bt_fixture() {
     rm -rf -- "$BT_ROOT"
     cp -a "$BT_BASE" "$BT_ROOT"
@@ -120,6 +124,8 @@ bt_fixture() {
     printf 'LoadState=loaded\nActiveState=active\nUser=\n' > "$BT_ROOT/unit"
     mkdir -m 0700 "$BT_STAGE"
     cp modules/bao-run/bao-run.sh "$BT_STAGE/bao-run"
+    mkdir "$BT_ROOT/container-bin"
+    bt_container_tool bash; bt_container_tool curl; bt_container_tool jq
 }
 # Every guest run must keep the output contract, whatever it did.
 bt_guest() {
@@ -514,7 +520,7 @@ test_non_root_service_user_cannot_read() {
     bt_install
     printf 'LoadState=loaded\nActiveState=active\nUser=komodo\n' > "$BT_ROOT/unit"
     bt_guest status
-    bt_out '.periphery == {mode:"systemd",active:"active",user:"komodo",can_read:false,sha256:"",tools_ok:true}'
+    bt_out '.periphery == {mode:"systemd",active:"active",user:"komodo",can_read:false,sha256:"",tools_ok:true,missing_tools:[]}'
     : > "$BT_ROOT/runuser-can-read"
     bt_guest status
     bt_out '.periphery.can_read'
@@ -820,7 +826,7 @@ test_tools_that_will_not_run_are_false() {
     bt_request
     chmod 0644 "$BT_ROOT/usr/bin/jq"
     bt_guest status
-    bt_out '(.tools.jq | not) and (.supported | not) and .roles == [] and (.periphery.tools_ok | not)'
+    bt_out '(.tools.jq | not) and (.supported | not) and .roles == [] and (.periphery.tools_ok | not) and .periphery.missing_tools == []'
     bt_refused 'jq will not run'
     bt_out '(.reason | test("jq")) and .changed == false'
     # In the container, the same proof.
@@ -828,9 +834,46 @@ test_tools_that_will_not_run_are_false() {
     printf '%s\n' "$(printf '0%.0s' {1..64})" > "$BT_ROOT/docker-sha"
     bt_guest status --container periphery
     bt_out '.periphery.tools_ok'
-    : > "$BT_ROOT/docker-tools-broken"
+    chmod 0644 "$BT_ROOT/container-bin/jq"
     bt_guest status --container periphery
     bt_out '(.periphery.tools_ok | not) and .periphery.active == "active"'
+}
+
+test_container_missing_tools_named() {
+    local tool
+    bt_install
+    printf '%s\n' "$(printf '0%.0s' {1..64})" > "$BT_ROOT/docker-sha"
+    bt_guest status --container periphery
+    bt_out '.periphery.missing_tools == [] and .periphery.tools_ok'
+    for tool in bash curl jq; do
+        rm "$BT_ROOT/container-bin/$tool"
+        bt_guest status --container periphery
+        bt_out ".periphery.missing_tools == [\"$tool\"] and (.periphery.tools_ok | not)" "$tool absent"
+        : > "$BT_ROOT/container-bin/$tool"; chmod 0644 "$BT_ROOT/container-bin/$tool"
+        bt_guest status --container periphery
+        bt_out ".periphery.missing_tools == [\"$tool\"] and (.periphery.tools_ok | not)" "$tool will not run"
+        bt_container_tool "$tool"
+    done
+    rm "$BT_ROOT"/container-bin/*
+    bt_guest status --container periphery
+    bt_out '.periphery.missing_tools == ["bash","curl","jq"] and (.periphery.tools_ok | not)'
+    # An unreachable container proves nothing is missing, whatever it holds.
+    : > "$BT_ROOT/docker-down"
+    bt_guest status --container periphery
+    bt_out '.periphery.active == "unreachable" and .periphery.missing_tools == [] and (.periphery.tools_ok | not)'
+    rm "$BT_ROOT/docker-down"
+    # A failed probe, or output that is not only tool names, names nothing either.
+    bt_container_tool bash; bt_container_tool curl; bt_container_tool jq
+    : > "$BT_ROOT/docker-tools-fail"
+    bt_guest status --container periphery
+    bt_out '.periphery.active == "active" and .periphery.missing_tools == [] and (.periphery.tools_ok | not)' 'failed probe'
+    rm "$BT_ROOT/docker-tools-fail"
+    local raw
+    for raw in $'jq\n\e[31mEVIL' 'jqbash' "$(printf 'jq\n%.0s' {1..40})" '*'; do
+        printf '%s\n' "$raw" > "$BT_ROOT/docker-tools-raw"
+        bt_guest status --container periphery
+        bt_out '.periphery.missing_tools == [] and (.periphery.tools_ok | not)' "raw [$raw]"
+    done
 }
 
 failed=0

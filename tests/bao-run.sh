@@ -349,6 +349,9 @@ test_tools_must_run() {
       RC=0; PATH=$only BAO_RUN_CONF=$CONF BR_D=$D "$BASH" "$BR" a -- "$BIN/child" >"$D/out" 2>"$D/err" </dev/null || RC=$?
       [[ $RC -ne 0 ]] && ! ran || fail "$tool $state: run accepted"
       grep -qF "bao-run: $tool not found or not executable" "$D/err" || fail "$tool $state: message: $(<"$D/err")"
+      if [[ $tool == jq ]]; then
+        grep -qF 'bao-run: jq not found or not executable; in a Periphery container, see https://quwisky.github.io/pve-toolbox/modules/bao-run/#adding-jq-to-the-official-image' "$D/err" || fail "jq $state: no link: $(<"$D/err")"
+      elif grep -q 'https://' "$D/err"; then fail "$tool $state: link on another tool's message"; fi
       [[ ! -e $D/argv ]] || fail "$tool $state: reached OpenBao"
       RC=0; PATH=$only BAO_RUN_CONF=$CONF BR_D=$D "$BASH" "$BR" --check >"$D/out" 2>"$D/err" </dev/null || RC=$?
       [[ $RC -ne 0 && ! -s $D/out ]] || fail "$tool $state: --check rc=$RC out=$(<"$D/out")"

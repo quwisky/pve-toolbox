@@ -327,7 +327,9 @@ test_second_interrupt_during_cleanup() {
 test_hostile_status_strings_refused() {
     local filter
     for filter in '.payload.sha256 = "\u001b[31mEVIL"' '.tools += {"\u001b[2JTOOL": false}' '.periphery.sha256 = "\u001b[31mEVIL"' \
-        '.unknown_files = [7]' '.unknown_files = "x"' 'del(.unknown_files)'; do
+        '.unknown_files = [7]' '.unknown_files = "x"' 'del(.unknown_files)' \
+        '.periphery.missing_tools = ["\u001b[31mEVIL"]' '.periphery.missing_tools = ["jq",7]' '.periphery.missing_tools = ["sh"]' \
+        '.periphery.missing_tools = "jq"' 'del(.periphery.missing_tools)'; do
         br_fixture
         br_install
         printf '%s' "$filter" > "$BR_HOST/status-filter"
@@ -528,6 +530,85 @@ test_preview_warnings_for_periphery() {
     br_run install bao-run || br_fail 'container install failed'
     br_has '/usr/local/bin/bao-run'; br_has '/etc/bao-run'; br_has 'restart'
     [[ $(br_conf bao-run-101 BR_PERIPHERY) == container && $(br_conf bao-run-101 BR_CONTAINER) == periphery ]] || br_fail 'container record'
+}
+br_container_install() { # A healthy install with Periphery in a container.
+    br_sha modules/bao-run/bao-run.sh > "$BR_TEST_ROOT/docker-sha"
+    ans 'Container ID' 101; ans 'Periphery runs as' container; ans 'Periphery container name' periphery
+    ans 'OpenBao URL' https://bao.example:8200; ans 'CA file'; ans_role default; ans_apply "${1:-y}"
+}
+BR_JQ_CHECKSUM=b1c22172dd303f3be49e935aa56aa48a8b7a46e0bc838b4997d3bb451495870f
+BR_JQ_DOCS=https://quwisky.github.io/pve-toolbox/modules/bao-run/#adding-jq-to-the-official-image
+br_has_jq_help() {
+    br_has 'static jq'; br_has 'does not manage'; br_has 'as root in the LXC'
+    br_has 'curl -fsSL -o /tmp/jq-linux-amd64 https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-linux-amd64'
+    br_has "echo '$BR_JQ_CHECKSUM  /tmp/jq-linux-amd64' | sha256sum -c - \\"
+    br_has '  && install -m 0755 /tmp/jq-linux-amd64 /usr/local/lib/bao-run-jq'
+    br_has 'rm -f /tmp/jq-linux-amd64'
+    br_has '/usr/local/lib/bao-run-jq:/usr/local/bin/jq:ro'; br_has 'recreate'
+    br_has "$BR_JQ_DOCS"
+}
+test_status_explains_missing_tools() {
+    br_fixture
+    br_container_install
+    br_run install bao-run || br_fail 'container install failed'
+    ./pve-toolbox --json status bao-run > "$BR_SESSION" 2>&1 || br_fail 'healthy container failed status'
+    printf 'jq\n' > "$BR_TEST_ROOT/docker-missing"
+    br_status_fails 'jq missing' 'the Periphery container lacks jq'
+    # Doctor is what br_status_fails read last: one record, one line, the link and no commands.
+    jq -e --arg docs "$BR_JQ_DOCS" '[.results[] | select(.id == "module.bao-run.agents")] | length == 1
+        and (.[0].detail | contains("lacks jq") and contains($docs) and (contains("sha256sum") | not))' "$BR_SESSION" > /dev/null \
+        || br_fail 'doctor detail'
+    jq -e 'any(.results[]; .id | test("^module\\.bao-run\\.(protocol|runner)$")) | not' "$BR_SESSION" > /dev/null || br_fail 'doctor protocol'
+    ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1
+    br_has_jq_help
+    ./pve-toolbox --json status bao-run > "$BR_SESSION" 2>&1 || true # Fails by design; the output must still parse.
+    jq -e --arg docs "$BR_JQ_DOCS" 'tostring | contains($docs)' "$BR_SESSION" > /dev/null || br_fail '--json status with the help is not JSON'
+    printf 'curl\njq\n' > "$BR_TEST_ROOT/docker-missing"
+    br_status_fails 'curl and jq' 'the Periphery container lacks curl, jq'
+    ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1
+    br_has_jq_help
+    local tool
+    for tool in bash curl; do
+        printf '%s\n' "$tool" > "$BR_TEST_ROOT/docker-missing"
+        br_status_fails "$tool only" "the Periphery container lacks $tool"
+        ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1
+        br_lacks "$BR_JQ_CHECKSUM"; br_lacks 'bao-run-jq'; br_lacks "$BR_JQ_DOCS"
+    done
+    # Unreachable says nothing about what the container holds.
+    rm "$BR_TEST_ROOT/docker-missing"
+    : > "$BR_TEST_ROOT/docker-down"
+    br_status_fails unreachable 'could not check bash, curl and jq'
+    ./pve-toolbox status bao-run > "$BR_SESSION" 2>&1
+    br_lacks 'lacks'; br_lacks "$BR_JQ_CHECKSUM"
+}
+test_preview_explains_missing_jq_without_blocking() {
+    br_fixture
+    printf 'jq\n' > "$BR_TEST_ROOT/docker-missing"
+    br_container_install
+    br_run install bao-run || br_fail 'install blocked by a missing jq'
+    br_has 'the Periphery container lacks jq'
+    br_has_jq_help
+    cmp -s modules/bao-run/bao-run.sh "$BR_TEST_ROOT/usr/local/bin/bao-run" || br_fail 'not installed'
+    # Nothing new for a container that is fine, not started yet, lacks only curl, or is not in use.
+    br_fixture
+    br_container_install n
+    br_run install bao-run || br_fail 'declined preview failed'
+    br_lacks 'lacks'; br_lacks "$BR_JQ_CHECKSUM"
+    br_fixture
+    : > "$BR_TEST_ROOT/docker-down"
+    br_container_install n
+    br_run install bao-run || br_fail 'declined preview failed'
+    br_lacks 'lacks'; br_lacks "$BR_JQ_CHECKSUM"
+    br_fixture
+    printf 'curl\n' > "$BR_TEST_ROOT/docker-missing"
+    br_container_install n
+    br_run install bao-run || br_fail 'declined preview failed'
+    br_lacks "$BR_JQ_CHECKSUM"
+    br_fixture
+    printf 'jq\n' > "$BR_TEST_ROOT/docker-missing"
+    ans_to_role; ans_role default; ans_apply n
+    br_run install bao-run || br_fail 'declined preview failed'
+    br_lacks "$BR_JQ_CHECKSUM"
 }
 test_decline_changes_nothing() {
     br_fixture

@@ -43,7 +43,7 @@ case ${0##*/} in
         shift 2
         case $* in
             'sh -c :') ;;
-            'sh -c bash -c : && curl --version && jq -n 1') [[ ! -f /docker-tools-broken ]] ;;
+            'sh -c bash -c : '*) [[ ! -f /docker-missing ]] || cat /docker-missing ;;
             'test -r /etc/bao-run/addr') ;;
             'sha256sum /usr/local/bin/bao-run') printf '%s  /usr/local/bin/bao-run\n' "$(</docker-sha)" ;;
             '/usr/local/bin/bao-run --check'*) printf 'ok\n' ;;

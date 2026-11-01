@@ -50,7 +50,7 @@ fi
 
 # command -v also accepts a file that cannot run; OpenBao would then get the blame.
 curl --version >/dev/null 2>&1 || die "curl not found or not executable"
-jq -n 1 >/dev/null 2>&1 || die "jq not found or not executable"
+jq -n 1 >/dev/null 2>&1 || die "jq not found or not executable; in a Periphery container, see https://quwisky.github.io/pve-toolbox/modules/bao-run/#adding-jq-to-the-official-image"
 
 _BR_ADDR=""
 [[ ! -r $_BR_CONF/addr ]] || _BR_ADDR=$(<"$_BR_CONF/addr")

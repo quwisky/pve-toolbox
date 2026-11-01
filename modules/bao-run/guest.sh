@@ -123,7 +123,7 @@ bg_emit() { # Lists shrink only on absurd trees; the transport limit is part of 
 bg_status_fallback() { # <static reason> No jq to rely on: only validated and static values go in.
     local present=false
     if [[ -e $BG_PAYLOAD || -L $BG_PAYLOAD ]]; then present=true; fi
-    printf '{"schema":1,"machine_id":"%s","supported":false,"reason":"%s","tools":{"bash":true,"curl":%s,"jq":%s},"payload":{"present":%s,"sha256":"","owned":false},"addr_present":false,"ca_present":false,"roles":[],"periphery":{"mode":"%s","active":"unknown","user":"","can_read":false,"sha256":"","tools_ok":false},"unknown_files":[]}\n' \
+    printf '{"schema":1,"machine_id":"%s","supported":false,"reason":"%s","tools":{"bash":true,"curl":%s,"jq":%s},"payload":{"present":%s,"sha256":"","owned":false},"addr_present":false,"ca_present":false,"roles":[],"periphery":{"mode":"%s","active":"unknown","user":"","can_read":false,"sha256":"","tools_ok":false,"missing_tools":[]},"unknown_files":[]}\n' \
         "$BG_MACHINE" "$1" "$(bg_tool curl)" "$(bg_tool jq)" "$present" "$BG_P_MODE"
     BG_EMITTED=1
 }
@@ -131,7 +131,7 @@ bg_status() {
     local want_login=0 container="" use_container=0 active=unknown user="" can_read=false p_sha="" tools_ok=false
     local supported=true reason="" conf_ok=1 present=false sha="" owned=false addr_present=false ca_present=false
     local tool_bash tool_curl tool_jq role dir files_ok login reachable=0 show word roles_json unknown_json
-    local rows=()
+    local rows=() lines=() missing=() out line checked=1 missing_json
     while (($#)); do
         case $1 in
             --login) want_login=1; shift ;;
@@ -164,7 +164,18 @@ bg_status() {
     if ((use_container)); then
         if [[ $container =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] && timeout 20 docker exec "$container" sh -c : > /dev/null 2>&1 < /dev/null; then
             reachable=1; active=active
-            if timeout 20 docker exec "$container" sh -c 'bash -c : && curl --version && jq -n 1' > /dev/null 2>&1 < /dev/null; then tools_ok=true; fi
+            # One exec, so the inspection limit still holds. Only a probe that finished and printed nothing but names counts.
+            if out=$(timeout 20 docker exec "$container" sh -c 'bash -c : > /dev/null 2>&1 || echo bash; curl --version > /dev/null 2>&1 || echo curl; jq -n 1 > /dev/null 2>&1 || echo jq' 2>/dev/null < /dev/null | head -c 64); then
+                mapfile -t lines <<<"$out"
+                for line in "${lines[@]}"; do
+                    case $line in
+                        bash|curl|jq) missing+=("$line") ;;
+                        '') ;;
+                        *) checked=0 ;;
+                    esac
+                done
+                if ((!checked)); then missing=(); elif ((${#missing[@]} == 0)); then tools_ok=true; fi
+            fi
             if timeout 20 docker exec "$container" test -r /etc/bao-run/addr > /dev/null 2>&1 < /dev/null; then can_read=true; fi
             word=$(timeout 20 docker exec "$container" sha256sum /usr/local/bin/bao-run 2>/dev/null < /dev/null | head -c 128) || word=""
             word=${word%% *}
@@ -201,16 +212,17 @@ bg_status() {
     done
     roles_json=$(printf '%s\n' "${rows[@]}" | jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {name:.[0],files_ok:(.[1] == "true"),login:.[2]})')
     unknown_json=$(bg_json_list "${BG_UNKNOWN[@]}")
+    missing_json=$(bg_json_list "${missing[@]}" | jq -c unique)
     bg_emit "$(printf '%s\n%s\n' "$roles_json" "$unknown_json" | jq -cs --arg machine "$BG_MACHINE" --argjson supported "$supported" --arg reason "$reason" \
         --argjson bash "$tool_bash" --argjson curl "$tool_curl" --argjson jq "$tool_jq" \
         --argjson present "$present" --arg sha "$sha" --argjson owned "$owned" \
         --argjson addr "$addr_present" --argjson ca "$ca_present" \
-        --arg mode "$BG_P_MODE" --arg active "$active" --arg user "$user" --argjson can_read "$can_read" --arg p_sha "$p_sha" --argjson tools_ok "$tools_ok" \
+        --arg mode "$BG_P_MODE" --arg active "$active" --arg user "$user" --argjson can_read "$can_read" --arg p_sha "$p_sha" --argjson tools_ok "$tools_ok" --argjson missing "$missing_json" \
         '{schema:1,machine_id:$machine,supported:$supported,reason:$reason,
           tools:{bash:$bash,curl:$curl,jq:$jq},
           payload:{present:$present,sha256:$sha,owned:$owned},
           addr_present:$addr,ca_present:$ca,roles:.[0],
-          periphery:{mode:$mode,active:$active,user:$user,can_read:$can_read,sha256:$p_sha,tools_ok:$tools_ok},
+          periphery:{mode:$mode,active:$active,user:$user,can_read:$can_read,sha256:$p_sha,tools_ok:$tools_ok,missing_tools:$missing},
           unknown_files:.[1]}')"
 }
 
