@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.11.0](https://github.com/quwisky/pve-toolbox/compare/v0.10.0...v0.11.0) (2026-11-02)
+
+
+### Features
+
+* **bao-run:** manage OpenBao secrets for Komodo stacks in containers ([#130](https://github.com/quwisky/pve-toolbox/issues/130)) ([ae221e6](https://github.com/quwisky/pve-toolbox/commit/ae221e6680f3a3595fc99e49a8edd7e41e3a201a))
+
+
+### Bug Fixes
+
+* **release:** freeze the clock when signing the APT repository ([#131](https://github.com/quwisky/pve-toolbox/issues/131)) ([f7ea4c9](https://github.com/quwisky/pve-toolbox/commit/f7ea4c9efe6596f266806f54a2d6c737b236577a))
+
+
+### Dependencies
+
+* bump the github-actions group across 1 directory with 3 updates ([#127](https://github.com/quwisky/pve-toolbox/issues/127)) ([401703d](https://github.com/quwisky/pve-toolbox/commit/401703d42e5647e6a7c6cdf9ac35ad326c59af31))
+
 ## [0.10.0](https://github.com/quwisky/pve-toolbox/compare/v0.9.0...v0.10.0) (2026-09-29)
 
 
